@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h3>Right-click each image and "Save image as" to the icons/ folder</h3>
+<p>icon16.png:</p><canvas id="c16" width="16" height="16"></canvas><br>
+<p>icon48.png:</p><canvas id="c48" width="48" height="48"></canvas><br>
+<p>icon128.png:</p><canvas id="c128" width="128" height="128"></canvas>
+<script>
+function draw(canvas) {
+  const s = canvas.width;
+  const ctx = canvas.getContext('2d');
+  const f = s / 128;
+  ctx.fillStyle = '#1a1a2e';
+  ctx.beginPath();
+  ctx.roundRect(0, 0, s, s, 16 * f);
+  ctx.fill();
+  ctx.strokeStyle = '#8ab4f8';
+  ctx.lineWidth = 6 * f;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(20*f, 90*f);
+  ctx.lineTo(40*f, 70*f);
+  ctx.lineTo(55*f, 80*f);
+  ctx.lineTo(75*f, 40*f);
+  ctx.lineTo(95*f, 55*f);
+  ctx.lineTo(110*f, 30*f);
+  ctx.stroke();
+  [[ 75, 40], [110, 30]].forEach(([x,y]) => {
+    ctx.fillStyle = '#8ab4f8';
+    ctx.beginPath();
+    ctx.arc(x*f, y*f, 5*f, 0, Math.PI*2);
+    ctx.fill();
+  });
+  if (s >= 48) {
+    ctx.fillStyle = '#8ab4f8';
+    ctx.font = `bold ${20*f}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.fillText('GBP', 64*f, 118*f);
+  }
+  // Convert to downloadable image
+  const img = new Image();
+  img.src = canvas.toDataURL('image/png');
+  canvas.parentElement.insertBefore(img, canvas.nextSibling);
+}
+draw(document.getElementById('c16'));
+draw(document.getElementById('c48'));
+draw(document.getElementById('c128'));
+</script>
+</body>
+</html>

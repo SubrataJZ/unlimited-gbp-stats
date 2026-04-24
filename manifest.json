@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Unlimited Google Business Stats",
+  "version": "1.0.0",
+  "description": "Track Google Business Profile performance beyond Google's 6-month limit. Store unlimited historical data, compare any months, manage multiple businesses.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://business.google.com/*",
+    "https://*.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://business.google.com/*",
+        "https://www.google.com/*",
+        "https://www.google.co.in/*",
+        "https://www.google.co.uk/*",
+        "https://maps.google.com/*"
+      ],
+      "js": ["storage.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

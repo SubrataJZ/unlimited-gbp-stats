@@ -1,0 +1,19 @@
+# Claude AI session data
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node (if any tooling added later)
+node_modules/
+npm-debug.log*
+
+# Build artifacts
+dist/
+*.zip
+
+# Secrets / env
+.env
+*.pem
