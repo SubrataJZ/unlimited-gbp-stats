@@ -1,0 +1,81 @@
+name: Test Backend API
+
+on:
+  push:
+    branches: [main, develop, master]
+  pull_request:
+    branches: [main, develop, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Docker version
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Start backend services with Docker Compose
+        run: |
+          echo "Starting docker-compose services..."
+          docker compose up -d
+          echo "Services started. Waiting for initialization..."
+          sleep 5
+        env:
+          NODE_ENV: test
+          COMPOSE_DOCKER_CLI_BUILD: 1
+          DOCKER_BUILDKIT: 1
+
+      - name: Check Docker container status
+        run: |
+          echo "=== Docker PS ==="
+          docker ps -a
+          echo ""
+          echo "=== Backend Container Logs (first 50 lines) ==="
+          docker compose logs backend | head -50
+
+      - name: Wait for backend to be healthy
+        run: |
+          echo "Waiting for backend to start..."
+          max_attempts=90
+          attempt=1
+          while [ $attempt -le $max_attempts ]; do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/health 2>/dev/null || echo "000")
+            if [ "$status" = "200" ]; then
+              echo "Backend is healthy! (HTTP $status)"
+              exit 0
+            fi
+            if [ $((attempt % 10)) -eq 0 ] || [ $attempt -eq 1 ]; then
+              echo "Attempt $attempt/$max_attempts: HTTP status $status - waiting..."
+            fi
+            sleep 1
+            ((attempt++))
+          done
+          echo ""
+          echo "Backend failed to start after ${max_attempts} seconds"
+          echo "=== Backend Container Logs ==="
+          docker compose logs backend
+          echo ""
+          echo "=== All Container Logs ==="
+          docker compose logs
+          exit 1
+
+      - name: Run API tests
+        run: bash backend/tests/api-tests.sh
+
+      - name: Show all logs on failure
+        if: failure()
+        run: |
+          echo "=== Backend Logs ==="
+          docker compose logs backend
+          echo ""
+          echo "=== All Logs ==="
+          docker compose logs
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v

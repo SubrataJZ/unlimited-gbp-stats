@@ -1,0 +1,107 @@
+version: '3.9'
+
+services:
+  # PostgreSQL 16 Alpine - Fast, lightweight database
+  postgres:
+    image: postgres:16-alpine
+    container_name: gbp_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-gbp_dev}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev_password_change_me}
+      POSTGRES_DB: ${DB_NAME:-gbp_database}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - gbp_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-gbp_dev}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Node.js/Express TypeScript Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gbp_backend
+    environment:
+      # Server Configuration
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3001
+      API_BASE_URL: http://localhost:3001
+
+      # Database Configuration
+      DATABASE_URL: postgresql://${DB_USER:-gbp_dev}:${DB_PASSWORD:-dev_password_change_me}@postgres:5432/${DB_NAME:-gbp_database}
+
+      # Chrome Extension Security
+      EXTENSION_INGESTION_KEY: ${EXTENSION_INGESTION_KEY:-test-extension-key-12345}
+      EXTENSION_ID: ${EXTENSION_ID:-test-extension-id-chrome}
+
+      # Google OAuth 2.0
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:3001/api/auth/google/callback}
+
+      # Google Business Profile API
+      GOOGLE_BUSINESS_API_VERSION: v1
+      GOOGLE_API_SCOPES: https://www.googleapis.com/auth/business.manage
+
+      # Session & Security
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-key-12345}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-12345}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+    ports:
+      - "${API_PORT:-3001}:3001"
+    volumes:
+      - ./backend/src:/app/src
+      - /app/node_modules
+      - ./logs:/app/logs
+    networks:
+      - gbp_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/health", "||", "exit", "1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: on-failure
+    stdin_open: true
+    tty: true
+
+  # pgAdmin for database management via web UI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: gbp_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@gbp.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - gbp_network
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  gbp_network:
+    driver: bridge

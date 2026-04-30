@@ -1,0 +1,178 @@
+// ── Unlimited GBP Stats — Database Schema (PostgreSQL)
+// This schema powers the production backend for multi-user GBP data management.
+// Users sign in via Google OAuth, which auto-links their managed locations to their account.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Users ──────────────────────────────────────────────────────────────────────
+// Represents a digital marketer or business owner who has signed in via Google OAuth.
+// Their Google OAuth tokens let us verify which locations they manage.
+
+model User {
+  id                  String   @id @default(cuid())
+
+  // Google OAuth info
+  googleId            String   @unique
+  email               String   @unique
+  name                String?
+  profilePictureUrl   String?
+
+  // Encrypted tokens (store these securely in production!)
+  // Consider using a secrets management service instead of raw DB columns
+  googleAccessToken   String?   // For API calls to Google (get managed locations, etc.)
+  googleRefreshToken  String?   // For refreshing the access token
+  tokenExpiresAt      DateTime?
+
+  // Audit
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  lastLoginAt         DateTime @default(now())
+
+  // Relations
+  locations           Location[]
+  syncHistory         SyncHistory[]
+
+  @@map("users")
+}
+
+// ── Locations ──────────────────────────────────────────────────────────────────
+// Represents a Google Business Profile location.
+// A user can manage multiple locations.
+// Locations are linked to users when the user signs in with Google OAuth
+// and we verify they own the location.
+
+model Location {
+  id                  String   @id @default(cuid())
+
+  // Google's identifier for this business location
+  googleLocationId    String   @unique
+
+  // User who owns this location (can be NULL before OAuth linking)
+  userId              String?
+  user                User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Business info
+  name                String?
+  address             String?
+  phone               String?
+  website             String?
+  latitude            Float?
+  longitude           Float?
+
+  // Sync metadata
+  lastSyncedAt        DateTime?
+  lastCollectedAt     DateTime?
+
+  // Audit
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Relations
+  metrics             PerformanceMetric[]
+
+  @@index([userId])
+  @@index([googleLocationId])
+  @@map("locations")
+}
+
+// ── Performance Metrics ────────────────────────────────────────────────────────
+// Time-series performance data collected from Google Business Profile.
+// Each metric_type (overview, calls, website_clicks, etc.) is a separate row per month.
+// Can store daily breakdown as JSONB.
+
+model PerformanceMetric {
+  id                  String   @id @default(cuid())
+
+  // Foreign key to location
+  locationId          String?
+  location            Location? @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  // Also store the raw googleLocationId for lookups before user assignment
+  googleLocationId    String
+
+  // Metric type and time period
+  metricType          String   // e.g., "overview", "calls", "website_clicks", "directions", "bookings", "chat_clicks"
+  year                Int
+  month               Int      // 1-12
+
+  // Data
+  total               Int      @default(0)  // Monthly total
+  daily               Json?    // Array of daily values: [0, 5, 10, 3, ...]
+  yoyPercent          Float?   // Year-over-year % change (from Google)
+
+  // Extra metadata (breakdown, search terms, funnel data, etc.)
+  extra               Json?    // Flexible field for:
+                               // - breakdown: { searchMobile, searchDesktop, mapsMobile, mapsDesktop }
+                               // - searchTerms: [{ term, count }, ...]
+                               // - searchImpressions, profileViews (for funnel)
+                               // - derivedFrom: { year, month, yoyPercent } (for back-calculated data)
+
+  // Data quality flags
+  derived             Boolean  @default(false)  // true if back-calculated from YoY %
+
+  // Timestamps
+  collectedAt         DateTime?  // When Google collected this data (performance period)
+  syncedAt            DateTime @default(now())  // When we received it
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Unique constraint: one metric type per location per month
+  @@unique([googleLocationId, metricType, year, month])
+  @@index([locationId])
+  @@index([googleLocationId])
+  @@index([year, month])
+  @@map("performance_metrics")
+}
+
+// ── Sync History ───────────────────────────────────────────────────────────────
+// Audit log of every data sync from the Chrome extension.
+// Useful for debugging and monitoring.
+
+model SyncHistory {
+  id                  String   @id @default(cuid())
+
+  userId              String?
+  user                User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  googleLocationId    String
+  metricType          String
+  year                Int
+  month               Int
+
+  recordsReceived     Int      // How many individual records in this sync
+  status              String   // "success", "error", "skipped"
+  errorMessage        String?
+
+  createdAt           DateTime @default(now())
+
+  @@index([userId])
+  @@index([googleLocationId])
+  @@map("sync_history")
+}
+
+// ── API Keys (for Chrome extension) ────────────────────────────────────────────
+// Shared API keys that the Chrome extension uses to authenticate with the backend.
+// In production, you might rotate these and revoke old ones.
+
+model ApiKey {
+  id                  String   @id @default(cuid())
+
+  key                 String   @unique  // e.g., a long random string
+  name                String?  // e.g., "Chrome Extension", "Development"
+
+  isActive            Boolean  @default(true)
+  revokedAt           DateTime?
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  lastUsedAt          DateTime?
+
+  @@map("api_keys")
+}

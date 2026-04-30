@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone *)",
+      "Bash(node -e ' *)",
+      "Bash(sed -n '230,237p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '262,270p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '161,165p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '235,242p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(cp backend/src/controllers/ingest.controller.ts backend/src/controllers/ingest.controller.ts.bak)",
+      "Bash(sed -i '43s/export const ingestMetrics = asyncHandler\\(/export const ingestMetrics = async /' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -i '44s/^  async \\(req: Request, res: Response\\) => {/\\(req: Request, res: Response\\) => {/' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -i '164s/^\\);$/};/' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -i '238s/export const getIngestionStatus = asyncHandler\\(/export const getIngestionStatus = async /' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '43,47p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '162,165p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '238,242p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '270,272p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(cat)",
+      "Bash(node /tmp/fix_controller.js)",
+      "Bash(sed -n '43,46p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '238,241p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(python3)",
+      "Bash(dos2unix backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -i 's/\\\\r$//' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '43p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '162p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(sed -n '236p' backend/src/controllers/ingest.controller.ts)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(git init *)"
+    ]
+  }
+}

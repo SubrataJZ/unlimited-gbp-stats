@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String     @id @default(uuid())
+  googleId     String     @unique @map("google_id")
+  email        String     @unique
+  name         String?
+  avatarUrl    String?    @map("avatar_url")
+  accessToken  String?    @map("access_token")
+  refreshToken String?    @map("refresh_token")
+
+  locations    Location[]
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Location {
+  id                String   @id @default(uuid())
+  googleLocationId  String   @unique @map("google_location_id")
+  businessName      String   @map("business_name")
+  userId            String   @map("user_id")
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  metrics           Metric[]
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("locations")
+}
+
+model Metric {
+  id         String   @id @default(uuid())
+  locationId String   @map("location_id")
+  location   Location @relation(fields: [locationId], references: [googleLocationId], onDelete: Cascade)
+
+  date       DateTime @db.Date @map("date")
+  metricType String   @map("metric_type")
+  value      Int
+
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([locationId, date, metricType])
+  @@index([locationId])
+  @@index([date])
+  @@map("metrics")
+}
