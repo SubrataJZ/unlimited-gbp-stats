@@ -28,7 +28,12 @@
       "Bash(sed -n '236p' backend/src/controllers/ingest.controller.ts)",
       "Bash(npm install *)",
       "Bash(npx tsc *)",
-      "Bash(git init *)"
+      "Bash(git init *)",
+      "Bash(docker compose *)",
+      "Bash(git config *)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git add *)"
     ]
   }
 }
