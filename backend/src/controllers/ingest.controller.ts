@@ -65,6 +65,18 @@ export const ingestMetrics = asyncHandler(
       `Ingesting ${metrics.length} metrics from extension (ID: ${req.extensionId})`
     );
 
+    // Ensure test user exists for ingestion
+    const testUserId = 'test-user';
+    await prisma.user.upsert({
+      where: { googleId: testUserId },
+      update: {},
+      create: {
+        googleId: testUserId,
+        email: 'test@example.com',
+        name: 'Test User',
+      },
+    });
+
     const results = {
       successful: 0,
       failed: 0,
@@ -89,6 +101,20 @@ export const ingestMetrics = asyncHandler(
             `Invalid date format. Expected YYYY-MM-DD, got "${metric.date}"`
           );
         }
+
+        /**
+         * Ensure location exists before creating metric
+         * Auto-create location if it doesn't exist (for testing/flexibility)
+         */
+        await prisma.location.upsert({
+          where: { googleLocationId: metric.googleLocationId },
+          update: {}, // No updates if location exists
+          create: {
+            googleLocationId: metric.googleLocationId,
+            businessName: `Location ${metric.googleLocationId}`, // Auto-generated name
+            userId: testUserId, // Use test user ID
+          },
+        });
 
         /**
          * Upsert Strategy:
