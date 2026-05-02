@@ -202,30 +202,11 @@ class GoogleService {
    */
   private async fetchManagedLocations(accessToken: string) {
     try {
-      // Mock implementation for testing
-      logger.info('Fetching managed locations (mock mode for testing)');
+      logger.info('Fetching managed locations from Google Business Profile API');
 
-      // Return mock locations for development
-      const mockLocations = [
-        {
-          name: 'accounts/123456789/locations/9876543210',
-          displayName: 'Downtown Coffee Shop',
-          title: 'Coffee Shop - Downtown',
-        },
-        {
-          name: 'accounts/123456789/locations/9876543211',
-          displayName: 'Uptown Coffee Shop',
-          title: 'Coffee Shop - Uptown',
-        },
-      ];
-
-      logger.debug(`Returning ${mockLocations.length} mock locations`);
-      return mockLocations;
-
-      // TODO: For production, enable the real Google Business API call below:
-      /*
+      // Step 1: Get all accounts the user manages
       const accountsResponse = await axios.get(
-        `https://mybusiness.googleapis.com/v4/accounts`,
+        'https://mybusinessaccountmanagement.googleapis.com/v1/accounts',
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -234,36 +215,53 @@ class GoogleService {
       );
 
       const accounts = accountsResponse.data.accounts || [];
+      logger.info(`Found ${accounts.length} Google Business accounts`);
+
+      if (accounts.length === 0) {
+        logger.warn('User has no Google Business accounts');
+        return [];
+      }
+
       const allLocations: any[] = [];
 
+      // Step 2: For each account, fetch all locations
       for (const account of accounts) {
         try {
           const locationsResponse = await axios.get(
-            `https://mybusiness.googleapis.com/v4/${account.name}/locations`,
+            `https://mybusinessbusinessinformation.googleapis.com/v1/${account.name}/locations`,
             {
               headers: {
                 Authorization: `Bearer ${accessToken}`,
               },
               params: {
-                readMask: 'name,displayName,title',
+                readMask: 'name,title,storefrontAddress',
+                pageSize: 100,
               },
             }
           );
 
           const locations = locationsResponse.data.locations || [];
-          allLocations.push(...locations);
-        } catch (error) {
-          logger.warn(`Failed to fetch locations for account ${account.name}:`, error);
+          logger.info(`Found ${locations.length} locations for account ${account.name}`);
+
+          // Normalize location format
+          const normalizedLocations = locations.map((loc: any) => ({
+            name: loc.name,
+            displayName: loc.title || 'Unnamed Location',
+            title: loc.title || 'Unnamed Location',
+          }));
+
+          allLocations.push(...normalizedLocations);
+        } catch (error: any) {
+          logger.warn(`Failed to fetch locations for account ${account.name}: ${error.message}`);
         }
       }
 
+      logger.info(`Total locations found: ${allLocations.length}`);
       return allLocations;
-      */
-    } catch (error) {
-      logger.error('Failed to fetch managed locations:', error);
-      throw new InternalServerError(
-        'Failed to fetch your business locations from Google'
-      );
+    } catch (error: any) {
+      logger.error('Failed to fetch managed locations from Google API:', error.message);
+      // Return empty array instead of throwing — user can still log in without locations
+      return [];
     }
   }
 
