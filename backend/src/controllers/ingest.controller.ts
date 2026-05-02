@@ -66,16 +66,16 @@ export const ingestMetrics = asyncHandler(
     );
 
     // Ensure test user exists for ingestion
-    const testUserId = 'test-user';
-    await prisma.user.upsert({
-      where: { googleId: testUserId },
+    const testUser = await prisma.user.upsert({
+      where: { googleId: 'test-extension-user' },
       update: {},
       create: {
-        googleId: testUserId,
-        email: 'test@example.com',
-        name: 'Test User',
+        googleId: 'test-extension-user',
+        email: 'test-extension@example.com',
+        name: 'Extension Test User',
       },
     });
+    const testUserId = testUser.id;
 
     const results = {
       successful: 0,
