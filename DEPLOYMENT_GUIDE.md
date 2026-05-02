@@ -61,6 +61,10 @@ ssh -i /path/to/private/key root@188.245.199.192 "echo 'SSH access confirmed!'"
 
 ### 2.1 Run Setup Script on VPS
 
+⚠️ **IMPORTANT:** The repository has two branches:
+- `master` → Chrome Extension files only (GitHub's default)
+- `main` → Backend API + Docker setup + CI/CD workflows (what we need)
+
 ```bash
 # SSH to VPS
 ssh root@188.245.199.192

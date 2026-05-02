@@ -115,7 +115,7 @@ echo -e "${GREEN}✓ App user and directories created${NC}"
 ###############################################################################
 echo -e "${BLUE}Step 6: Cloning repository...${NC}"
 
-sudo -u $APP_USER git clone https://github.com/SubrataJZ/unlimited-gbp-stats.git $APP_DIR
+sudo -u $APP_USER git clone -b main https://github.com/SubrataJZ/unlimited-gbp-stats.git $APP_DIR
 
 # Create .env file
 cat > $APP_DIR/.env << 'ENVFILE'
