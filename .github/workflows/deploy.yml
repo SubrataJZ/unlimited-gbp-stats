@@ -24,7 +24,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "cd /home/zixify-app && git fetch origin && git reset --hard origin/main"
+            "cd /home/zixify-app && git clean -fd && git reset --hard && git fetch origin && git checkout main && git reset --hard origin/main"
 
       - name: Rebuild Docker images
         run: |
