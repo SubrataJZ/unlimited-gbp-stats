@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 340px;
+      background: #1e1e2e;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+      font-size: 13px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      background: #252536;
+      border-bottom: 1px solid #333;
+    }
+    .header svg { flex-shrink: 0; }
+    .header h1 { font-size: 14px; font-weight: 600; color: #8ab4f8; }
+    .header .version { font-size: 10px; color: #666; margin-left: auto; }
+
+    .section {
+      padding: 14px 16px;
+      border-bottom: 1px solid #2a2a3a;
+    }
+    .section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #666;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+    }
+    .stat-label { color: #aaa; }
+    .stat-value { color: #8ab4f8; font-weight: 600; }
+
+    .biz-list {
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    .biz-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .biz-item:hover { background: #2d2d44; }
+    .biz-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #8ab4f8;
+      flex-shrink: 0;
+    }
+    .biz-name { flex: 1; font-size: 13px; }
+    .biz-records { font-size: 11px; color: #666; }
+
+    .empty-state {
+      text-align: center;
+      padding: 20px;
+      color: #666;
+    }
+    .empty-state svg { margin-bottom: 8px; opacity: 0.4; }
+
+    .actions {
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+    .btn-primary {
+      background: #8ab4f8;
+      color: #1a1a2e;
+    }
+    .btn-primary:hover { background: #aecbfa; }
+    .btn-secondary {
+      background: #2d2d44;
+      color: #8ab4f8;
+      border: 1px solid #3d3d54;
+    }
+    .btn-secondary:hover { background: #3d3d54; }
+    .btn-export {
+      background: #2d2d44;
+      color: #81c995;
+      border: 1px solid #3d3d54;
+    }
+    .btn-import {
+      background: #2d2d44;
+      color: #fdd663;
+      border: 1px solid #3d3d54;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 8px;
+    }
+    .btn-row .btn { flex: 1; }
+
+    #importFile { display: none; }
+
+    .status-msg {
+      text-align: center;
+      padding: 6px;
+      font-size: 11px;
+      border-radius: 6px;
+      display: none;
+    }
+    .status-msg.show { display: block; }
+    .status-msg.success { background: #1a2e1a; color: #81c995; }
+    .status-msg.error { background: #2e1a1a; color: #f28b82; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg width="24" height="24" viewBox="0 0 128 128"><rect width="128" height="128" rx="16" fill="#1a1a2e"/><polyline points="20,90 40,70 55,80 75,40 95,55 110,30" fill="none" stroke="#8ab4f8" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <h1>Unlimited GBP Stats</h1>
+    <span class="version">v1.0</span>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Storage Stats</div>
+    <div class="stat-row">
+      <span class="stat-label">Businesses tracked</span>
+      <span class="stat-value" id="totalBiz">0</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Data records</span>
+      <span class="stat-value" id="totalRecords">0</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Your Businesses</div>
+    <div id="bizList" class="biz-list">
+      <div class="empty-state" id="emptyState">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="#666"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+        <div>No businesses yet</div>
+        <div style="font-size:11px;margin-top:4px">Visit your Google Business Profile<br>Performance page to start collecting</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-primary" id="openDashboard">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+      Open Dashboard
+    </button>
+    <button class="btn btn-secondary" id="goToGBP">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+      Go to Google Business Profile
+    </button>
+    <div class="btn-row">
+      <button class="btn btn-export" id="exportBtn">Export Data</button>
+      <button class="btn btn-import" id="importBtn">Import Data</button>
+    </div>
+    <input type="file" id="importFile" accept=".json">
+    <div class="status-msg" id="statusMsg"></div>
+  </div>
+
+  <script src="storage.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
