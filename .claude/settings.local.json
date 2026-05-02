@@ -37,7 +37,13 @@
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(git rm *)",
-      "Bash(Remove-Item -Recurse -Force \"G:/Projects by Claude/unlimited business stats/unlimited-gbp-stats/.git\")"
+      "Bash(Remove-Item -Recurse -Force \"G:/Projects by Claude/unlimited business stats/unlimited-gbp-stats/.git\")",
+      "Bash(git ls-tree *)",
+      "Bash(ssh -i \"C:\\\\Users\\\\subra\\\\.ssh\\\\id_ed25519\" root@188.245.199.192 \"ls -la /home/zixify-app/\")",
+      "Bash(git fetch *)",
+      "Bash(curl -s \"https://api.github.com/repos/SubrataJZ/unlimited-gbp-stats/contents/?ref=main\")",
+      "Bash(curl -s \"https://api.github.com/repos/SubrataJZ/unlimited-gbp-stats/git/trees/main?recursive=1\")",
+      "Bash(git commit -m 'Fix: Explicitly checkout main branch when cloning repo to get backend files *)"
     ]
   }
 }
