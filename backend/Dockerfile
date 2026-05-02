@@ -2,8 +2,8 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install netcat for checking postgres availability
-RUN apk add --no-cache netcat-openbsd
+# Install netcat, OpenSSL 1.1, and other dependencies for Prisma
+RUN apk add --no-cache netcat-openbsd openssl libc6-compat
 
 # Copy package files
 COPY package*.json ./
