@@ -1,0 +1,78 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_DEPLOY_PATH: /home/zixify-app
+        run: |
+          # Create SSH directory
+          mkdir -p ~/.ssh
+
+          # Add SSH key
+          echo "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # Add VPS to known hosts
+          ssh-keyscan -H $VPS_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          # Deploy to VPS
+          ssh -i ~/.ssh/deploy_key ${VPS_USER}@${VPS_HOST} << 'EOF'
+
+          set -e
+
+          echo "🚀 Starting deployment..."
+
+          # Navigate to app directory
+          cd /home/zixify-app
+
+          # Pull latest code
+          echo "📥 Pulling latest code from GitHub..."
+          git pull origin main
+
+          # Build and start services
+          echo "🐳 Building Docker images..."
+          docker compose build
+
+          echo "🚀 Starting services..."
+          docker compose up -d
+
+          # Wait for services to be healthy
+          echo "⏳ Waiting for services to be ready..."
+          sleep 10
+
+          # Check if backend is healthy
+          if curl -sf http://localhost:3001/health > /dev/null; then
+            echo "✅ Backend is healthy!"
+          else
+            echo "❌ Backend health check failed"
+            docker compose logs backend
+            exit 1
+          fi
+
+          echo "✅ Deployment completed successfully!"
+
+          EOF
+
+      - name: Deployment Status
+        if: success()
+        run: echo "✅ Successfully deployed to zixify.zixai.in"
+
+      - name: Deployment Failed
+        if: failure()
+        run: echo "❌ Deployment failed. Check the logs above."
