@@ -9,7 +9,7 @@
 # Usage: bash tests/api-tests.sh
 ###############################################################################
 
-set -e
+set -o pipefail  # Fail on pipe errors but allow continuing after individual test failures
 
 # Color codes for output
 RED='\033[0;31m'
@@ -215,7 +215,8 @@ test_ingest_multiple_metrics() {
   print_test "POST /api/ingest (batch of 5 metrics)"
 
   today=$(date +%Y-%m-%d)
-  yesterday=$(date -d "1 day ago" +%Y-%m-%d)
+  # Use a fixed date instead of relative date for cross-platform compatibility
+  yesterday="2026-05-01"
 
   payload=$(cat <<EOF
 {
@@ -407,6 +408,23 @@ test_locations_endpoint() {
 # Main Test Execution
 ###############################################################################
 
+check_dependencies() {
+  print_header "Checking Dependencies"
+
+  if ! command -v curl &> /dev/null; then
+    print_error "curl is not installed"
+    exit 1
+  fi
+  print_success "curl is available"
+
+  # jq is optional, we use grep instead
+  if ! command -v jq &> /dev/null; then
+    print_info "jq is not available (optional - using grep for JSON parsing)"
+  else
+    print_success "jq is available"
+  fi
+}
+
 main() {
   echo ""
   echo -e "${BLUE}╔════════════════════════════════════════════════════╗${NC}"
@@ -417,18 +435,20 @@ main() {
   print_info "Extension Key: $EXTENSION_KEY"
   print_info "Extension ID: $EXTENSION_ID"
 
+  check_dependencies
   check_server
 
-  test_health_check
-  test_ingest_without_auth
-  test_ingest_with_invalid_key
-  test_ingest_empty_metrics
-  test_ingest_single_metric
-  test_ingest_multiple_metrics
-  test_ingest_idempotency
-  test_ingest_invalid_metric_type
-  test_ingest_status
-  test_locations_endpoint
+  # Run tests with error handling
+  test_health_check || true
+  test_ingest_without_auth || true
+  test_ingest_with_invalid_key || true
+  test_ingest_empty_metrics || true
+  test_ingest_single_metric || true
+  test_ingest_multiple_metrics || true
+  test_ingest_idempotency || true
+  test_ingest_invalid_metric_type || true
+  test_ingest_status || true
+  test_locations_endpoint || true
 
   print_header "Test Results Summary"
   echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"
