@@ -20,7 +20,7 @@ importScripts('storage.js');
 GBPStorage.open().catch(e => console.error('[GBP BG] Storage init error:', e));
 
 // ── Hardcoded server URL — change this to your deployed server ────────────────
-const SERVER_URL = 'http://gbp.zixai.in:3005'; // GBP Stats Server (Hetzner VPS)
+const SERVER_URL = 'http://gbp.zixify.zixai.in:3005'; // GBP Stats Server (Hetzner VPS)
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
