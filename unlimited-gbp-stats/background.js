@@ -20,7 +20,7 @@ importScripts('storage.js');
 GBPStorage.open().catch(e => console.error('[GBP BG] Storage init error:', e));
 
 // ── Hardcoded server URL — change this to your deployed server ────────────────
-const SERVER_URL = 'https://your-server.com'; // ← SET YOUR SERVER URL HERE
+const SERVER_URL = 'http://188.245.199.192:3005'; // GBP Stats Server (Hetzner VPS)
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
