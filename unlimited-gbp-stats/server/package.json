@@ -1,7 +1,7 @@
 {
   "name": "gbp-stats-sync-server",
   "version": "1.0.0",
-  "description": "Sync server for Unlimited GBP Stats Chrome Extension — stores a server-side copy of all GBP data and keeps it in sync with every client fetch.",
+  "description": "Sync server for Unlimited GBP Stats Chrome Extension \u00e2\u20ac\u201d stores a server-side copy of all GBP data and keeps it in sync with every client fetch.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,7 +11,9 @@
     "better-sqlite3": "^9.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.18.3"
+    "express": "^4.18.3",
+    "bcryptjs": "2.4.3",
+    "jsonwebtoken": "9.0.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In — Unlimited GBP Stats</title>
+  <link rel="stylesheet" href="auth.css">
+</head>
+<body>
+  <div class="auth-container">
+    <div class="auth-card">
+
+      <!-- Logo / Header -->
+      <div class="auth-header">
+        <div class="auth-logo">📊</div>
+        <h1 class="auth-title">Unlimited GBP Stats</h1>
+        <p class="auth-subtitle">Sign in to sync your data across devices</p>
+      </div>
+
+      <!-- Tabs -->
+      <div class="auth-tabs">
+        <button class="tab-btn active" id="loginTab" onclick="switchTab('login')">Sign In</button>
+        <button class="tab-btn" id="signupTab" onclick="switchTab('signup')">Create Account</button>
+      </div>
+
+      <!-- Error / Success banner -->
+      <div id="authBanner" class="auth-banner hidden"></div>
+
+      <!-- Login Form -->
+      <form id="loginForm" class="auth-form" onsubmit="handleLogin(event)">
+        <div class="form-group">
+          <label for="loginEmail">Email</label>
+          <input type="email" id="loginEmail" placeholder="you@example.com" required autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label for="loginPassword">Password</label>
+          <div class="input-row">
+            <input type="password" id="loginPassword" placeholder="Your password" required autocomplete="current-password">
+            <button type="button" class="toggle-pw" onclick="togglePw('loginPassword')">👁</button>
+          </div>
+        </div>
+        <button type="submit" class="auth-btn" id="loginBtn">
+          <span class="btn-text">Sign In</span>
+          <span class="btn-loader hidden">⏳</span>
+        </button>
+      </form>
+
+      <!-- Signup Form -->
+      <form id="signupForm" class="auth-form hidden" onsubmit="handleSignup(event)">
+        <div class="form-group">
+          <label for="signupName">Your Name</label>
+          <input type="text" id="signupName" placeholder="John Smith" autocomplete="name">
+        </div>
+        <div class="form-group">
+          <label for="signupEmail">Email</label>
+          <input type="email" id="signupEmail" placeholder="you@example.com" required autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label for="signupPassword">Password</label>
+          <div class="input-row">
+            <input type="password" id="signupPassword" placeholder="Min 6 characters" required autocomplete="new-password">
+            <button type="button" class="toggle-pw" onclick="togglePw('signupPassword')">👁</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="signupConfirm">Confirm Password</label>
+          <input type="password" id="signupConfirm" placeholder="Repeat password" required autocomplete="new-password">
+        </div>
+        <button type="submit" class="auth-btn" id="signupBtn">
+          <span class="btn-text">Create Account</span>
+          <span class="btn-loader hidden">⏳</span>
+        </button>
+      </form>
+
+      <!-- Footer -->
+      <p class="auth-footer">
+        Your data stays on your device and syncs privately to your account.
+      </p>
+
+    </div>
+  </div>
+  <script src="auth.js"></script>
+</body>
+</html>

@@ -19,18 +19,22 @@ importScripts('storage.js');
 // Pre-warm the DB connection on startup
 GBPStorage.open().catch(e => console.error('[GBP BG] Storage init error:', e));
 
-// ── Server sync helpers ───────────────────────────────────────────────────────
+// ── Hardcoded server URL — change this to your deployed server ────────────────
+const SERVER_URL = 'https://your-server.com'; // ← SET YOUR SERVER URL HERE
 
-/** Read server config from chrome.storage.local. */
-async function getServerConfig() {
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+
+/** Get the stored JWT auth token. Returns null if not logged in. */
+async function getAuthToken() {
   return new Promise(resolve => {
-    chrome.storage.local.get(['gbpServerUrl', 'gbpServerApiKey', 'gbpLastPull'], result => {
-      resolve({
-        serverUrl: result.gbpServerUrl  || '',
-        apiKey:    result.gbpServerApiKey || '',
-        lastPull:  result.gbpLastPull   || {},   // { [businessId]: timestamp }
-      });
-    });
+    chrome.storage.local.get(['gbpAuthToken'], r => resolve(r.gbpAuthToken || null));
+  });
+}
+
+/** Save token + user info after successful login/register. */
+async function saveAuthSession(token, user) {
+  return new Promise(resolve => {
+    chrome.storage.local.set({ gbpAuthToken: token, gbpUser: user }, resolve);
   });
 }
 
@@ -55,15 +59,15 @@ async function setLastPull(businessId, timestamp) {
  * @returns {Promise<{ok:boolean, status?:string, error?:string}>}
  */
 async function syncMetricToServer(locationCode, businessName, metric) {
-  const { serverUrl, apiKey } = await getServerConfig();
-  if (!serverUrl) return { ok: false, error: 'No server URL configured' };
+  const token = await getAuthToken();
+  if (!token) return { ok: false, error: 'Not logged in' };
 
   try {
-    const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/sync`, {
+    const resp = await fetch(`${SERVER_URL}/api/sync`, {
       method:  'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key':    apiKey,
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({ locationCode, businessName, metric }),
     });
@@ -92,14 +96,17 @@ async function syncMetricToServer(locationCode, businessName, metric) {
  * @returns {Promise<{success:boolean, merged:number, error?:string}>}
  */
 async function pullFromServer(businessId) {
-  const { serverUrl, apiKey, lastPull } = await getServerConfig();
-  if (!serverUrl) return { success: false, error: 'No server URL configured' };
+  const token = await getAuthToken();
+  if (!token) return { success: false, error: 'Not logged in' };
 
+  const lastPull = await new Promise(resolve =>
+    chrome.storage.local.get(['gbpLastPull'], r => resolve(r.gbpLastPull || {}))
+  );
   const since = lastPull[businessId] || 0;
 
   try {
-    const url  = `${serverUrl.replace(/\/$/, '')}/api/business/${businessId}?since=${since}`;
-    const resp = await fetch(url, { headers: { 'X-Api-Key': apiKey } });
+    const url  = `${SERVER_URL}/api/business/${businessId}?since=${since}`;
+    const resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
 
     if (resp.status === 404) return { success: true, merged: 0 };  // new business — nothing there yet
     if (!resp.ok) {
@@ -155,17 +162,40 @@ function buildExtraFields(metric) {
 }
 
 /**
- * Test the server connection — calls /health (no auth needed).
- * Returns { ok, version?, businesses?, records?, error? }
+ * Register a new user account on the server.
  */
-async function testServerConnection(serverUrl) {
+async function authRegister(email, password, name) {
   try {
-    const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(5000) });
-    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
+    const resp = await fetch(`${SERVER_URL}/api/auth/register`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ email, password, name }),
+    });
     const data = await resp.json();
-    return { ok: true, ...data };
+    if (!resp.ok) return { success: false, error: data.error || `HTTP ${resp.status}` };
+    await saveAuthSession(data.token, data.user);
+    return { success: true, user: data.user };
   } catch (err) {
-    return { ok: false, error: err.message };
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Log in with email + password.
+ */
+async function authLogin(email, password) {
+  try {
+    const resp = await fetch(`${SERVER_URL}/api/auth/login`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ email, password }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) return { success: false, error: data.error || `HTTP ${resp.status}` };
+    await saveAuthSession(data.token, data.user);
+    return { success: true, user: data.user };
+  } catch (err) {
+    return { success: false, error: err.message };
   }
 }
 
@@ -263,25 +293,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // ── Test server connection ─────────────────────────────────────────────────
-  if (msg.action === 'testServerConnection') {
-    testServerConnection(msg.serverUrl)
+  // ── Auth: register new account ────────────────────────────────────────────
+  if (msg.action === 'authRegister') {
+    authRegister(msg.email, msg.password, msg.name || '')
       .then(result => sendResponse(result))
-      .catch(e => sendResponse({ ok: false, error: e.message }));
+      .catch(e => sendResponse({ success: false, error: e.message }));
     return true;
   }
 
-  // ── Get / save server config ───────────────────────────────────────────────
-  if (msg.action === 'getServerConfig') {
-    getServerConfig().then(config => sendResponse({ success: true, config }));
+  // ── Auth: log in ──────────────────────────────────────────────────────────
+  if (msg.action === 'authLogin') {
+    authLogin(msg.email, msg.password)
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, error: e.message }));
     return true;
   }
 
-  if (msg.action === 'saveServerConfig') {
-    chrome.storage.local.set({
-      gbpServerUrl:    msg.serverUrl    || '',
-      gbpServerApiKey: msg.apiKey       || '',
-    }, () => sendResponse({ success: true }));
+  // ── Auth: get current user ────────────────────────────────────────────────
+  if (msg.action === 'getAuthUser') {
+    chrome.storage.local.get(['gbpUser'], r => sendResponse({ user: r.gbpUser || null }));
     return true;
   }
 

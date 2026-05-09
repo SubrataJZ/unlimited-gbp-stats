@@ -32,6 +32,13 @@
       "all_frames": true
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["auth.html", "auth.js", "auth.css", "dashboard.html", "dashboard.js", "dashboard.css"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
