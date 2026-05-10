@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { AuthenticationError, AuthorizationError } from '../utils/errors';
 import { verifyAccessToken } from '../utils/tokens';
 import { validateApiKey } from '../utils/apiKeys';
+import { recordFailedAuth, checkAccountLockout, getThreatLevel } from '../utils/security';
 import { prisma } from '../index';
 import logger from '../utils/logger';
 
@@ -84,11 +85,11 @@ export const validateExtensionKey = async (
  * Verifies the 15-minute access token issued after login.
  * Returns 401 with hint to refresh when the token is expired.
  */
-export const validateJWT = (
+export const validateJWT = async (
   req: Request,
   res: Response,
   next: NextFunction
-): void => {
+): Promise<void> => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -112,5 +113,72 @@ export const validateJWT = (
     } else {
       next(new AuthenticationError('Invalid or malformed token'));
     }
+  }
+};
+
+/**
+ * Middleware: Security-enhanced JWT validation with brute force protection
+ *
+ * Validates JWT token and checks for:
+ * - Account lockouts (after N failed attempts)
+ * - Suspicious activity patterns
+ * - Rapid attack detection
+ */
+export const validateJWTWithSecurity = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      throw new AuthenticationError('Missing authorization token');
+    }
+
+    const token = authHeader.substring(7);
+    let payload: any;
+
+    try {
+      payload = verifyAccessToken(token);
+    } catch (error: any) {
+      if (error?.name === 'TokenExpiredError') {
+        throw new AuthenticationError('Access token expired. Use /api/auth/refresh to get a new one.');
+      }
+      throw new AuthenticationError('Invalid or malformed token');
+    }
+
+    if (payload.type !== 'access') {
+      throw new AuthenticationError('Invalid token type');
+    }
+
+    const userId = payload.userId;
+
+    // Check if account is locked due to failed attempts
+    const lockout = await checkAccountLockout(userId);
+    if (lockout.locked) {
+      const unlocksIn = lockout.unlocksAt ? Math.ceil((lockout.unlocksAt.getTime() - Date.now()) / 1000) : 0;
+      throw new AuthenticationError(
+        `Account temporarily locked due to multiple failed login attempts. Try again in ${Math.ceil(unlocksIn / 60)} minutes.`
+      );
+    }
+
+    // Check threat level
+    const ipAddress = req.ip || 'unknown';
+    const threatLevel = await getThreatLevel(userId, ipAddress);
+
+    // Log high-threat authentication
+    if (threatLevel === 'high') {
+      logger.warn('High-threat authentication attempt', {
+        userId,
+        ipAddress,
+        userAgent: req.get('user-agent'),
+      });
+    }
+
+    req.user = { id: userId, email: payload.email };
+    next();
+  } catch (error) {
+    next(error);
   }
 };

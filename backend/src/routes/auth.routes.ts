@@ -4,6 +4,7 @@ import { asyncHandler } from '../middlewares/error.middleware';
 import { validateJWT } from '../middlewares/auth.middleware';
 import { issueTokenPair, rotateRefreshToken, revokeAllRefreshTokens } from '../utils/tokens';
 import { auditEvents } from '../middlewares/audit.middleware';
+import { recordFailedAuth, clearFailedAttempts, checkAccountLockout } from '../utils/security';
 import { prisma } from '../index';
 import { AuthenticationError } from '../utils/errors';
 import logger from '../utils/logger';
@@ -61,16 +62,35 @@ router.get(
     }
 
     if (!code || typeof code !== 'string') {
+      await recordFailedAuth({
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        reason: 'missing_auth_code',
+      });
       return res.redirect(`${FRONTEND_URL}?error=missing_code`);
     }
 
-    const user = await googleService.handleOAuthCallback(code);
-    if (!user) throw new Error('OAuth callback returned no user');
+    let user;
+    try {
+      user = await googleService.handleOAuthCallback(code);
+      if (!user) throw new Error('OAuth callback returned no user');
+    } catch (error) {
+      await recordFailedAuth({
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent'),
+        reason: 'oauth_callback_failed',
+      });
+      logger.error('OAuth callback failed:', error);
+      return res.redirect(`${FRONTEND_URL}?error=oauth_failed`);
+    }
 
     const { accessToken, refreshToken, expiresIn } = await issueTokenPair(user.id, user.email);
 
     // httpOnly cookie carries the refresh token — JS cannot read it
     res.cookie('gbp_refresh', refreshToken, REFRESH_COOKIE_OPTIONS);
+
+    // Clear failed authentication attempts for this user (successful login)
+    await clearFailedAttempts(user.id);
 
     // Log login event
     await auditEvents.login(req, user.id, 'oauth');
