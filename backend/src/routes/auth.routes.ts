@@ -3,6 +3,7 @@ import googleService from '../services/google.service';
 import { asyncHandler } from '../middlewares/error.middleware';
 import { validateJWT } from '../middlewares/auth.middleware';
 import { issueTokenPair, rotateRefreshToken, revokeAllRefreshTokens } from '../utils/tokens';
+import { auditEvents } from '../middlewares/audit.middleware';
 import { prisma } from '../index';
 import { AuthenticationError } from '../utils/errors';
 import logger from '../utils/logger';
@@ -71,6 +72,9 @@ router.get(
     // httpOnly cookie carries the refresh token — JS cannot read it
     res.cookie('gbp_refresh', refreshToken, REFRESH_COOKIE_OPTIONS);
 
+    // Log login event
+    await auditEvents.login(req, user.id, 'oauth');
+
     logger.info(`User ${user.id} logged in via Google OAuth`);
 
     // Pass access token + metadata in URL for the extension/dashboard to consume
@@ -110,6 +114,17 @@ router.post(
     // Rotate the cookie
     res.cookie('gbp_refresh', newRefreshToken, REFRESH_COOKIE_OPTIONS);
 
+    // Log token refresh event (extract userId from JWT before rotation)
+    // This is called before validateJWT, so we need to extract from the token itself
+    try {
+      const decoded = require('jsonwebtoken').decode(rawToken);
+      if (decoded?.userId) {
+        await auditEvents.tokenRefresh(req, decoded.userId);
+      }
+    } catch (e) {
+      // Silently skip audit if token decode fails
+    }
+
     res.json({
       accessToken,
       expiresIn,
@@ -128,9 +143,14 @@ router.post(
   '/logout',
   validateJWT,
   asyncHandler(async (req: Request, res: Response) => {
-    await revokeAllRefreshTokens(req.user!.id);
+    const userId = req.user!.id;
+    await revokeAllRefreshTokens(userId);
     res.clearCookie('gbp_refresh', { path: '/api/auth' });
-    logger.info(`User ${req.user!.id} logged out`);
+
+    // Log logout event
+    await auditEvents.logout(req, userId);
+
+    logger.info(`User ${userId} logged out`);
     res.json({ message: 'Logged out successfully' });
   })
 );

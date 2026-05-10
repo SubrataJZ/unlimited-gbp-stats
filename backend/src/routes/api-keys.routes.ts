@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../middlewares/error.middleware';
 import { validateJWT } from '../middlewares/auth.middleware';
 import { createApiKey } from '../utils/apiKeys';
+import { auditEvents } from '../middlewares/audit.middleware';
 import { prisma } from '../index';
 import { AuthenticationError, ValidationError } from '../utils/errors';
 import logger from '../utils/logger';
@@ -42,6 +43,16 @@ router.post(
 
     // Generate new key — returned once, never stored plain-text
     const rawKey = await createApiKey(userId, keyName);
+
+    // Get the just-created key to get its ID for audit logging
+    const createdKey = await prisma.apiKey.findUnique({
+      where: { userId_name: { userId, name: keyName } },
+    });
+
+    // Log API key creation
+    if (createdKey) {
+      await auditEvents.apiKeyCreated(req, userId, createdKey.id, keyName);
+    }
 
     logger.info(`Provisioned new extension key for user ${userId}, ext ${extensionId}`);
 
@@ -106,9 +117,20 @@ router.post(
       throw new ValidationError('expiresInDays must be a positive integer');
     }
 
-    const rawKey = await createApiKey(req.user!.id, name.trim(), expiresInDays);
+    const userId = req.user!.id;
+    const rawKey = await createApiKey(userId, name.trim(), expiresInDays);
 
-    logger.info(`User ${req.user!.id} created API key "${name.trim()}"`);
+    // Get the just-created key to get its ID for audit logging
+    const createdKey = await prisma.apiKey.findUnique({
+      where: { userId_name: { userId, name: name.trim() } },
+    });
+
+    // Log API key creation
+    if (createdKey) {
+      await auditEvents.apiKeyCreated(req, userId, createdKey.id, name.trim());
+    }
+
+    logger.info(`User ${userId} created API key "${name.trim()}"`);
 
     res.status(201).json({
       apiKey: rawKey,
@@ -135,12 +157,16 @@ router.delete(
       throw new AuthenticationError('API key not found');
     }
 
+    const userId = req.user!.id;
     await prisma.apiKey.update({
       where: { id },
       data: { isActive: false },
     });
 
-    logger.info(`User ${req.user!.id} revoked API key ${id}`);
+    // Log API key revocation
+    await auditEvents.apiKeyRevoked(req, userId, id);
+
+    logger.info(`User ${userId} revoked API key ${id}`);
 
     res.json({ message: 'API key revoked successfully' });
   })
