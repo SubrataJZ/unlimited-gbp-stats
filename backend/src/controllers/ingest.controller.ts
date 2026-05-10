@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { asyncHandler } from '../middlewares/error.middleware';
+import { auditEvents } from '../middlewares/audit.middleware';
 import { ValidationError, InternalServerError } from '../utils/errors';
 import logger from '../utils/logger';
 
@@ -180,6 +181,11 @@ export const ingestMetrics = asyncHandler(
     // HTTP 207 Multi-Status: some operations succeeded, some failed
     // HTTP 200 OK: all operations succeeded
     const statusCode = results.failed > 0 ? 207 : 200;
+
+    // Log ingestion event (use test user ID for audit trail)
+    const success = results.failed === 0;
+    const errorMsg = results.failed > 0 ? `${results.failed} metrics failed to ingest` : undefined;
+    await auditEvents.ingestMetrics(req, testUserId, results.successful, success, errorMsg);
 
     res.status(statusCode).json(response);
 

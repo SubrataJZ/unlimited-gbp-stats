@@ -1,10 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthenticationError, AuthorizationError } from '../utils/errors';
+import { verifyAccessToken } from '../utils/tokens';
+import { validateApiKey } from '../utils/apiKeys';
+import { prisma } from '../index';
 import logger from '../utils/logger';
 
-/**
- * Interface to extend Express Request object with custom properties
- */
 declare global {
   namespace Express {
     interface Request {
@@ -19,89 +19,70 @@ declare global {
 }
 
 /**
- * Middleware: Validate Extension Ingestion API Key
+ * Middleware: Validate Extension API Key (database-backed, bcrypt-hashed)
  *
- * Purpose:
- * - Protects the /api/ingest endpoint from unauthorized access
- * - Validates the static EXTENSION_INGESTION_KEY passed in Authorization header
- * - Also validates the Chrome Extension ID (optional but recommended)
- *
- * Header Format:
- * Authorization: Bearer <EXTENSION_INGESTION_KEY>
- * X-Extension-ID: <Chrome Extension ID> (optional)
- *
- * @param req Express Request object
- * @param res Express Response object
- * @param next Express NextFunction
- * @throws AuthenticationError if API key is missing or invalid
+ * Accepts two formats:
+ *   1. Dynamic per-user key:  "zx_<64-hex-chars>"  — looked up via DB
+ *   2. Legacy static key:     EXTENSION_INGESTION_KEY env var  — fallback during migration
  */
-export const validateExtensionKey = (
+export const validateExtensionKey = async (
   req: Request,
   res: Response,
   next: NextFunction
-): void => {
+): Promise<void> => {
   try {
-    // Extract Authorization header
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      logger.warn(`Invalid auth header format from IP: ${req.ip}`);
-      throw new AuthenticationError(
-        'Missing or invalid Authorization header. Expected: Bearer <API_KEY>'
-      );
+      logger.warn(`Missing auth header from IP: ${req.ip}`);
+      throw new AuthenticationError('Missing or invalid Authorization header. Expected: Bearer <API_KEY>');
     }
 
-    // Extract the API key from "Bearer <key>"
-    const apiKey = authHeader.substring(7);
+    const submittedKey = authHeader.substring(7);
 
-    // Validate against the expected static key
-    const expectedKey = process.env.EXTENSION_INGESTION_KEY;
+    // Path 1: dynamic per-user key (starts with "zx_")
+    if (submittedKey.startsWith('zx_')) {
+      const userId = await validateApiKey(submittedKey);
 
-    if (!expectedKey) {
-      logger.error('EXTENSION_INGESTION_KEY is not configured in environment');
-      throw new AuthenticationError('Server configuration error');
+      if (!userId) {
+        logger.warn(`Invalid dynamic API key from IP: ${req.ip}`);
+        throw new AuthenticationError('Invalid API key');
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, email: true },
+      });
+
+      if (!user) throw new AuthenticationError('User not found for this API key');
+
+      req.user = user;
+      req.apiKey = submittedKey.substring(0, 10) + '...'; // Never log full key
+      req.extensionId = (req.headers['x-extension-id'] as string) || 'unknown';
+      logger.debug(`Dynamic key authenticated for user ${userId}`);
+      return next();
     }
 
-    if (apiKey !== expectedKey) {
-      logger.warn(`Invalid API key attempt from IP: ${req.ip}`);
-      throw new AuthenticationError('Invalid API key');
+    // Path 2: legacy static key — fallback during transition period
+    const staticKey = process.env.EXTENSION_INGESTION_KEY;
+    if (staticKey && submittedKey === staticKey) {
+      req.extensionId = (req.headers['x-extension-id'] as string) || 'legacy';
+      logger.debug('Legacy static key authenticated');
+      return next();
     }
 
-    // Optional: Validate Chrome Extension ID
-    const extensionId = req.headers['x-extension-id'] as string;
-    const expectedExtensionId = process.env.EXTENSION_ID;
-
-    if (extensionId && expectedExtensionId && extensionId !== expectedExtensionId) {
-      logger.warn(`Invalid extension ID: ${extensionId} from IP: ${req.ip}`);
-      throw new AuthorizationError('Invalid Chrome Extension ID');
-    }
-
-    // Store validated credentials in request object
-    req.apiKey = apiKey;
-    req.extensionId = extensionId || 'unknown';
-
-    logger.debug(`Valid extension key authenticated from ${req.extensionId}`);
-
-    next();
+    logger.warn(`Invalid API key attempt from IP: ${req.ip}`);
+    throw new AuthenticationError('Invalid API key');
   } catch (error) {
     next(error);
   }
 };
 
 /**
- * Middleware: Validate JWT Token (for authenticated API endpoints)
+ * Middleware: Validate JWT access token
  *
- * Purpose:
- * - Validates JWT tokens for user-authenticated endpoints
- * - Extracts and stores user ID in request object
- *
- * Header Format:
- * Authorization: Bearer <JWT_TOKEN>
- *
- * @param req Express Request object
- * @param res Express Response object
- * @param next Express NextFunction
- * @throws AuthenticationError if token is missing or invalid
+ * Verifies the 15-minute access token issued after login.
+ * Returns 401 with hint to refresh when the token is expired.
  */
 export const validateJWT = (
   req: Request,
@@ -117,15 +98,19 @@ export const validateJWT = (
 
     const token = authHeader.substring(7);
 
-    // TODO: Implement JWT verification here
-    // For now, this is a placeholder
-    // You'll need to use jsonwebtoken library:
-    // const decoded = jwt.verify(token, process.env.JWT_SECRET!);
-    // req.user = decoded as { id: string; email: string };
+    const payload = verifyAccessToken(token);
 
-    logger.debug('JWT token validated');
+    if (payload.type !== 'access') {
+      throw new AuthenticationError('Invalid token type');
+    }
+
+    req.user = { id: payload.userId, email: payload.email };
     next();
-  } catch (error) {
-    next(error);
+  } catch (error: any) {
+    if (error?.name === 'TokenExpiredError') {
+      next(new AuthenticationError('Access token expired. Use /api/auth/refresh to get a new one.'));
+    } else {
+      next(new AuthenticationError('Invalid or malformed token'));
+    }
   }
 };

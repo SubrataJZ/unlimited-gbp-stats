@@ -1,19 +1,29 @@
 import { Router, Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
 import googleService from '../services/google.service';
 import { asyncHandler } from '../middlewares/error.middleware';
+import { validateJWT } from '../middlewares/auth.middleware';
+import { issueTokenPair, rotateRefreshToken, revokeAllRefreshTokens } from '../utils/tokens';
+import { auditEvents } from '../middlewares/audit.middleware';
 import { prisma } from '../index';
+import { AuthenticationError } from '../utils/errors';
 import logger from '../utils/logger';
 
 const router = Router();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://zixify.zixai.in';
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+
+// Cookie options for the httpOnly refresh token
+const REFRESH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'strict' as const,
+  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days in ms
+  path: '/api/auth',
+};
 
 /**
  * GET /api/auth/google
- * Purpose: Initiate Google OAuth flow
- * Redirects to Google's consent screen
+ * Initiate Google OAuth — redirects to Google's consent screen.
  */
 router.get('/google', (req: Request, res: Response) => {
   try {
@@ -26,9 +36,7 @@ router.get('/google', (req: Request, res: Response) => {
       prompt: 'consent',
     });
 
-    const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-    logger.debug(`Redirecting to Google OAuth: ${url}`);
-    res.redirect(url);
+    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
   } catch (error) {
     logger.error('Failed to redirect to Google OAuth:', error);
     res.status(500).json({ error: 'Failed to initialize Google OAuth' });
@@ -37,79 +45,127 @@ router.get('/google', (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/google/callback
- * Purpose: Handle Google OAuth callback
- * Google redirects here with authorization code
- * Issues a JWT token and redirects to frontend dashboard
+ *
+ * Google redirects here after user grants consent.
+ * Issues a 15-min access token + 30-day refresh token.
+ * Refresh token stored in httpOnly cookie; access token in URL fragment for the extension.
  */
 router.get(
   '/google/callback',
   asyncHandler(async (req: Request, res: Response) => {
     const { code, error } = req.query;
 
-    // Handle OAuth errors
     if (error) {
       logger.warn(`Google OAuth error: ${error}`);
       return res.redirect(`${FRONTEND_URL}?error=${error}`);
     }
 
     if (!code || typeof code !== 'string') {
-      logger.warn('Missing authorization code in callback');
       return res.redirect(`${FRONTEND_URL}?error=missing_code`);
     }
 
-    try {
-      // Process OAuth callback and auto-link locations
-      const user = await googleService.handleOAuthCallback(code);
+    const user = await googleService.handleOAuthCallback(code);
+    if (!user) throw new Error('OAuth callback returned no user');
 
-      // Issue JWT token for subsequent API requests
-      const token = jwt.sign(
-        { userId: user?.id, email: user?.email },
-        JWT_SECRET,
-        { expiresIn: '7d' }
-      );
+    const { accessToken, refreshToken, expiresIn } = await issueTokenPair(user.id, user.email);
 
-      logger.info(`User ${user?.id} logged in, ${user?.locations?.length || 0} locations linked`);
+    // httpOnly cookie carries the refresh token — JS cannot read it
+    res.cookie('gbp_refresh', refreshToken, REFRESH_COOKIE_OPTIONS);
 
-      // Redirect to frontend with JWT token and user info
-      res.redirect(
-        `${FRONTEND_URL}?token=${token}&userId=${user?.id}&locations=${user?.locations?.length || 0}&name=${encodeURIComponent(user?.name || '')}`
-      );
-    } catch (error) {
-      logger.error('OAuth callback processing failed:', error);
-      res.redirect(`${FRONTEND_URL}?error=auth_failed`);
+    // Log login event
+    await auditEvents.login(req, user.id, 'oauth');
+
+    logger.info(`User ${user.id} logged in via Google OAuth`);
+
+    // Pass access token + metadata in URL for the extension/dashboard to consume
+    const params = new URLSearchParams({
+      token: accessToken,
+      expiresIn: String(expiresIn),
+      userId: user.id,
+      name: user.name || '',
+      locations: String(user.locations?.length || 0),
+    });
+
+    res.redirect(`${FRONTEND_URL}?${params.toString()}`);
+  })
+);
+
+/**
+ * POST /api/auth/refresh
+ *
+ * Exchange a valid refresh token for a new access + refresh token pair.
+ * Implements rotation: the old refresh token is invalidated immediately.
+ *
+ * Accepts the refresh token either from:
+ *   1. httpOnly cookie  (browser flow)
+ *   2. Request body     (extension / mobile flow)
+ */
+router.post(
+  '/refresh',
+  asyncHandler(async (req: Request, res: Response) => {
+    const rawToken = req.cookies?.gbp_refresh || req.body?.refreshToken;
+
+    if (!rawToken) {
+      throw new AuthenticationError('No refresh token provided');
     }
+
+    const { accessToken, refreshToken: newRefreshToken, expiresIn } = await rotateRefreshToken(rawToken);
+
+    // Rotate the cookie
+    res.cookie('gbp_refresh', newRefreshToken, REFRESH_COOKIE_OPTIONS);
+
+    // Log token refresh event (extract userId from JWT before rotation)
+    // This is called before validateJWT, so we need to extract from the token itself
+    try {
+      const decoded = require('jsonwebtoken').decode(rawToken);
+      if (decoded?.userId) {
+        await auditEvents.tokenRefresh(req, decoded.userId);
+      }
+    } catch (e) {
+      // Silently skip audit if token decode fails
+    }
+
+    res.json({
+      accessToken,
+      expiresIn,
+      // Also return new refresh token for extension/mobile (they can't read cookies)
+      refreshToken: newRefreshToken,
+    });
   })
 );
 
 /**
  * POST /api/auth/logout
- * Purpose: Logout user (client should discard JWT)
+ *
+ * Revoke all refresh tokens for the user and clear the cookie.
  */
-router.post('/logout', (req: Request, res: Response) => {
-  // JWT is stateless — client discards token
-  // Optionally: clear refresh token from database
-  res.json({ message: 'Logged out successfully. Please discard your token.' });
-});
+router.post(
+  '/logout',
+  validateJWT,
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+    await revokeAllRefreshTokens(userId);
+    res.clearCookie('gbp_refresh', { path: '/api/auth' });
+
+    // Log logout event
+    await auditEvents.logout(req, userId);
+
+    logger.info(`User ${userId} logged out`);
+    res.json({ message: 'Logged out successfully' });
+  })
+);
 
 /**
  * GET /api/auth/me
- * Purpose: Get current authenticated user info
- * Auth: Bearer JWT token required
+ *
+ * Return the current authenticated user's profile and linked locations.
  */
-router.get('/me', asyncHandler(async (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
-  }
-
-  const token = authHeader.split(' ')[1];
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; email: string };
-
+router.get(
+  '/me',
+  validateJWT,
+  asyncHandler(async (req: Request, res: Response) => {
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+      where: { id: req.user!.id },
       select: {
         id: true,
         email: true,
@@ -129,13 +185,11 @@ router.get('/me', asyncHandler(async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      throw new AuthenticationError('User not found');
     }
 
     res.json({ user });
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
-}));
+  })
+);
 
 export default router;

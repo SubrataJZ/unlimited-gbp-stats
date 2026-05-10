@@ -13,18 +13,13 @@ const router = Router();
  */
 router.post(
   '/',
-  validateExtensionKey,
+  asyncHandler(validateExtensionKey),
   asyncHandler(ingestController.ingestMetrics)
 );
 
-/**
- * GET /api/ingest/status
- * Purpose: Get ingestion statistics and status
- * Auth: Static extension API key
- */
 router.get(
   '/status',
-  validateExtensionKey,
+  asyncHandler(validateExtensionKey),
   asyncHandler(ingestController.getIngestionStatus)
 );
 
