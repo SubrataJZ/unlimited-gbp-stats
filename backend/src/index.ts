@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import logger from './utils/logger';
@@ -10,6 +11,7 @@ import logger from './utils/logger';
 // Import routes and middleware
 import ingestRoutes from './routes/ingest.routes';
 import authRoutes from './routes/auth.routes';
+import apiKeyRoutes from './routes/api-keys.routes';
 import locationsRoutes from './routes/locations.routes';
 import { errorHandler } from './middlewares/error.middleware';
 
@@ -42,7 +44,7 @@ app.use(helmet());
  */
 app.use(
   cors({
-    origin: (origin, callback) => {
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
       // In development, allow localhost
       // In production, restrict to specific domains
       const allowedOrigins = [
@@ -69,6 +71,7 @@ app.use(
  */
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+app.use(cookieParser());
 
 /**
  * Logging Middleware
@@ -130,6 +133,7 @@ app.get('/health', (req: Request, res: Response) => {
 // API Routes
 app.use('/api/ingest', ingestLimiter, ingestRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/auth', apiKeyRoutes);
 app.use('/api/locations', locationsRoutes);
 
 /**
