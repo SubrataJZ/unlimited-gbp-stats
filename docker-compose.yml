@@ -77,6 +77,30 @@ services:
     stdin_open: true
     tty: true
 
+  # GBP Stats Extension Sync Server (SQLite, port 3005)
+  gbp-server:
+    build:
+      context: ./unlimited-gbp-stats/server
+      dockerfile: Dockerfile
+    container_name: gbp_sync_server
+    environment:
+      PORT: 3005
+      JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-env}
+      DB_PATH: /data/gbp_data.sqlite
+      VERBOSE: ${VERBOSE:-false}
+    ports:
+      - "3005:3005"
+    volumes:
+      - gbp_data:/data
+    networks:
+      - gbp_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # pgAdmin for database management via web UI
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -99,6 +123,8 @@ volumes:
   postgres_data:
     driver: local
   pgadmin_data:
+    driver: local
+  gbp_data:
     driver: local
 
 networks:

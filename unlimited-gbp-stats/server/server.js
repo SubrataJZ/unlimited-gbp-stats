@@ -38,8 +38,9 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     email      TEXT    NOT NULL UNIQUE,
-    password   TEXT    NOT NULL,
+    password   TEXT    NOT NULL DEFAULT '',
     name       TEXT    NOT NULL DEFAULT '',
+    google_id  TEXT    UNIQUE,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
     last_login INTEGER NOT NULL DEFAULT 0
   );
@@ -76,13 +77,21 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_metrics_synced    ON metrics(synced_at);
 `);
 
+// ── Migrate existing databases (add google_id if missing) ────────────────────
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN google_id TEXT`);
+} catch (_) { /* column already exists — ignore */ }
+
 // ── Prepared statements ───────────────────────────────────────────────────────
 const stmts = {
   // Users
-  createUser:    db.prepare(`INSERT INTO users (email, password, name) VALUES (?, ?, ?)`),
-  getUserByEmail: db.prepare(`SELECT * FROM users WHERE email = ?`),
-  getUserById:   db.prepare(`SELECT * FROM users WHERE id = ?`),
-  updateLastLogin: db.prepare(`UPDATE users SET last_login = ? WHERE id = ?`),
+  createUser:       db.prepare(`INSERT INTO users (email, password, name) VALUES (?, ?, ?)`),
+  createGoogleUser: db.prepare(`INSERT INTO users (email, password, name, google_id) VALUES (?, '', ?, ?)`),
+  getUserByEmail:   db.prepare(`SELECT * FROM users WHERE email = ?`),
+  getUserByGoogleId: db.prepare(`SELECT * FROM users WHERE google_id = ?`),
+  getUserById:      db.prepare(`SELECT * FROM users WHERE id = ?`),
+  updateLastLogin:  db.prepare(`UPDATE users SET last_login = ? WHERE id = ?`),
+  linkGoogleId:     db.prepare(`UPDATE users SET google_id = ? WHERE id = ?`),
 
   // Businesses
   upsertBusiness: db.prepare(`
@@ -271,6 +280,51 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 /**
+ * POST /api/auth/google
+ * Body: { accessToken }  — Google OAuth2 access token from the extension
+ * Verifies token with Google, then finds or creates the user, returns JWT.
+ */
+app.post('/api/auth/google', async (req, res) => {
+  const { accessToken } = req.body || {};
+  if (!accessToken) return res.status(400).json({ error: 'Access token required.' });
+
+  // Verify token and fetch profile from Google
+  let profile;
+  try {
+    const gRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!gRes.ok) return res.status(401).json({ error: 'Invalid or expired Google token.' });
+    profile = await gRes.json();
+  } catch (err) {
+    return res.status(502).json({ error: 'Could not verify token with Google.' });
+  }
+
+  const email    = profile.email?.toLowerCase();
+  const googleId = profile.sub;
+  const name     = profile.name || profile.given_name || '';
+
+  if (!email || !googleId) return res.status(400).json({ error: 'Google did not return an email.' });
+
+  // Find existing user by google_id first, then by email
+  let user = stmts.getUserByGoogleId.get(googleId) || stmts.getUserByEmail.get(email);
+
+  if (!user) {
+    const result = stmts.createGoogleUser.run(email, name, googleId);
+    user = { id: result.lastInsertRowid, email, name, google_id: googleId };
+    console.log(`[GBP] New Google user: ${email}`);
+  } else if (!user.google_id) {
+    stmts.linkGoogleId.run(googleId, user.id);
+    console.log(`[GBP] Linked Google account to existing user: ${email}`);
+  }
+
+  stmts.updateLastLogin.run(Date.now(), user.id);
+  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '90d' });
+
+  res.json({ success: true, token, user: { id: user.id, email: user.email, name: user.name } });
+});
+
+/**
  * GET /api/auth/me  — verify token and return user info
  */
 app.get('/api/auth/me', requireAuth, (req, res) => {
@@ -356,7 +410,7 @@ app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n✅  GBP Stats Server v2 running on http://localhost:${PORT}`);
-  console.log(`    Auth:     POST /api/auth/register  |  POST /api/auth/login`);
+  console.log(`    Auth:     POST /api/auth/register  |  POST /api/auth/login  |  POST /api/auth/google`);
   console.log(`    Health:   GET  /health`);
   console.log(`    JWT:      ${JWT_SECRET === 'change-this-secret-in-env' ? '⚠  DEFAULT — set JWT_SECRET in .env!' : '✓ set'}\n`);
 });

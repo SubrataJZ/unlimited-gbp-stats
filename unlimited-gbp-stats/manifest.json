@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "activeTab",
-    "tabs"
+    "tabs",
+    "identity"
   ],
   "host_permissions": [
     "https://business.google.com/*",

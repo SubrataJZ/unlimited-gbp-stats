@@ -22,6 +22,11 @@ GBPStorage.open().catch(e => console.error('[GBP BG] Storage init error:', e));
 // ── Hardcoded server URL — change this to your deployed server ────────────────
 const SERVER_URL = 'http://gbp.zixify.zixai.in:3005'; // GBP Stats Server (Hetzner VPS)
 
+// ── Google OAuth client ID ────────────────────────────────────────────────────
+// Create one at https://console.cloud.google.com → APIs & Services → Credentials
+// Type: Web application, Redirect URI: https://<extensionId>.chromiumapp.org/
+const GOOGLE_CLIENT_ID = '512083455568-goi2ljiuii20ipoo1g5sr4nqgj81sr0h.apps.googleusercontent.com';
+
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
 /** Get the stored JWT auth token. Returns null if not logged in. */
@@ -162,6 +167,50 @@ function buildExtraFields(metric) {
 }
 
 /**
+ * Sign in / sign up with Google via OAuth2 popup, then exchange the access
+ * token with our server for a JWT.
+ */
+async function authGoogleLogin() {
+  const redirectUri = `https://${chrome.runtime.id}.chromiumapp.org/`;
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id',     GOOGLE_CLIENT_ID);
+  authUrl.searchParams.set('response_type', 'token');
+  authUrl.searchParams.set('redirect_uri',  redirectUri);
+  authUrl.searchParams.set('scope',         'openid email profile');
+
+  return new Promise(resolve => {
+    chrome.identity.launchWebAuthFlow(
+      { url: authUrl.toString(), interactive: true },
+      async responseUrl => {
+        if (chrome.runtime.lastError || !responseUrl) {
+          resolve({ success: false, error: chrome.runtime.lastError?.message || 'Cancelled' });
+          return;
+        }
+        const fragment   = new URL(responseUrl).hash.slice(1);
+        const accessToken = new URLSearchParams(fragment).get('access_token');
+        if (!accessToken) {
+          resolve({ success: false, error: 'No access token in response' });
+          return;
+        }
+        try {
+          const resp = await fetch(`${SERVER_URL}/api/auth/google`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ accessToken }),
+          });
+          const data = await resp.json();
+          if (!resp.ok) { resolve({ success: false, error: data.error || `HTTP ${resp.status}` }); return; }
+          await saveAuthSession(data.token, data.user);
+          resolve({ success: true, user: data.user });
+        } catch (err) {
+          resolve({ success: false, error: err.message });
+        }
+      }
+    );
+  });
+}
+
+/**
  * Register a new user account on the server.
  */
 async function authRegister(email, password, name) {
@@ -288,6 +337,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'pullFromServer') {
     GBPStorage.open()
       .then(() => pullFromServer(msg.businessId))
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  // ── Auth: Google sign-in / sign-up ───────────────────────────────────────
+  if (msg.action === 'authGoogleLogin') {
+    authGoogleLogin()
       .then(result => sendResponse(result))
       .catch(e => sendResponse({ success: false, error: e.message }));
     return true;
