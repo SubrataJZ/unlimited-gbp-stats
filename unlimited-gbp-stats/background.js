@@ -25,7 +25,7 @@ const SERVER_URL = 'http://gbp.zixify.zixai.in:3005'; // GBP Stats Server (Hetzn
 // ── Google OAuth client ID ────────────────────────────────────────────────────
 // Create one at https://console.cloud.google.com → APIs & Services → Credentials
 // Type: Web application, Redirect URI: https://<extensionId>.chromiumapp.org/
-const GOOGLE_CLIENT_ID = '512083455568-goi2ljiuii20ipoo1g5sr4nqgj81sr0h.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID = '512083455568-4o7052vjg67pl21vojekgrs0qcta4a1n.apps.googleusercontent.com';
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
@@ -167,46 +167,30 @@ function buildExtraFields(metric) {
 }
 
 /**
- * Sign in / sign up with Google via OAuth2 popup, then exchange the access
- * token with our server for a JWT.
+ * Sign in with Google using chrome.identity.getAuthToken (no redirect URI needed).
+ * The manifest oauth2.client_id must match the Chrome App OAuth client.
  */
 async function authGoogleLogin() {
-  const redirectUri = `https://${chrome.runtime.id}.chromiumapp.org/`;
-  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-  authUrl.searchParams.set('client_id',     GOOGLE_CLIENT_ID);
-  authUrl.searchParams.set('response_type', 'token');
-  authUrl.searchParams.set('redirect_uri',  redirectUri);
-  authUrl.searchParams.set('scope',         'openid email profile');
-
   return new Promise(resolve => {
-    chrome.identity.launchWebAuthFlow(
-      { url: authUrl.toString(), interactive: true },
-      async responseUrl => {
-        if (chrome.runtime.lastError || !responseUrl) {
-          resolve({ success: false, error: chrome.runtime.lastError?.message || 'Cancelled' });
-          return;
-        }
-        const fragment   = new URL(responseUrl).hash.slice(1);
-        const accessToken = new URLSearchParams(fragment).get('access_token');
-        if (!accessToken) {
-          resolve({ success: false, error: 'No access token in response' });
-          return;
-        }
-        try {
-          const resp = await fetch(`${SERVER_URL}/api/auth/google`, {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ accessToken }),
-          });
-          const data = await resp.json();
-          if (!resp.ok) { resolve({ success: false, error: data.error || `HTTP ${resp.status}` }); return; }
-          await saveAuthSession(data.token, data.user);
-          resolve({ success: true, user: data.user });
-        } catch (err) {
-          resolve({ success: false, error: err.message });
-        }
+    chrome.identity.getAuthToken({ interactive: true }, async accessToken => {
+      if (chrome.runtime.lastError || !accessToken) {
+        resolve({ success: false, error: chrome.runtime.lastError?.message || 'Cancelled' });
+        return;
       }
-    );
+      try {
+        const resp = await fetch(`${SERVER_URL}/api/auth/google`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ accessToken }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) { resolve({ success: false, error: data.error || `HTTP ${resp.status}` }); return; }
+        await saveAuthSession(data.token, data.user);
+        resolve({ success: true, user: data.user });
+      } catch (err) {
+        resolve({ success: false, error: err.message });
+      }
+    });
   });
 }
 
@@ -253,8 +237,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ── Open dashboard ────────────────────────────────────────────────────────
   if (msg.action === 'openDashboard') {
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  // ── Cloud sync: server config (hardcoded — no user setup needed) ──────────
+  if (msg.action === 'getServerConfig') {
+    sendResponse({ config: { serverUrl: SERVER_URL } });
     return;
+  }
+
+  if (msg.action === 'saveServerConfig') {
+    // Config is hardcoded; nothing to persist.
+    sendResponse({ success: true });
+    return;
+  }
+
+  if (msg.action === 'testServerConnection') {
+    fetch(`${SERVER_URL}/health`)
+      .then(r => r.json())
+      .then(data => sendResponse({
+        ok: true,
+        version: data.version || '1.0',
+        businesses: data.businesses ?? null,
+        records: data.records ?? null,
+      }))
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
   }
 
   // ── Save a single metric record (called from content script iframe) ────────
