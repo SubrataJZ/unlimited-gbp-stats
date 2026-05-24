@@ -22,27 +22,27 @@ jobs:
 
       - name: Pull latest code on VPS
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -p 65002 \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "cd /home/zixify-app && git clean -fd && git reset --hard && git fetch origin && git checkout main && git reset --hard origin/main"
 
       - name: Rebuild Docker images
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -p 65002 \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "cd /home/zixify-app && docker compose build"
 
       - name: Restart services
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -p 65002 \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "cd /home/zixify-app && docker compose up -d"
 
       - name: Verify backend health
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -p 65002 \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "sleep 10 && curl -sf http://localhost:3001/health && echo '✅ Backend healthy!'"
+            "sleep 10 && curl -sf http://localhost:3001/health && echo 'Backend healthy!'"
 
       - name: Deployment success
         if: success()
