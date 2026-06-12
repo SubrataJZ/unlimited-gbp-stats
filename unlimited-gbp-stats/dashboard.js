@@ -1430,12 +1430,20 @@
         }
       }
 
-      // Calculate month-to-month percentage growth (only for multi-month view)
+      // Calculate month-to-month percentage growth (only for multi-month view with real data)
       let monthlyGrowth = null;
+      let showPending = false;
+
       if (state.currentData.length > 1 && i > 0) {
         const prevVal = values[i - 1];
-        if (prevVal > 0) {
-          monthlyGrowth = ((values[i] - prevVal) / prevVal * 100).toFixed(1);
+        const currentVal = values[i];
+
+        // Only calculate growth if both current and previous are real data (not derived)
+        if (prevVal > 0 && !derivedFlags[i] && !derivedFlags[i - 1]) {
+          monthlyGrowth = ((currentVal - prevVal) / prevVal * 100).toFixed(1);
+        } else if (derivedFlags[i] || derivedFlags[i - 1]) {
+          // Show "pending" indicator if data is missing/derived from previous year
+          showPending = true;
         }
       }
 
@@ -1450,11 +1458,14 @@
           <title>${tip}</title></circle>`;
       }
 
-      // Display month-to-month growth percentage above the point (for multi-month view)
+      // Display month-to-month growth percentage or pending indicator above the point (for multi-month view)
       if (monthlyGrowth !== null) {
         const sign = monthlyGrowth >= 0 ? '+' : '';
         const growthColor = monthlyGrowth >= 0 ? '#4caf50' : '#f44336';
         html += `<text class="growth-label" x="${cx}" y="${cy - 24}" text-anchor="middle" fill="${growthColor}" font-size="12" font-weight="600">${sign}${monthlyGrowth}%</text>`;
+      } else if (showPending && i > 0) {
+        // Show "pending" indicator when comparison year data is missing
+        html += `<text class="growth-label" x="${cx}" y="${cy - 24}" text-anchor="middle" fill="#ffa726" font-size="11" font-weight="600">⊖ pending</text>`;
       }
     }
 

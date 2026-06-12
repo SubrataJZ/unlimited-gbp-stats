@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] - 2026-06-12
+- Fixed month-to-month growth percentage calculation accuracy
+- Only show growth % when both current and previous months have real (non-estimated) data
+- Show "⊖ pending" indicator in orange when year-over-year comparison data is missing
+- Prevents inaccurate percentages from displaying when data is derived from comparison year
+
 ## [1.3.0] - 2026-06-12
 - Added month-to-month percentage growth display on chart data points
 - Growth percentages now show above each point (green for increases, red for decreases)
