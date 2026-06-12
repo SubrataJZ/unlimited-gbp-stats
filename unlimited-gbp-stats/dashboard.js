@@ -27,14 +27,128 @@
     allMonths: [],
   };
 
+  // ── API Helper Functions ──────────────────────────────────────────────────
+  // These functions call the backend analytics API endpoints
+  // They include error handling and graceful fallback to local storage
+
+  const API_BASE = 'http://localhost:3001/api';
+
+  /**
+   * Fetch YoY comparison data from backend API
+   * Returns { current, priorYear, yoyPercent, trend }
+   */
+  async function fetchYoYData(locationId, year, month, metricType = 'overview') {
+    try {
+      if (!_authUser) return null;
+
+      const response = await fetch(
+        `${API_BASE}/analytics/locations/${locationId}/yoy?year=${year}&month=${month}&metricType=${metricType}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${_authUser.accessToken || ''}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      if (!response.ok) {
+        console.warn('YoY API failed:', response.status);
+        return null;
+      }
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.warn('Error fetching YoY data:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch period comparison data from backend API
+   * Returns { periods: [...], summary: {...} }
+   */
+  async function fetchPeriodComparison(locationId, fromDate, toDate, compareMode = 'yoy', metricType = 'overview') {
+    try {
+      if (!_authUser) return null;
+
+      let url = `${API_BASE}/analytics/locations/${locationId}/period-comparison`;
+      const params = new URLSearchParams({
+        from: fromDate,
+        to: toDate,
+        compareMode: compareMode,
+        metricType: metricType
+      });
+      url += '?' + params.toString();
+
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${_authUser.accessToken || ''}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        console.warn('Period comparison API failed:', response.status);
+        return null;
+      }
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.warn('Error fetching period comparison:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Generate report via backend API
+   * Returns { reportId, reportType, generatedAt, htmlUrl, pdfUrl, expiresAt }
+   */
+  async function generateReportViaAPI(locationId, reportType = 'full', options = {}) {
+    try {
+      if (!_authUser) {
+        showToast('❌ Please sign in to generate reports');
+        return null;
+      }
+
+      const response = await fetch(`${API_BASE}/reports/generate`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${_authUser.accessToken || ''}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          locationId,
+          reportType,
+          options
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        console.error('Report generation failed:', error);
+        showToast(`❌ Report generation failed: ${error.message || 'Unknown error'}`);
+        return null;
+      }
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error generating report:', error);
+      showToast('❌ Failed to generate report');
+      return null;
+    }
+  }
+
   // ── Init ──
   document.addEventListener('DOMContentLoaded', async () => {
     await GBPStorage.open();
     bindEvents();
 
-    // Load server config before anything else so auto-pull can work
-    await loadServerConfig();
-    updateCloudButton(_serverConfig.serverUrl ? 'idle' : 'unconfigured');
+    // Load auth state before anything else so auto-pull can work
+    await loadAuthUser();
+    updateCloudButton(_authUser ? 'connected' : 'login');
 
     await loadBusinesses();
 
@@ -178,30 +292,28 @@
     bindCloudModalEvents();
   }
 
-  // ── Cloud Sync ──────────────────────────────────────────────────────────────
+  // ── Cloud Auth ──────────────────────────────────────────────────────────────
 
-  let _serverConfig = { serverUrl: '', apiKey: '', autoPull: true };
+  let _authUser = null; // { email, name, ... } or null
 
-  async function loadServerConfig() {
+  async function loadAuthUser() {
     return new Promise(resolve => {
-      chrome.runtime.sendMessage({ action: 'getServerConfig' }, response => {
-        if (response?.config) {
-          _serverConfig = { ...response.config, autoPull: true };
-        }
-        resolve(_serverConfig);
+      chrome.runtime.sendMessage({ action: 'getAuthUser' }, response => {
+        _authUser = response?.user || null;
+        resolve(_authUser);
       });
     });
   }
 
-  function updateCloudButton(state) {
-    // state: 'idle' | 'connected' | 'syncing' | 'error' | 'unconfigured'
-    const btn  = document.getElementById('cloudSyncBtn');
-    const lbl  = document.getElementById('cloudBtnLabel');
+  function updateCloudButton(btnState) {
+    const btn = document.getElementById('cloudSyncBtn');
+    const lbl = document.getElementById('cloudBtnLabel');
     if (!btn || !lbl) return;
     btn.classList.remove('connected', 'syncing');
-    if (state === 'connected') { btn.classList.add('connected'); lbl.textContent = '☁ Synced'; }
-    else if (state === 'syncing') { btn.classList.add('syncing'); lbl.textContent = 'Syncing…'; }
-    else if (state === 'error') { lbl.textContent = '☁ Offline'; }
+    if (btnState === 'connected') { btn.classList.add('connected'); lbl.textContent = '☁ Synced'; }
+    else if (btnState === 'syncing') { btn.classList.add('syncing'); lbl.textContent = 'Syncing…'; }
+    else if (btnState === 'error') { lbl.textContent = '☁ Offline'; }
+    else if (btnState === 'login') { lbl.textContent = '☁ Sign In'; }
     else { lbl.textContent = 'Cloud Sync'; }
   }
 
@@ -210,7 +322,7 @@
    * merge it into local IndexedDB, then reload the dashboard.
    */
   async function doPullFromServer(businessId, silent = false) {
-    if (!_serverConfig.serverUrl || !businessId) return;
+    if (!_authUser || !businessId) return;
     updateCloudButton('syncing');
     if (!silent) showToast('☁ Pulling from server…');
 
@@ -220,7 +332,6 @@
           updateCloudButton('connected');
           if (response.merged > 0) {
             if (!silent) showToast(`☁ Pulled ${response.merged} new records from server`);
-            // Re-render the dashboard with the freshly merged data
             loadMetricData();
             renderCoverageGrid();
             generateInsights();
@@ -236,22 +347,87 @@
     });
   }
 
-  // ── Cloud Sync Modal ─────────────────────────────────────────────────────────
+  /**
+   * Bidirectional sync — push all local data up then pull all server data down.
+   * This is the main "Force Sync" action for the modal button and post-sign-in.
+   */
+  async function doAutoSync(silent = false) {
+    if (!_authUser) return;
+    updateCloudButton('syncing');
+    if (!silent) showToast('☁ Syncing with server…');
+
+    return new Promise(resolve => {
+      chrome.runtime.sendMessage({ action: 'autoSync', force: true }, response => {
+        if (response?.success) {
+          updateCloudButton('connected');
+          if (!silent) {
+            const parts = [];
+            if (response.pushed > 0) parts.push(`uploaded ${response.pushed}`);
+            if (response.pulled > 0) parts.push(`downloaded ${response.pulled}`);
+            const detail = parts.length ? parts.join(', ') + ' records' : 'already up to date';
+            showToast(`☁ Sync complete — ${detail}`);
+          }
+          if (response.pulled > 0 || response.pushed > 0) {
+            loadBusinesses().then(() => {
+              if (state.businessId) {
+                loadMetricData();
+                renderCoverageGrid();
+                generateInsights();
+              }
+            });
+          }
+        } else {
+          updateCloudButton('error');
+          if (!silent) showToast(`☁ Sync failed: ${response?.error || 'unknown error'}`);
+        }
+        resolve(response);
+      });
+    });
+  }
+
+  /**
+   * Pull ALL businesses and their metrics from the server.
+   * Used after sign-in so previously synced data is restored automatically.
+   */
+  async function doPullAllBusinesses(silent = false) {
+    if (!_authUser) return;
+    updateCloudButton('syncing');
+    if (!silent) showToast('☁ Restoring all data from server…');
+
+    return new Promise(resolve => {
+      chrome.runtime.sendMessage({ action: 'pullAllBusinesses' }, response => {
+        if (response?.success) {
+          updateCloudButton('connected');
+          if (response.merged > 0) {
+            showToast(`☁ Restored ${response.merged} records across ${response.businesses} business(es)`);
+            // Reload business list and current view
+            loadBusinesses().then(() => {
+              if (state.businessId) {
+                loadMetricData();
+                renderCoverageGrid();
+                generateInsights();
+              }
+            });
+          } else {
+            if (!silent) showToast(`☁ Up to date (${response.businesses} business(es) checked)`);
+          }
+        } else {
+          updateCloudButton('error');
+          if (!silent) showToast(`☁ Restore failed: ${response?.error || 'unknown error'}`);
+        }
+        resolve(response);
+      });
+    });
+  }
+
+  // ── Auth Modal ──────────────────────────────────────────────────────────────
+
+  let _activeAuthTab = 'login';
 
   function openCloudModal() {
     const modal = document.getElementById('cloudModal');
     if (!modal) return;
-
-    // Populate fields from saved config
-    document.getElementById('cloudServerUrl').value = _serverConfig.serverUrl || '';
-    document.getElementById('cloudApiKey').value    = _serverConfig.apiKey    || '';
-
-    // Reset test result + pull button
-    document.getElementById('cloudTestResult').style.display = 'none';
-    document.getElementById('cloudPullBtn').style.display    = 'none';
-
-    // Update status banner
-    updateCloudModalBanner();
+    refreshAuthModalView();
     modal.style.display = 'flex';
   }
 
@@ -260,113 +436,143 @@
     if (modal) modal.style.display = 'none';
   }
 
-  function updateCloudModalBanner() {
-    const banner  = document.getElementById('cloudStatusBanner');
-    const icon    = document.getElementById('cloudStatusIcon');
-    const textEl  = document.getElementById('cloudStatusText');
-    if (!banner) return;
+  function refreshAuthModalView() {
+    const loggedInView = document.getElementById('cloudLoggedIn');
+    const authView     = document.getElementById('cloudAuthView');
+    const statusText   = document.getElementById('cloudStatusText');
+    const userInfo     = document.getElementById('cloudUserInfo');
 
-    if (!_serverConfig.serverUrl) {
-      banner.className = 'cloud-status-banner warning';
-      icon.textContent  = '⚙';
-      textEl.textContent = 'Not configured — enter a server URL and API key below';
+    if (_authUser) {
+      loggedInView.style.display = '';
+      authView.style.display     = 'none';
+      statusText.textContent     = `Synced as ${_authUser.email}`;
+      userInfo.innerHTML = `<strong>${_authUser.name || _authUser.email}</strong>` +
+        `<br><span style="color:var(--text-muted);font-size:12px">${_authUser.email}</span>`;
     } else {
-      banner.className = 'cloud-status-banner ok';
-      icon.textContent  = '☁';
-      textEl.textContent = `Connected to ${_serverConfig.serverUrl}`;
+      loggedInView.style.display = 'none';
+      authView.style.display     = '';
+      switchAuthTab('login');
     }
   }
 
-  async function doTestConnection() {
-    const urlInput  = document.getElementById('cloudServerUrl');
-    const resultEl  = document.getElementById('cloudTestResult');
-    const statsEl   = document.getElementById('cloudServerStats');
-    const testBtn   = document.getElementById('cloudTestBtn');
-    const pullBtn   = document.getElementById('cloudPullBtn');
-    const url       = urlInput.value.trim();
-
-    if (!url) {
-      urlInput.focus();
-      urlInput.style.borderColor = 'var(--red)';
-      setTimeout(() => { urlInput.style.borderColor = ''; }, 1500);
-      return;
-    }
-
-    testBtn.disabled   = true;
-    testBtn.textContent = 'Testing…';
-    resultEl.style.display = 'none';
-    statsEl.style.display  = 'none';
-
-    const result = await new Promise(resolve =>
-      chrome.runtime.sendMessage({ action: 'testServerConnection', serverUrl: url }, resolve)
-    );
-
-    testBtn.disabled   = false;
-    testBtn.textContent = 'Test Connection';
-    resultEl.style.display = '';
-
-    if (result?.ok) {
-      resultEl.className   = 'cloud-test-result ok';
-      resultEl.innerHTML   = `✅ Connected! Server v${result.version || '1.0'}`;
-      statsEl.style.display = '';
-      statsEl.innerHTML     = `
-        <div class="cloud-stat-chip"><strong>${result.businesses ?? '—'}</strong> businesses</div>
-        <div class="cloud-stat-chip"><strong>${result.records ?? '—'}</strong> records</div>
-      `;
-      pullBtn.style.display = '';
-    } else {
-      resultEl.className = 'cloud-test-result error';
-      resultEl.innerHTML = `❌ Failed: ${result?.error || 'Could not reach server'}`;
-      pullBtn.style.display = 'none';
-      statsEl.style.display = 'none';
-    }
+  function switchAuthTab(tab) {
+    _activeAuthTab = tab;
+    document.getElementById('formLogin').style.display    = tab === 'login'    ? '' : 'none';
+    document.getElementById('formRegister').style.display = tab === 'register' ? '' : 'none';
+    document.getElementById('cloudAuthSubmit').textContent = tab === 'login' ? 'Sign In' : 'Create Account';
+    document.querySelectorAll('.cloud-auth-tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.tab === tab);
+    });
+    document.getElementById('cloudAuthError').style.display = 'none';
   }
 
   function bindCloudModalEvents() {
     document.getElementById('cloudSyncBtn').addEventListener('click', openCloudModal);
     document.getElementById('cloudModalClose').addEventListener('click', closeCloudModal);
     document.getElementById('cloudModalCancel').addEventListener('click', closeCloudModal);
+    document.getElementById('cloudModalCancel2').addEventListener('click', closeCloudModal);
 
     document.getElementById('cloudModal').addEventListener('click', (e) => {
       if (e.target === document.getElementById('cloudModal')) closeCloudModal();
     });
 
-    // Show/hide API key
-    document.getElementById('cloudKeyToggle').addEventListener('click', () => {
-      const inp = document.getElementById('cloudApiKey');
-      inp.type = inp.type === 'password' ? 'text' : 'password';
+    // Tab switching
+    document.getElementById('cloudAuthView').addEventListener('click', (e) => {
+      const tab = e.target.closest('.cloud-auth-tab');
+      if (tab) switchAuthTab(tab.dataset.tab);
     });
 
-    // Test connection
-    document.getElementById('cloudTestBtn').addEventListener('click', doTestConnection);
+    // Google Sign-In
+    async function handleGoogleSignIn() {
+      const errEl = document.getElementById('cloudAuthError');
+      const btns  = [document.getElementById('cloudGoogleLoginBtn'), document.getElementById('cloudGoogleRegisterBtn')];
+      errEl.style.display = 'none';
+      btns.forEach(b => { if (b) { b.disabled = true; b.textContent = 'Signing in…'; } });
 
-    // Pull from server
-    document.getElementById('cloudPullBtn').addEventListener('click', async () => {
-      if (!state.businessId) { showToast('Select a business first'); return; }
-      closeCloudModal();
-      await doPullFromServer(state.businessId, false);
-    });
-
-    // Save config
-    document.getElementById('cloudModalSave').addEventListener('click', async () => {
-      const url    = document.getElementById('cloudServerUrl').value.trim();
-      const apiKey = document.getElementById('cloudApiKey').value.trim();
-
-      _serverConfig.serverUrl = url;
-      _serverConfig.apiKey    = apiKey;
-
-      await new Promise(resolve =>
-        chrome.runtime.sendMessage({ action: 'saveServerConfig', serverUrl: url, apiKey }, resolve)
+      const result = await new Promise(resolve =>
+        chrome.runtime.sendMessage({ action: 'authGoogleLogin' }, resolve)
       );
 
-      closeCloudModal();
-      updateCloudButton(url ? 'idle' : 'unconfigured');
-      showToast(url ? '☁ Cloud sync settings saved' : 'Cloud sync disabled');
+      btns.forEach(b => { if (b) { b.disabled = false; b.innerHTML = `<svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.36-8.16 2.36-6.26 0-11.57-3.59-13.46-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg> Continue with Google`; } });
 
-      // Auto-pull when config is first set
-      if (url && state.businessId) {
-        await doPullFromServer(state.businessId, false);
+      if (result?.success) {
+        _authUser = result.user;
+        updateCloudButton('connected');
+        refreshAuthModalView();
+        showToast(`☁ Signed in as ${result.user.email}`);
+        closeCloudModal();
+        await doAutoSync(false);   // push local → pull server automatically
+      } else {
+        errEl.textContent   = result?.error || 'Google sign-in failed';
+        errEl.style.display = '';
       }
+    }
+
+    document.getElementById('cloudGoogleLoginBtn').addEventListener('click', handleGoogleSignIn);
+    document.getElementById('cloudGoogleRegisterBtn').addEventListener('click', handleGoogleSignIn);
+
+    // Sign in / register submit
+    document.getElementById('cloudAuthSubmit').addEventListener('click', async () => {
+      const errEl = document.getElementById('cloudAuthError');
+      const btn   = document.getElementById('cloudAuthSubmit');
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      btn.textContent = '…';
+
+      let result;
+      if (_activeAuthTab === 'login') {
+        const email    = document.getElementById('loginEmail').value.trim();
+        const password = document.getElementById('loginPassword').value;
+        result = await new Promise(resolve =>
+          chrome.runtime.sendMessage({ action: 'authLogin', email, password }, resolve)
+        );
+      } else {
+        const name     = document.getElementById('regName').value.trim();
+        const email    = document.getElementById('regEmail').value.trim();
+        const password = document.getElementById('regPassword').value;
+        result = await new Promise(resolve =>
+          chrome.runtime.sendMessage({ action: 'authRegister', email, password, name }, resolve)
+        );
+      }
+
+      btn.disabled    = false;
+      btn.textContent = _activeAuthTab === 'login' ? 'Sign In' : 'Create Account';
+
+      if (result?.success) {
+        _authUser = result.user;
+        updateCloudButton('connected');
+        refreshAuthModalView();
+        showToast(`☁ Signed in as ${result.user.email}`);
+        closeCloudModal();
+        await doAutoSync(false);   // push local → pull server automatically
+      } else {
+        errEl.textContent   = result?.error || 'Authentication failed';
+        errEl.style.display = '';
+      }
+    });
+
+    // Allow Enter key to submit auth form
+    document.getElementById('cloudModal').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && document.getElementById('cloudAuthView').style.display !== 'none') {
+        document.getElementById('cloudAuthSubmit')?.click();
+      }
+    });
+
+    // Force Sync — bidirectional push + pull
+    document.getElementById('cloudSyncNowBtn').addEventListener('click', async () => {
+      closeCloudModal();
+      await doAutoSync(false);
+    });
+
+    // Sign out
+    document.getElementById('cloudSignOutBtn').addEventListener('click', async () => {
+      await new Promise(resolve =>
+        chrome.storage.local.remove(['gbpAuthToken', 'gbpUser'], resolve)
+      );
+      _authUser = null;
+      updateCloudButton('login');
+      closeCloudModal();
+      showToast('Signed out of cloud sync');
     });
   }
 
@@ -440,7 +646,7 @@
     renderDiscoverySection();
 
     // Auto-pull from server in background (silent — no toast)
-    if (_serverConfig.serverUrl) {
+    if (_authUser) {
       doPullFromServer(businessId, true);
     }
   }
@@ -503,12 +709,40 @@
       return;
     }
 
-    // Compute comparison period start/end
-    const { cStartY, cStartM, cEndY, cEndM } = getComparePeriodBounds();
-    state.comparePeriodData = await GBPStorage.getMetricsForRange(
-      state.businessId, state.metricType,
-      cStartY, cStartM, cEndY, cEndM
+    // Try to fetch from API first, fallback to local storage
+    const fromDate = formatDateISO(state.startYear, state.startMonth, 1);
+    const toDate = formatDateISO(state.endYear, state.endMonth, 28); // Use 28 to avoid month-end issues
+
+    const apiData = await fetchPeriodComparison(
+      state.businessId,
+      fromDate,
+      toDate,
+      state.compareMode,
+      state.metricType
     );
+
+    if (apiData && apiData.periods) {
+      // Use API data - it includes YoY percentages
+      state.comparePeriodData = apiData.periods;
+      // Store yoypercent values for chart rendering
+      state.apiYoYData = apiData.periods.reduce((acc, p) => {
+        acc[p.month] = p.yoyPercent;
+        return acc;
+      }, {});
+    } else {
+      // Fallback to local storage if API unavailable
+      const { cStartY, cStartM, cEndY, cEndM } = getComparePeriodBounds();
+      state.comparePeriodData = await GBPStorage.getMetricsForRange(
+        state.businessId, state.metricType,
+        cStartY, cStartM, cEndY, cEndM
+      );
+      state.apiYoYData = null;
+    }
+  }
+
+  // Helper: Format date as ISO string YYYY-MM-DD
+  function formatDateISO(year, month, day) {
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
 
   function getComparePeriodBounds() {
@@ -828,43 +1062,68 @@
       ? `${desc} <span class="derived-badge" title="Estimated from Year-over-Year % reported by Google">est.</span>`
       : desc;
 
-    // Calculate YoY if we have single month selected and previous year data
+    // Calculate YoY if we have single month selected
     const yoyEl = document.getElementById('statYoY');
     if (state.startYear === state.endYear && state.startMonth === state.endMonth && state.currentData.length === 1) {
       const current = state.currentData[0];
       // Check if we stored yoyPercent from Google
       if (current.yoyPercent != null) {
-        yoyEl.style.display = '';
-        const sign = current.yoyPercent >= 0 ? '+' : '';
-        document.getElementById('yoyPercent').textContent = `${sign}${current.yoyPercent}%`;
-        document.getElementById('yoyLabel').textContent =
-          `(vs ${MONTH_NAMES[state.startMonth-1]} ${state.startYear - 1})`;
-        yoyEl.className = `stat-yoy ${current.yoyPercent >= 0 ? 'positive' : 'negative'}`;
+        displayYoY(current.yoyPercent);
       } else {
-        // Try to compute manually from stored data
-        computeManualYoY(total);
+        // Try to fetch from API first, then fallback to local computation
+        fetchAndDisplayYoY(total);
       }
     } else {
       yoyEl.style.display = 'none';
     }
   }
 
-  async function computeManualYoY(currentTotal) {
+  async function fetchAndDisplayYoY(currentTotal) {
     const yoyEl = document.getElementById('statYoY');
+
+    // Try API first
+    const apiData = await fetchYoYData(
+      state.businessId,
+      state.startYear,
+      state.startMonth,
+      state.metricType
+    );
+
+    if (apiData && apiData.yoyPercent !== null) {
+      displayYoY(apiData.yoyPercent);
+      return;
+    }
+
+    // Fallback to local storage computation
     const prevMetric = await GBPStorage.getMetric(
       state.businessId, state.metricType,
       state.startYear - 1, state.startMonth
     );
     if (prevMetric && prevMetric.total > 0) {
       const pct = ((currentTotal - prevMetric.total) / prevMetric.total * 100).toFixed(1);
-      const sign = pct >= 0 ? '+' : '';
-      yoyEl.style.display = '';
-      document.getElementById('yoyPercent').textContent = `${sign}${pct}%`;
-      document.getElementById('yoyLabel').textContent =
-        `(vs ${MONTH_NAMES[state.startMonth-1]} ${state.startYear - 1})`;
-      yoyEl.className = `stat-yoy ${pct >= 0 ? 'positive' : 'negative'}`;
+      displayYoY(parseFloat(pct));
     } else {
       yoyEl.style.display = 'none';
+    }
+  }
+
+  function displayYoY(yoyPercent) {
+    const yoyEl = document.getElementById('statYoY');
+    yoyEl.style.display = '';
+    const sign = yoyPercent >= 0 ? '+' : '';
+    const displayPercent = typeof yoyPercent === 'number' ? yoyPercent.toFixed(1) : yoyPercent;
+    document.getElementById('yoyPercent').textContent = `${sign}${displayPercent}%`;
+    document.getElementById('yoyLabel').textContent =
+      `(vs ${MONTH_NAMES[state.startMonth-1]} ${state.startYear - 1})`;
+
+    // Add trend arrow
+    let trend = '→';
+    if (yoyPercent > 1) trend = '↑';
+    else if (yoyPercent < -1) trend = '↓';
+
+    yoyEl.className = `stat-yoy ${yoyPercent >= 0 ? 'positive' : 'negative'}`;
+    if (yoyPercent !== 0) {
+      yoyEl.setAttribute('data-trend', trend);
     }
   }
 
@@ -1151,10 +1410,35 @@
     }
 
     // ── Points: diamond for derived, circle for real ──
+    // Build tooltip text with YoY percentage if available
     for (let i = 0; i < values.length; i++) {
       const isDer = derivedFlags && derivedFlags[i];
       const cx = toX(i), cy = toY(values[i]);
-      const tip = `${labels[i]}: ${values[i]}${isDer ? ' (estimated from YoY%)' : ''}`;
+
+      // Include YoY percentage in tooltip if available
+      let tip = `${labels[i]}: ${values[i]}`;
+      if (isDer) {
+        tip += ' (estimated from YoY%)';
+      }
+
+      // Add YoY percentage from API data if available
+      if (state.apiYoYData && state.apiYoYData[labels[i]]) {
+        const yoy = state.apiYoYData[labels[i]];
+        if (yoy !== null) {
+          const sign = yoy >= 0 ? '+' : '';
+          tip += ` (YoY: ${sign}${yoy.toFixed(1)}%)`;
+        }
+      }
+
+      // Calculate month-to-month percentage growth (only for multi-month view)
+      let monthlyGrowth = null;
+      if (state.currentData.length > 1 && i > 0) {
+        const prevVal = values[i - 1];
+        if (prevVal > 0) {
+          monthlyGrowth = ((values[i] - prevVal) / prevVal * 100).toFixed(1);
+        }
+      }
+
       if (isDer) {
         // Diamond shape for estimated points
         const r = 6;
@@ -1164,6 +1448,13 @@
       } else {
         html += `<circle class="chart-point" cx="${cx}" cy="${cy}" r="6">
           <title>${tip}</title></circle>`;
+      }
+
+      // Display month-to-month growth percentage above the point (for multi-month view)
+      if (monthlyGrowth !== null) {
+        const sign = monthlyGrowth >= 0 ? '+' : '';
+        const growthColor = monthlyGrowth >= 0 ? '#4caf50' : '#f44336';
+        html += `<text class="growth-label" x="${cx}" y="${cy - 24}" text-anchor="middle" fill="${growthColor}" font-size="12" font-weight="600">${sign}${monthlyGrowth}%</text>`;
       }
     }
 
@@ -2070,10 +2361,34 @@
 
   async function generateReport() {
     if (!state.businessId) { showToast('Select a business first'); return; }
-    showToast('⏳ Building report…');
 
     const bizEl    = document.querySelector(`#businessSelect option[value="${state.businessId}"]`);
     const bizName  = bizEl ? bizEl.textContent.trim() : state.businessId;
+
+    // Try API first (new feature)
+    showToast('⏳ Generating report via server…');
+    const reportData = await generateReportViaAPI(state.businessId, 'full', {
+      metricTypes: ['overview', 'calls', 'website_clicks', 'directions', 'bookings', 'chat_clicks']
+    });
+
+    if (reportData && reportData.htmlUrl) {
+      // Successfully generated via API - download the HTML
+      try {
+        const response = await fetch(reportData.htmlUrl);
+        if (response.ok) {
+          const html = await response.text();
+          downloadHTML(html, bizName);
+          showToast('✅ Report downloaded from server!');
+          return;
+        }
+      } catch (error) {
+        console.warn('Failed to download API report:', error);
+        // Fall through to local generation
+      }
+    }
+
+    // Fallback to local report generation if API unavailable
+    showToast('⏳ Building report locally…');
     const startLabel  = `${MONTH_FULL[state.startMonth - 1]} ${state.startYear}`;
     const endLabel    = `${MONTH_FULL[state.endMonth - 1]} ${state.endYear}`;
     const periodLabel = startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`;
@@ -2113,7 +2428,14 @@
       totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
     });
 
-    // Trigger download
+    downloadHTML(html, bizName);
+    showToast('✅ Report downloaded! Open the HTML file in your browser.');
+  }
+
+  /**
+   * Helper: Download HTML file to user's computer
+   */
+  function downloadHTML(html, bizName) {
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -2124,7 +2446,6 @@
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast('✅ Report downloaded! Open the HTML file in your browser.');
   }
 
   function buildReportHtml({ bizName, periodLabel, startLabel, endLabel, allMonthsCount,
