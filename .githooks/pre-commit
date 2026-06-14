@@ -1,0 +1,86 @@
+#!/bin/sh
+#
+# SemVer guard — blocks commits that change product code without a matching
+# version bump. Enforces the project's mandatory versioning policy so it can
+# never be silently skipped again.
+#
+# Rules:
+#   1. Extension  — any staged file under unlimited-gbp-stats/ (excluding the
+#      server/ subdir, manifest.json and CHANGELOG.md) requires the
+#      manifest.json "version" to change AND CHANGELOG.md to be staged.
+#   2. Sync server — any staged file under unlimited-gbp-stats/server/
+#      (excluding its package.json) requires server/package.json "version"
+#      to change.
+#   3. Backend     — any staged file under backend/ (excluding its
+#      package.json) requires backend/package.json "version" to change.
+#
+# Bypass (use only when you truly mean it): git commit --no-verify
+#
+set -e
+
+staged=$(git diff --cached --name-only)
+
+# Was the "version" field changed in a staged file? (ignores "manifest_version")
+version_bumped() {
+  git diff --cached -U0 -- "$1" | grep -E '^\+' | grep -q '"version"'
+}
+
+fail() {
+  echo ""
+  echo "  ✗ COMMIT BLOCKED — SemVer policy"
+  echo "  ----------------------------------------------------------------"
+  printf '%s\n' "$1"
+  echo "  ----------------------------------------------------------------"
+  echo "  PATCH=bug fix · MINOR=new feature · MAJOR=breaking change"
+  echo "  To bypass intentionally: git commit --no-verify"
+  echo ""
+  exit 1
+}
+
+# ── Rule 1: Chrome extension ─────────────────────────────────────────────────
+ext_code=$(echo "$staged" \
+  | grep '^unlimited-gbp-stats/' \
+  | grep -v '^unlimited-gbp-stats/server/' \
+  | grep -v '^unlimited-gbp-stats/manifest.json$' \
+  | grep -v '^unlimited-gbp-stats/CHANGELOG.md$' || true)
+
+if [ -n "$ext_code" ]; then
+  if ! version_bumped unlimited-gbp-stats/manifest.json; then
+    fail "  Extension code changed but manifest.json \"version\" was not bumped.
+  Bump \"version\" in unlimited-gbp-stats/manifest.json and re-stage it.
+  Changed: $(echo "$ext_code" | tr '\n' ' ')"
+  fi
+  if ! echo "$staged" | grep -q '^unlimited-gbp-stats/CHANGELOG.md$'; then
+    fail "  manifest.json was bumped but CHANGELOG.md was not updated.
+  Add a '## [X.Y.Z] - $(date +%Y-%m-%d)' entry to
+  unlimited-gbp-stats/CHANGELOG.md and re-stage it."
+  fi
+fi
+
+# ── Rule 2: Sync server ──────────────────────────────────────────────────────
+server_code=$(echo "$staged" \
+  | grep '^unlimited-gbp-stats/server/' \
+  | grep -v '^unlimited-gbp-stats/server/package.json$' || true)
+
+if [ -n "$server_code" ]; then
+  if ! version_bumped unlimited-gbp-stats/server/package.json; then
+    fail "  Sync-server code changed but server/package.json \"version\" was not bumped.
+  Bump \"version\" in unlimited-gbp-stats/server/package.json and re-stage it.
+  Changed: $(echo "$server_code" | tr '\n' ' ')"
+  fi
+fi
+
+# ── Rule 3: Backend API ──────────────────────────────────────────────────────
+backend_code=$(echo "$staged" \
+  | grep '^backend/' \
+  | grep -v '^backend/package.json$' || true)
+
+if [ -n "$backend_code" ]; then
+  if ! version_bumped backend/package.json; then
+    fail "  Backend code changed but backend/package.json \"version\" was not bumped.
+  Bump \"version\" in backend/package.json and re-stage it.
+  Changed: $(echo "$backend_code" | tr '\n' ' ')"
+  fi
+fi
+
+exit 0
