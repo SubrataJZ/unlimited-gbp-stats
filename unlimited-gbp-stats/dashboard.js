@@ -12,6 +12,7 @@
   // ── State ──
   let state = {
     businessId: null,
+    view: 'performance',          // 'performance' | 'reviews'
     metricType: 'overview',
     startYear: null, startMonth: null,
     endYear: null, endMonth: null,
@@ -143,6 +144,14 @@
 
   // ── Init ──
   document.addEventListener('DOMContentLoaded', async () => {
+    // Single source of truth: show the manifest version everywhere it appears
+    const _v = chrome.runtime.getManifest().version;
+    const _topbar = document.getElementById('appVersion');
+    const _footer = document.getElementById('appVersionFooter');
+    if (_topbar) _topbar.textContent = 'v' + _v;
+    if (_footer) _footer.textContent = 'v' + _v;
+    document.title = `Unlimited GBP Stats — Dashboard · v${_v} by ZixAI`;
+
     await GBPStorage.open();
     bindEvents();
 
@@ -176,6 +185,13 @@
       tab.classList.add('active');
       state.metricType = tab.dataset.metric;
       loadMetricData();
+    });
+
+    // View switcher: Performance / Reviews
+    document.getElementById('viewSwitcher').addEventListener('click', (e) => {
+      const tab = e.target.closest('.view-tab');
+      if (!tab) return;
+      switchView(tab.dataset.view);
     });
 
     // Date picker
@@ -648,7 +664,148 @@
     // Auto-pull from server in background (silent — no toast)
     if (_authUser) {
       doPullFromServer(businessId, true);
+      // Pull review data too, then refresh the reviews view if it's open
+      chrome.runtime.sendMessage({ action: 'pullReviews', businessId }, () => {
+        if (state.view === 'reviews') loadAndRenderReviews();
+      });
     }
+
+    // Reset to performance view on business change; preload review data
+    loadAndRenderReviews();
+  }
+
+  // ── View switching: Performance / Reviews ──
+  function switchView(view) {
+    state.view = view;
+    document.querySelectorAll('.view-tab').forEach(t =>
+      t.classList.toggle('active', t.dataset.view === view));
+    document.getElementById('performanceView').style.display = view === 'performance' ? '' : 'none';
+    document.getElementById('reviewsView').style.display = view === 'reviews' ? '' : 'none';
+    document.getElementById('dashTitle').textContent = view === 'reviews' ? 'Reviews' : 'Performance';
+    if (view === 'reviews') loadAndRenderReviews();
+  }
+
+  // ── Reviews: load from local store and render all sections ──
+  async function loadAndRenderReviews() {
+    if (!state.businessId) return;
+    const snapshots = await GBPStorage.getReviewSnapshots(state.businessId);
+    const reviews = await GBPStorage.getReviews(state.businessId);
+    renderReviews(snapshots, reviews);
+  }
+
+  function renderReviews(snapshots, reviews) {
+    const hasData = (snapshots && snapshots.length) || (reviews && reviews.length);
+    document.getElementById('rvEmpty').style.display = hasData ? 'none' : '';
+    ['rvCountSection','rvRatingSection','rvStarSection','rvListSection'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = hasData ? '' : 'none';
+    });
+
+    const latest = snapshots && snapshots.length ? snapshots[snapshots.length - 1] : null;
+    const first  = snapshots && snapshots.length ? snapshots[0] : null;
+
+    document.getElementById('rvTotal').textContent =
+      latest && latest.totalReviews != null ? latest.totalReviews.toLocaleString() : '—';
+    document.getElementById('rvRating').textContent =
+      latest && latest.avgRating != null ? `★ ${latest.avgRating.toFixed(1)}` : '—';
+    const growth = (latest && first && latest.totalReviews != null && first.totalReviews != null)
+      ? latest.totalReviews - first.totalReviews : null;
+    document.getElementById('rvGrowth').textContent =
+      growth != null ? (growth >= 0 ? `+${growth}` : `${growth}`) : '—';
+    document.getElementById('rvCaptured').textContent = snapshots ? snapshots.length : 0;
+
+    renderReviewLineChart('rvCountChart', snapshots, s => s.totalReviews, { color: '#8ab4f8' });
+    renderReviewLineChart('rvRatingChart', snapshots, s => s.avgRating, { color: '#fdd663', min: 0, max: 5 });
+    renderStarDistribution(latest, reviews);
+    renderRecentReviews(reviews);
+  }
+
+  // Minimal inline SVG line chart over dated snapshots.
+  function renderReviewLineChart(svgId, snapshots, valueFn, opts = {}) {
+    const svg = document.getElementById(svgId);
+    if (!svg) return;
+    const pts = (snapshots || []).map(s => ({ date: s.capturedOn, v: valueFn(s) }))
+      .filter(p => p.v != null && !isNaN(p.v));
+    const W = 700, H = 240, padL = 48, padR = 16, padT = 20, padB = 34;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    if (pts.length < 1) { svg.innerHTML = `<text x="${W/2}" y="${H/2}" fill="#666" text-anchor="middle" font-size="13">Not enough snapshots yet — capture reviews on more days</text>`; return; }
+
+    const vals = pts.map(p => p.v);
+    const min = opts.min != null ? opts.min : Math.min(...vals) * 0.98;
+    const max = opts.max != null ? opts.max : Math.max(...vals) * 1.02 || 1;
+    const range = (max - min) || 1;
+    const x = i => padL + (pts.length === 1 ? (W - padL - padR) / 2 : (i / (pts.length - 1)) * (W - padL - padR));
+    const y = v => padT + (1 - (v - min) / range) * (H - padT - padB);
+
+    let gridlines = '';
+    for (let g = 0; g <= 4; g++) {
+      const gy = padT + (g / 4) * (H - padT - padB);
+      const gv = max - (g / 4) * range;
+      gridlines += `<line x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}" stroke="#2a2a3e" stroke-width="1"/>`;
+      gridlines += `<text x="${padL-8}" y="${gy+4}" fill="#666" text-anchor="end" font-size="10">${opts.max === 5 ? gv.toFixed(1) : Math.round(gv)}</text>`;
+    }
+    const linePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ');
+    const areaPath = `${linePath} L ${x(pts.length-1).toFixed(1)} ${(H-padB).toFixed(1)} L ${x(0).toFixed(1)} ${(H-padB).toFixed(1)} Z`;
+    const dots = pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="3.5" fill="${opts.color}"/>`).join('');
+    const labelEvery = Math.ceil(pts.length / 6);
+    const xlabels = pts.map((p, i) => (i % labelEvery === 0 || i === pts.length - 1)
+      ? `<text x="${x(i).toFixed(1)}" y="${H-12}" fill="#888" text-anchor="middle" font-size="9">${p.date.slice(5)}</text>` : '').join('');
+
+    svg.innerHTML = `
+      <defs><linearGradient id="${svgId}-grad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${opts.color}" stop-opacity="0.25"/>
+        <stop offset="100%" stop-color="${opts.color}" stop-opacity="0"/>
+      </linearGradient></defs>
+      ${gridlines}
+      <path d="${areaPath}" fill="url(#${svgId}-grad)"/>
+      <path d="${linePath}" fill="none" stroke="${opts.color}" stroke-width="2.5" stroke-linejoin="round"/>
+      ${dots}${xlabels}`;
+  }
+
+  function renderStarDistribution(latest, reviews) {
+    const el = document.getElementById('rvStarBars');
+    if (!el) return;
+    // Prefer the snapshot histogram; fall back to counting scraped reviews.
+    let dist = latest && latest.stars ? { ...latest.stars } : {};
+    let total = Object.values(dist).reduce((a, b) => a + (b || 0), 0);
+    if (!total && reviews && reviews.length) {
+      dist = {};
+      for (const r of reviews) if (r.rating >= 1 && r.rating <= 5) dist[r.rating] = (dist[r.rating] || 0) + 1;
+      total = Object.values(dist).reduce((a, b) => a + b, 0);
+    }
+    if (!total) { el.innerHTML = '<p style="color:#666;font-size:13px">No star breakdown available yet.</p>'; return; }
+    let html = '';
+    for (let s = 5; s >= 1; s--) {
+      const c = dist[s] || 0;
+      const pct = Math.round((c / total) * 100);
+      html += `
+        <div class="rv-star-row">
+          <span class="rv-star-label">${s} ★</span>
+          <div class="rv-star-track"><div class="rv-star-fill" style="width:${pct}%"></div></div>
+          <span class="rv-star-count">${c.toLocaleString()}</span>
+        </div>`;
+    }
+    el.innerHTML = html;
+  }
+
+  function renderRecentReviews(reviews) {
+    const el = document.getElementById('rvList');
+    if (!el) return;
+    if (!reviews || !reviews.length) { el.innerHTML = '<p style="color:#666;font-size:13px">No individual reviews captured yet.</p>'; return; }
+    const sorted = [...reviews].sort((a, b) => (b.syncedAt || b.collectedAt || 0) - (a.syncedAt || a.collectedAt || 0)).slice(0, 50);
+    el.innerHTML = sorted.map(r => {
+      const stars = '★'.repeat(r.rating || 0) + '☆'.repeat(Math.max(0, 5 - (r.rating || 0)));
+      const esc = (t) => (t || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+      return `
+        <div class="rv-item">
+          <div class="rv-item-head">
+            <span class="rv-item-author">${esc(r.author) || 'Anonymous'}${r.isLocalGuide ? ' <span class="rv-badge">Local Guide</span>' : ''}</span>
+            <span class="rv-item-stars">${stars}</span>
+          </div>
+          ${r.reviewedAt ? `<div class="rv-item-date">${esc(r.reviewedAt)}</div>` : ''}
+          ${r.text ? `<div class="rv-item-text">${esc(r.text)}</div>` : ''}
+        </div>`;
+    }).join('');
   }
 
   // ── Metric Data Loading ──
@@ -1301,11 +1458,44 @@
             `${i + 1} ${MONTH_NAMES[cm.month - 1]} ${cm.year}`
           );
         } else {
-          // Multi-month: monthly totals
-          compareValues = state.comparePeriodData.map(m => m.total || 0);
-          compareLabels = state.comparePeriodData.map(m =>
-            `${MONTH_NAMES[m.month - 1]} ${m.year}`
-          );
+          // Multi-month: align each current month to its comparison month BY CALENDAR,
+          // not by array index. getMetricsForRange returns a sparse array (missing
+          // months are omitted), so index-based pairing silently compares the wrong
+          // months whenever there is a gap. Build a lookup and resolve the exact
+          // comparison month for every current month.
+          const cmpByKey = {};
+          for (const cm of state.comparePeriodData) {
+            // Normalise both record shapes:
+            //  • local storage: { year:Number, month:Number(1-12), total }
+            //  • backend API:   { year:Number, month:"YYYY-MM", value }
+            let cy = cm.year, cmo = cm.month;
+            if (typeof cmo === 'string') {
+              const parts = cmo.split('-');
+              cy = parseInt(parts[0], 10);
+              cmo = parseInt(parts[1], 10);
+            }
+            const total = cm.total != null ? cm.total : cm.value;
+            cmpByKey[`${cy}-${cmo}`] = { total };
+          }
+
+          // For 'prev' mode every month shifts back by the same amount (range span + 1);
+          // for 'yoy' it is exactly one year (12 months).
+          const sVal = state.startYear * 12 + state.startMonth;
+          const eVal = state.endYear * 12 + state.endMonth;
+          const shift = state.compareMode === 'yoy' ? 12 : (eVal - sVal + 1);
+
+          compareValues = [];
+          compareLabels = [];
+          for (const m of state.currentData) {
+            const cVal = (m.year * 12 + m.month) - shift; // absolute month index
+            const cy = Math.floor((cVal - 1) / 12);
+            const cmo = ((cVal - 1) % 12) + 1;
+            const found = cmpByKey[`${cy}-${cmo}`];
+            // null (not 0) marks "no comparison data" so % and line rendering can
+            // distinguish a real zero from a missing month.
+            compareValues.push(found ? (found.total || 0) : null);
+            compareLabels.push(`${MONTH_NAMES[cmo - 1]} ${cy}`);
+          }
         }
       }
     }
@@ -1323,7 +1513,8 @@
     // Compute scales
     let allVals = [...values];
     if (compareValues) allVals = allVals.concat(compareValues);
-    const maxVal = Math.max(...allVals, 1);
+    // Ignore null gaps (missing comparison months) when scaling.
+    const maxVal = Math.max(...allVals.filter(v => v != null), 1);
     // Nice max for y-axis
     const niceMax = niceNumber(maxVal);
     const yTicks = computeYTicks(niceMax);
@@ -1365,21 +1556,32 @@
     html += `<line class="axis-line" x1="${PAD.left}" x2="${W - PAD.right}" y1="${toY(0)}" y2="${toY(0)}"/>`;
 
     // ── Compare area + line (draw first, behind main) ──
+    // Comparison data can have gaps (null) where the matching month was never
+    // collected. Render each contiguous run of non-null points as its own
+    // area+line segment so a missing month doesn't drag the line to zero.
     if (compareValues && compareValues.length) {
       const cLen = Math.min(compareValues.length, values.length);
-      // Area
-      let areaPath = `M${toX(0)},${toY(compareValues[0])}`;
-      for (let i = 1; i < cLen; i++) areaPath += `L${toX(i)},${toY(compareValues[i])}`;
-      areaPath += `L${toX(cLen-1)},${toY(0)}L${toX(0)},${toY(0)}Z`;
-      html += `<path class="compare-area" d="${areaPath}"/>`;
-
-      // Line
-      let linePath = `M${toX(0)},${toY(compareValues[0])}`;
-      for (let i = 1; i < cLen; i++) linePath += `L${toX(i)},${toY(compareValues[i])}`;
-      html += `<path class="compare-line" d="${linePath}"/>`;
+      let seg = [];
+      const flushSeg = () => {
+        if (seg.length === 0) return;
+        let areaPath = `M${toX(seg[0])},${toY(compareValues[seg[0]])}`;
+        for (let k = 1; k < seg.length; k++) areaPath += `L${toX(seg[k])},${toY(compareValues[seg[k]])}`;
+        areaPath += `L${toX(seg[seg.length-1])},${toY(0)}L${toX(seg[0])},${toY(0)}Z`;
+        html += `<path class="compare-area" d="${areaPath}"/>`;
+        let linePath = `M${toX(seg[0])},${toY(compareValues[seg[0]])}`;
+        for (let k = 1; k < seg.length; k++) linePath += `L${toX(seg[k])},${toY(compareValues[seg[k]])}`;
+        html += `<path class="compare-line" d="${linePath}"/>`;
+        seg = [];
+      };
+      for (let i = 0; i < cLen; i++) {
+        if (compareValues[i] == null) { flushSeg(); continue; }
+        seg.push(i);
+      }
+      flushSeg();
 
       // Points
       for (let i = 0; i < cLen; i++) {
+        if (compareValues[i] == null) continue;
         html += `<circle class="compare-point" cx="${toX(i)}" cy="${toY(compareValues[i])}" r="5">`;
         html += `<title>${compareLabels ? compareLabels[i] : ''}: ${compareValues[i]}</title></circle>`;
       }
@@ -1410,41 +1612,52 @@
     }
 
     // ── Points: diamond for derived, circle for real ──
-    // Build tooltip text with YoY percentage if available
+    // When a comparison line is active and aligned 1:1 with the current series,
+    // the % shown is the change vs the matching comparison month (e.g. same month
+    // last year in YoY mode) — NOT month-over-month.
+    const comparing = state.compareEnabled && state.currentData.length > 1
+      && compareValues && compareValues.length === values.length;
+    const cmpLabel = state.compareMode === 'yoy' ? 'YoY'
+      : state.compareMode === 'prev' ? 'PoP' : 'vs';
+
     for (let i = 0; i < values.length; i++) {
       const isDer = derivedFlags && derivedFlags[i];
       const cx = toX(i), cy = toY(values[i]);
 
-      // Include YoY percentage in tooltip if available
       let tip = `${labels[i]}: ${values[i]}`;
       if (isDer) {
         tip += ' (estimated from YoY%)';
       }
 
-      // Add YoY percentage from API data if available
-      if (state.apiYoYData && state.apiYoYData[labels[i]]) {
-        const yoy = state.apiYoYData[labels[i]];
-        if (yoy !== null) {
-          const sign = yoy >= 0 ? '+' : '';
-          tip += ` (YoY: ${sign}${yoy.toFixed(1)}%)`;
+      // Calculate the percentage change to display above each point.
+      let growthPct = null;     // string from toFixed, or null
+      let growthIsCmp = false;  // true => vs comparison month, false => month-over-month
+      let showPending = false;
+
+      if (comparing) {
+        // Compare each month to its aligned comparison month (same month last year
+        // for YoY). compareValues[i] is null when that month was never collected.
+        const cmp = compareValues[i];
+        if (cmp == null) {
+          showPending = true;
+        } else if (cmp > 0 && !isDer) {
+          growthPct = ((values[i] - cmp) / cmp * 100).toFixed(1);
+          growthIsCmp = true;
+        }
+        // cmp === 0 (can't divide) or current point derived → no reliable %
+      } else if (state.currentData.length > 1 && i > 0) {
+        // No comparison active: fall back to month-over-month within the series.
+        const prevVal = values[i - 1];
+        if (prevVal > 0 && !derivedFlags[i] && !derivedFlags[i - 1]) {
+          growthPct = ((values[i] - prevVal) / prevVal * 100).toFixed(1);
+        } else if (derivedFlags[i] || derivedFlags[i - 1]) {
+          showPending = true;
         }
       }
 
-      // Calculate month-to-month percentage growth (only for multi-month view with real data)
-      let monthlyGrowth = null;
-      let showPending = false;
-
-      if (state.currentData.length > 1 && i > 0) {
-        const prevVal = values[i - 1];
-        const currentVal = values[i];
-
-        // Only calculate growth if both current and previous are real data (not derived)
-        if (prevVal > 0 && !derivedFlags[i] && !derivedFlags[i - 1]) {
-          monthlyGrowth = ((currentVal - prevVal) / prevVal * 100).toFixed(1);
-        } else if (derivedFlags[i] || derivedFlags[i - 1]) {
-          // Show "pending" indicator if data is missing/derived from previous year
-          showPending = true;
-        }
+      if (growthPct !== null) {
+        const sign = growthPct >= 0 ? '+' : '';
+        tip += ` (${growthIsCmp ? cmpLabel : 'MoM'}: ${sign}${growthPct}%)`;
       }
 
       if (isDer) {
@@ -1458,13 +1671,14 @@
           <title>${tip}</title></circle>`;
       }
 
-      // Display month-to-month growth percentage or pending indicator above the point (for multi-month view)
-      if (monthlyGrowth !== null) {
-        const sign = monthlyGrowth >= 0 ? '+' : '';
-        const growthColor = monthlyGrowth >= 0 ? '#4caf50' : '#f44336';
-        html += `<text class="growth-label" x="${cx}" y="${cy - 24}" text-anchor="middle" fill="${growthColor}" font-size="12" font-weight="600">${sign}${monthlyGrowth}%</text>`;
-      } else if (showPending && i > 0) {
-        // Show "pending" indicator when comparison year data is missing
+      // Display the percentage change (or a pending indicator) above the point.
+      if (growthPct !== null) {
+        const sign = growthPct >= 0 ? '+' : '';
+        const growthColor = growthPct >= 0 ? '#4caf50' : '#f44336';
+        const prefix = growthIsCmp ? `${cmpLabel} ` : '';
+        html += `<text class="growth-label" x="${cx}" y="${cy - 24}" text-anchor="middle" fill="${growthColor}" font-size="12" font-weight="600">${prefix}${sign}${growthPct}%</text>`;
+      } else if (showPending) {
+        // Comparison month missing (or current point estimated) — can't compute a %.
         html += `<text class="growth-label" x="${cx}" y="${cy - 24}" text-anchor="middle" fill="#ffa726" font-size="11" font-weight="600">⊖ pending</text>`;
       }
     }

@@ -19,8 +19,9 @@ importScripts('storage.js');
 // Pre-warm the DB connection on startup
 GBPStorage.open().catch(e => console.error('[GBP BG] Storage init error:', e));
 
-// ── Hardcoded server URL — change this to your deployed server ────────────────
-const SERVER_URL        = 'https://gbp.zixify.zixai.in'; // GBP Stats Server (Hetzner VPS)
+// ── Hardcoded server URLs — change these to your deployed servers ────────────
+const SERVER_URL        = 'https://gbp.zixify.zixai.in';          // SQLite sync server (metrics)
+const BACKEND_URL       = 'https://gbp.zixify.zixai.in/backend';  // TS/Postgres backend (reviews/intel)
 const GOOGLE_CLIENT_ID  = '512083455568-3caijv22kvq0g5n2i1oajg3bmergclpb.apps.googleusercontent.com';
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -86,6 +87,188 @@ async function syncMetricToServer(locationCode, businessName, metric) {
   } catch (err) {
     console.warn('[GBP BG] Server sync failed (offline?):', err.message);
     return { ok: false, error: err.message };
+  }
+}
+
+/** Read the stored backend ingest key (zx_...). Null if not connected. */
+async function getBackendKey() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['gbpBackendKey'], r => resolve(r.gbpBackendKey || null));
+  });
+}
+
+/**
+ * Connect this extension to the Postgres backend using the SAME Google access
+ * token already obtained for the SQLite login. Exchanges it for a backend JWT,
+ * then provisions a per-user zx_ ingest key and stores it. Best-effort.
+ */
+async function connectBackend(googleAccessToken) {
+  try {
+    // 1. Google token → backend JWT
+    const r1 = await fetch(`${BACKEND_URL}/api/auth/google/extension`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ accessToken: googleAccessToken }),
+    });
+    if (!r1.ok) return { ok: false, error: `auth HTTP ${r1.status}` };
+    const { token } = await r1.json();
+    if (!token) return { ok: false, error: 'No backend token returned' };
+
+    // 2. Provision (or look up) the zx_ ingest key
+    const r2 = await fetch(`${BACKEND_URL}/api/auth/provision-extension`, {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'x-extension-id': chrome.runtime.id },
+    });
+    if (!r2.ok) return { ok: false, error: `provision HTTP ${r2.status}` };
+    const data = await r2.json();
+
+    if (data.apiKey) {
+      // First provision — raw key returned exactly once. Persist it.
+      await new Promise(res => chrome.storage.local.set({ gbpBackendKey: data.apiKey }, res));
+      console.log('[GBP BG] Backend connected — zx_ key stored');
+      return { ok: true, key: data.apiKey };
+    }
+
+    // alreadyProvisioned but we have no local key (e.g. reinstall): mint a fresh
+    // named key so ingestion still works. The old one stays valid but unused.
+    const existing = await getBackendKey();
+    if (!existing) {
+      const r3 = await fetch(`${BACKEND_URL}/api/auth/api-keys`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body:    JSON.stringify({ name: `ext-${chrome.runtime.id}-${Date.now()}` }),
+      });
+      if (r3.ok) {
+        const d3 = await r3.json();
+        if (d3.apiKey) {
+          await new Promise(res => chrome.storage.local.set({ gbpBackendKey: d3.apiKey }, res));
+          console.log('[GBP BG] Backend re-connected — fresh zx_ key stored');
+          return { ok: true, key: d3.apiKey };
+        }
+      }
+    }
+    return { ok: true, alreadyProvisioned: true };
+  } catch (err) {
+    console.warn('[GBP BG] Backend connect failed:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Build the /api/ingest/intel payload from the scraper's neutral review shape.
+ * The numeric GBP business id is used as the stable per-org dedup key
+ * (googlePlaceId) so review data lines up with the same business the dashboard
+ * already tracks via metrics.
+ */
+function buildIntelPayload(business, snapshot, reviews) {
+  const b = {
+    name: business?.name || String(business?.id || 'Unknown'),
+    googlePlaceId: String(business?.id || ''),
+    isOwn: true,
+  };
+  if (snapshot && (snapshot.totalReviews || snapshot.avgRating != null)) {
+    b.snapshot = {
+      totalReviews: snapshot.totalReviews || 0,
+      // backend field is displayRating; omit when absent
+      ...(snapshot.avgRating != null ? { displayRating: snapshot.avgRating } : {}),
+      capturedOn: new Date().toISOString(),
+    };
+  }
+  if (Array.isArray(reviews) && reviews.length) {
+    b.reviews = reviews
+      .filter(r => r && r.externalId && Number.isFinite(r.rating) && r.rating >= 1 && r.rating <= 5)
+      .map(r => ({
+        externalReviewId: String(r.externalId),
+        rating: Math.round(r.rating),
+        ...(r.text ? { text: String(r.text).slice(0, 5000) } : {}),
+        ...(r.author ? { authorName: String(r.author).slice(0, 200) } : {}),
+        isLocalGuide: !!r.isLocalGuide,
+        hasPhoto: !!r.hasPhoto,
+        // reviewedAt omitted: scraper captures relative strings ("2 weeks ago")
+        // which the backend would reject as invalid dates.
+      }));
+  }
+  return { businesses: [b] };
+}
+
+/**
+ * Push a review snapshot + individual reviews to the Postgres backend's
+ * /api/ingest/intel. Never throws — local storage stays source of truth.
+ */
+async function syncReviewToBackend(business, snapshot, reviews) {
+  const key = await getBackendKey();
+  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable review sync' };
+
+  const payload = buildIntelPayload(business, snapshot, reviews);
+  const b = payload.businesses[0];
+  if (!b.snapshot && !(b.reviews && b.reviews.length)) return { ok: false, error: 'Nothing to sync' };
+
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/ingest/intel`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${key}`,
+        'x-extension-id': chrome.runtime.id,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText);
+      console.warn(`[GBP BG] Intel sync HTTP ${resp.status}:`, text);
+      return { ok: false, error: `HTTP ${resp.status}` };
+    }
+    const data = await resp.json();
+    console.log('[GBP BG] Reviews synced to backend:', data.summary);
+    return { ok: true, summary: data.summary };
+  } catch (err) {
+    console.warn('[GBP BG] Intel sync failed (offline?):', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Pull review snapshots + reviews for all the user's businesses from the
+ * backend and merge into local IndexedDB. Keyed by the numeric id stored as
+ * googlePlaceId so it maps to the dashboard's businesses.
+ */
+async function pullReviewsFromServer(businessId) {
+  const key = await getBackendKey();
+  if (!key) return { success: false, error: 'Backend not connected' };
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/ingest/intel`, {
+      headers: { 'Authorization': `Bearer ${key}`, 'x-extension-id': chrome.runtime.id },
+    });
+    if (!resp.ok) return { success: false, error: `HTTP ${resp.status}` };
+    const data = await resp.json();
+
+    let snaps = 0, revs = 0;
+    for (const b of data.businesses || []) {
+      const localId = b.googlePlaceId || b.id;
+      if (!localId) continue;
+      for (const s of b.snapshots || []) {
+        await GBPStorage.saveReviewSnapshot(localId, {
+          capturedOn:   (s.capturedOn || '').slice(0, 10),
+          totalReviews: s.totalReviews,
+          avgRating:    s.displayRating ?? s.trueAverage ?? null,
+          stars:        {},
+        });
+        snaps++;
+      }
+      const mapped = (b.reviews || []).map(r => ({
+        externalId:   r.externalReviewId,
+        rating:       r.rating,
+        text:         r.text || '',
+        author:       r.authorName || '',
+        isLocalGuide: !!r.isLocalGuide,
+        hasPhoto:     !!r.hasPhoto,
+        reviewedAt:   r.reviewedAt ? String(r.reviewedAt).slice(0, 10) : '',
+      }));
+      if (mapped.length) { await GBPStorage.saveReviews(localId, mapped); revs += mapped.length; }
+    }
+    return { success: true, snapshots: snaps, reviews: revs };
+  } catch (err) {
+    return { success: false, error: err.message };
   }
 }
 
@@ -379,6 +562,11 @@ async function authGoogleLogin() {
           const data = await resp.json();
           if (!resp.ok) { resolve({ success: false, error: data.error || `HTTP ${resp.status}` }); return; }
           await saveAuthSession(data.token, data.user);
+          // Also connect the Postgres backend with the same Google token so
+          // review sync works (best-effort — never blocks the primary login).
+          connectBackend(accessToken)
+            .then(r => { if (!r.ok) console.warn('[GBP BG] Backend connect skipped:', r.error); })
+            .catch(() => {});
           resolve({ success: true, user: data.user });
         } catch (err) {
           resolve({ success: false, error: err.message });
@@ -508,6 +696,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         console.error('[GBP BG] saveMetricData error:', e);
         sendResponse({ success: false, reason: e.message });
       });
+    return true;
+  }
+
+  // ── Save scraped review snapshot + individual reviews ─────────────────────
+  if (msg.action === 'saveReviewData') {
+    const { business, snapshot, reviews } = msg;
+    const businessId = business?.id;
+
+    GBPStorage.open()
+      .then(() => business ? GBPStorage.saveBusiness(business) : null)
+      .then(() => snapshot ? GBPStorage.saveReviewSnapshot(businessId, snapshot) : null)
+      .then(() => (Array.isArray(reviews) && reviews.length)
+        ? GBPStorage.saveReviews(businessId, reviews) : 0)
+      .then((reviewsSaved) => {
+        // Push to the Postgres backend (fire-and-forget; never fail local save)
+        syncReviewToBackend(business, snapshot, reviews).catch(() => {});
+        sendResponse({
+          success: true,
+          saved: {
+            totalReviews: snapshot?.totalReviews ?? null,
+            avgRating:    snapshot?.avgRating ?? null,
+            reviewsSaved: reviewsSaved || 0,
+          },
+        });
+      })
+      .catch(e => {
+        console.error('[GBP BG] saveReviewData error:', e);
+        sendResponse({ success: false, reason: e.message });
+      });
+    return true;
+  }
+
+  // ── Pull review snapshots + reviews for a business from the server ────────
+  if (msg.action === 'pullReviews') {
+    GBPStorage.open()
+      .then(() => pullReviewsFromServer(msg.businessId))
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, error: e.message }));
     return true;
   }
 

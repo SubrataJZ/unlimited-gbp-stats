@@ -50,15 +50,64 @@
     return null;
   }
 
+  // Business name passed from the main frame via postMessage (most reliable source)
+  let _parentBusinessName = null;
+
+  /**
+   * Extract the business name from the current page.
+   *
+   * Tries sources in priority order:
+   *   1. Name received from parent frame via postMessage  (iframe mode — most reliable)
+   *   2. GBP-specific DOM selectors                       (both modes)
+   *   3. Generic headings                                 (fallback)
+   *   4. document.title parsing                           (last resort)
+   */
   function extractBusinessName() {
-    const candidates = [
-      document.querySelector('h1')?.textContent.trim(),
-      document.querySelector('[data-attrid="title"]')?.textContent.trim(),
-      document.title?.split(' - ')[0].trim(),
+    // ── 1. Parent-supplied name (set by main frame when sending commands) ──
+    if (_parentBusinessName) return _parentBusinessName;
+
+    // ── 2. GBP-specific selectors (in order of reliability) ──────────────
+    const GBP_SELECTORS = [
+      // business.google.com — profile header / breadcrumb
+      '[data-item-id] h1',
+      '.k7uisc',
+      '[jsname="r4nke"]',
+      '[data-merchant-name]',
+      // Knowledge panel on Google Search / Maps
+      '[data-attrid="title"]',
+      '.qrShPb .kno-ecr-pt',
+      '.SPZz6b h2',
+      '.uMdZh span',
+      // GBP drawer (Maps panel)
+      '[jscontroller] h1',
+      '[jscontroller] h2',
+      // Generic last-resort heading
+      'h1',
     ];
-    for (const c of candidates) {
-      if (c && c.length > 0 && c.length < 100 && c !== 'Performance') return c;
+
+    const REJECT = new Set([
+      'performance', 'google', 'google business profile',
+      'google maps', 'overview', 'calls', 'website clicks',
+      'directions', 'bookings', 'chat clicks', 'menu', 'offers',
+    ]);
+
+    for (const sel of GBP_SELECTORS) {
+      const text = document.querySelector(sel)?.textContent?.trim();
+      if (!text || text.length < 2 || text.length > 120) continue;
+      if (REJECT.has(text.toLowerCase())) continue;
+      return text;
     }
+
+    // ── 3. document.title — split on common separators ────────────────────
+    const titleParts = document.title.split(/\s*[-–|·]\s*/);
+    for (const part of titleParts) {
+      const t = part.trim();
+      if (!t || t.length < 2 || t.length > 80) continue;
+      if (REJECT.has(t.toLowerCase())) continue;
+      if (/^(google|performance|overview)$/i.test(t)) continue;
+      return t;
+    }
+
     return 'Unknown Business';
   }
 
@@ -114,7 +163,7 @@
     const daily = [];
     for (const row of table.querySelectorAll('tbody tr')) {
       const cells = row.querySelectorAll('td');
-      if (cells.length >= 2) daily.push(parseInt(cells[1].textContent.trim()) || 0);
+      if (cells.length >= 2) daily.push(parseInt(cells[1].textContent.trim().replace(/,/g, '')) || 0);
     }
     return daily.length ? { daily, total: daily.reduce((a,b)=>a+b,0) } : null;
   }
@@ -122,12 +171,13 @@
   function extractFromSVG() {
     const pts = document.querySelectorAll('.pKrx3d-JNdkSc');
     if (!pts.length) return null;
-    const daily = [...pts].map(p => parseInt(p.querySelector('.pKrx3d-V67aGc')?.textContent)||0);
+    const daily = [...pts].map(p => parseInt((p.querySelector('.pKrx3d-V67aGc')?.textContent || '0').replace(/,/g, '')) || 0);
     return { daily, total: daily.reduce((a,b)=>a+b,0) };
   }
 
   function extractTotalAndYoY() {
-    const total = parseInt(document.querySelector('.mjluEf')?.textContent)||0;
+    const raw = document.querySelector('.mjluEf')?.textContent?.replace(/[,\s]/g, '') || '0';
+    const total = parseInt(raw) || 0;
     const yoyText = document.querySelector('.Od3gu')?.textContent.trim()||'';
     const yoyMatch = yoyText.match(/([+-]?\d+\.?\d*)%/);
     return { total, yoyPercent: yoyMatch ? parseFloat(yoyMatch[1]) : null };
@@ -692,6 +742,163 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════════
+  //  REVIEW SCRAPING  (runs in the main frame — Maps / Search / business panel)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Stable-ish id for an individual review when Google gives us no data-review-id.
+  function hashReview(author, date, text) {
+    const s = `${author}|${date}|${(text || '').slice(0, 120)}`;
+    let h = 0;
+    for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+    return 'h' + (h >>> 0).toString(36);
+  }
+
+  // Parse the leading star count from an aria-label like "5 stars" / "Rated 4.0".
+  function parseStarLabel(label) {
+    if (!label) return 0;
+    const m = label.match(/([1-5](?:\.\d)?)\s*star/i) || label.match(/rated\s+([1-5](?:\.\d)?)/i);
+    return m ? Math.round(parseFloat(m[1])) : 0;
+  }
+
+  // ── Snapshot: total reviews, average rating, 1–5 star distribution ──────────
+  function extractReviewSnapshot() {
+    const snap = { totalReviews: 0, avgRating: null, stars: {} };
+
+    // Walk leaf text nodes once — reused for several heuristics.
+    const leaves = [];
+    const walk = (node) => {
+      if (node.nodeType === 3 && node.textContent.trim()) leaves.push(node);
+      else if (node.nodeType === 1) node.childNodes.forEach(walk);
+    };
+    walk(document.body);
+
+    // Total reviews — "1,234 reviews" / "(1,234)"
+    for (const n of leaves) {
+      const t = n.textContent.trim();
+      let m = t.match(/^\(?\s*([\d,]+)\s*\)?\s+reviews?$/i) || t.match(/^([\d,]+)\s+reviews?$/i);
+      if (m) { snap.totalReviews = parseInt(m[1].replace(/,/g, '')) || 0; break; }
+    }
+    // Fallback: a bare "(1,234)" right next to a rating
+    if (!snap.totalReviews) {
+      for (const n of leaves) {
+        const m = n.textContent.trim().match(/^\(([\d,]{2,})\)$/);
+        if (m) { snap.totalReviews = parseInt(m[1].replace(/,/g, '')) || 0; break; }
+      }
+    }
+
+    // Average rating — a standalone number 0.0–5.0 (e.g. "4.5"), or from aria-label
+    const ratingAria = document.querySelector('[aria-label*="stars" i], [aria-label*="rated" i]');
+    if (ratingAria) {
+      const m = (ratingAria.getAttribute('aria-label') || '').match(/([0-5](?:\.\d)?)/);
+      if (m) snap.avgRating = parseFloat(m[1]);
+    }
+    if (snap.avgRating == null) {
+      for (const n of leaves) {
+        const t = n.textContent.trim();
+        if (/^[0-5]\.\d$/.test(t)) { snap.avgRating = parseFloat(t); break; }
+      }
+    }
+
+    // Star distribution — histogram rows with aria-labels like
+    // "5 stars, 1,234 reviews" or table rows. Try aria-labels first.
+    for (const el of document.querySelectorAll('[aria-label]')) {
+      const m = el.getAttribute('aria-label').match(/([1-5])\s*stars?,?\s*([\d,]+)\s*reviews?/i);
+      if (m) snap.stars[m[1]] = parseInt(m[2].replace(/,/g, '')) || 0;
+    }
+
+    const hasData = snap.totalReviews > 0 || snap.avgRating != null;
+    return hasData ? snap : null;
+  }
+
+  // ── Individual review cards (scrolls the reviews list to lazy-load more) ─────
+  async function extractIndividualReviews(maxScrolls = 8) {
+    // Find the scrollable reviews container (Maps) — fall back to the page.
+    const findCard = () =>
+      document.querySelectorAll('.jftiEf, [data-review-id], [jscontroller][data-review-id]');
+
+    let cards = findCard();
+    if (cards.length) {
+      // Scroll the nearest scrollable ancestor to load more cards.
+      let scroller = cards[0].closest('[role="main"], .m6QErb, .DxyBCb') ||
+                     document.scrollingElement || document.body;
+      let lastCount = 0;
+      for (let s = 0; s < maxScrolls; s++) {
+        scroller.scrollTop = scroller.scrollHeight;
+        await sleep(900);
+        cards = findCard();
+        if (cards.length === lastCount) break; // no new cards loaded
+        lastCount = cards.length;
+      }
+    }
+
+    const out = [];
+    const seen = new Set();
+    for (const card of findCard()) {
+      const author =
+        card.querySelector('.d4r55, [class*="title"], [aria-label]')?.textContent?.trim() ||
+        card.getAttribute('aria-label') || '';
+      const ratingEl = card.querySelector('[aria-label*="star" i], [role="img"][aria-label]');
+      const rating = parseStarLabel(ratingEl?.getAttribute('aria-label') || '');
+      const text = card.querySelector('.wiI7pd, .MyEned, [class*="reviewText"]')?.textContent?.trim() || '';
+      const date = card.querySelector('.rsqaWe, .dehysf, [class*="date"]')?.textContent?.trim() || '';
+      const isLocalGuide = /local guide/i.test(card.textContent);
+      const hasPhoto = !!card.querySelector('img[src*="googleusercontent"], button[aria-label*="Photo" i]');
+
+      if (!rating && !text) continue; // skip empty/unparsable cards
+      const externalId = card.getAttribute('data-review-id') || hashReview(author, date, text);
+      if (seen.has(externalId)) continue;
+      seen.add(externalId);
+
+      out.push({
+        externalId,
+        rating,
+        text: text.slice(0, 5000),
+        author: author.slice(0, 200),
+        isLocalGuide,
+        hasPhoto,
+        reviewedAt: date,
+      });
+    }
+    return out;
+  }
+
+  // Scrape reviews + snapshot, then persist via the background worker.
+  async function collectReviews(progressCb) {
+    const businessId = extractBusinessId();
+    const businessName = extractBusinessName();
+    if (!businessId) return { success: false, reason: 'Could not detect business ID on this page.' };
+
+    progressCb?.('Reading review summary…', 0, 1);
+    const snapshot = extractReviewSnapshot();
+
+    progressCb?.('Loading individual reviews…', 0, 1);
+    let reviews = [];
+    try { reviews = await extractIndividualReviews(); } catch (e) { console.warn('[GBP] review scrape:', e); }
+
+    if (!snapshot && !reviews.length)
+      return { success: false, reason: 'No review data found. Open the business’s Reviews on Google Maps, then try again.' };
+
+    // Backfill star distribution from scraped cards if the histogram was missing.
+    if (snapshot && Object.keys(snapshot.stars).length === 0 && reviews.length) {
+      const dist = {};
+      for (const r of reviews) if (r.rating >= 1 && r.rating <= 5) dist[r.rating] = (dist[r.rating] || 0) + 1;
+      snapshot.stars = dist;
+    }
+
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'saveReviewData',
+        business: { id: businessId, name: businessName },
+        snapshot,
+        reviews,
+      }, (response) => {
+        if (chrome.runtime.lastError) resolve({ success: false, reason: chrome.runtime.lastError.message });
+        else resolve(response || { success: false, reason: 'No response from background' });
+      });
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   //  IFRAME MODE — listen for commands from parent, execute fetch, report back
   // ══════════════════════════════════════════════════════════════════════════
   if (IS_PERFORMANCE_IFRAME) {
@@ -700,6 +907,9 @@
     window.addEventListener('message', async (e) => {
       if (!e.data || e.data._tag !== EXT_TAG) return;
       const { action } = e.data;
+
+      // Store business name supplied by the main frame — used by extractBusinessName()
+      if (e.data.businessName) _parentBusinessName = e.data.businessName;
 
       const send = (type, payload) =>
         window.parent.postMessage({ _tag: EXT_TAG, type, ...payload }, '*');
@@ -748,7 +958,10 @@
   function sendToIframe(action, extra = {}) {
     const iframe = getPerformanceIframe();
     if (!iframe) return false;
-    iframe.contentWindow.postMessage({ _tag: EXT_TAG, action, ...extra }, '*');
+    // Always pass the business name extracted from the main-frame DOM.
+    // The main frame has much richer access (full page) than the iframe.
+    const businessName = extractBusinessName();
+    iframe.contentWindow.postMessage({ _tag: EXT_TAG, action, businessName, ...extra }, '*');
     return true;
   }
 
@@ -770,6 +983,7 @@
           <button id="gbp-save-current">Save Current View</button>
           <button id="gbp-fetch-tab">Fetch All Months (Tab)</button>
           <button id="gbp-fetch-all">⭐ Fetch Everything</button>
+          <button id="gbp-fetch-reviews">⭐ Fetch Reviews</button>
         </div>
         <div id="gbp-progress" style="display:none;margin-top:8px">
           <div class="gbp-progress-bar"><div class="gbp-progress-fill" id="gbp-progress-fill"></div></div>
@@ -778,6 +992,9 @@
         <div id="gbp-result" style="display:none;margin-top:8px;padding:8px;background:#252536;border-radius:6px;font-size:11px"></div>
         <div class="gbp-stats-footer">
           <button id="gbp-open-dashboard">Open Dashboard</button>
+        </div>
+        <div style="text-align:center;padding:4px 0 2px;font-size:9px;color:#fff;letter-spacing:0.3px">
+          v${chrome.runtime.getManifest().version} &nbsp;&middot;&nbsp; <span style="background:linear-gradient(90deg,#8ab4f8,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:700">ZixAI</span>
         </div>
       </div>
     `;
@@ -833,6 +1050,37 @@
       }
     };
 
+    // Fetch reviews — scrapes review snapshot + individual reviews (main frame)
+    document.getElementById('gbp-fetch-reviews').onclick = async () => {
+      showProgress(true);
+      setResult('', '');
+      disableButtons(true);
+      try {
+        const result = await collectReviews((msg, cur, tot) => {
+          const fill = document.getElementById('gbp-progress-fill');
+          const text = document.getElementById('gbp-progress-text');
+          if (fill) fill.style.width = (tot > 0 ? Math.round((cur / tot) * 100) : 30) + '%';
+          if (text) text.textContent = msg;
+        });
+        if (result.success) {
+          const s = result.saved || {};
+          setResult('', `
+            <div style="font-size:13px;font-weight:700;color:#81c995;margin-bottom:4px">✅ Reviews captured!</div>
+            <div style="font-size:12px;color:#e0e0e0">${s.totalReviews != null ? `<strong>${s.totalReviews}</strong> total reviews` : ''}${s.avgRating != null ? ` · ★ ${s.avgRating}` : ''}</div>
+            <div style="font-size:11px;color:#aaa;margin-top:2px">${s.reviewsSaved || 0} individual review(s) saved</div>
+          `);
+        } else {
+          setResult('', `<span style="color:#fdd663">⚠ ${result.reason}</span>`);
+        }
+      } catch (e) {
+        setResult('', `<span style="color:#fdd663">⚠ ${e.message}</span>`);
+      } finally {
+        showProgress(false);
+        disableButtons(false);
+        checkIframeAndUpdateInfo();
+      }
+    };
+
     // Open dashboard
     document.getElementById('gbp-open-dashboard').onclick = () => {
       chrome.runtime.sendMessage({ action: 'openDashboard' });
@@ -853,6 +1101,10 @@
         infoEl.innerHTML = `<span style="color:#81c995">✓ Performance panel found</span><br>
           <span style="color:#aaa">Stored: ${stats.totalBusinesses} businesses, ${stats.totalRecords} records</span>`;
       });
+    } else if (isReviewablePage()) {
+      infoEl.innerHTML = `<span style="color:#81c995">✓ Reviews page detected</span><br>
+        <span style="color:#aaa">Click "Fetch Reviews" to capture review data</span>`;
+      setTimeout(checkIframeAndUpdateInfo, 3000);
     } else {
       infoEl.innerHTML = `<span style="color:#fdd663">⏳ Waiting for Performance panel...</span><br>
         <span style="color:#aaa">Open Performance tab in GBP first</span>`;
@@ -861,7 +1113,7 @@
   }
 
   function disableButtons(v) {
-    ['gbp-update-latest','gbp-save-current','gbp-fetch-tab','gbp-fetch-all'].forEach(id => {
+    ['gbp-update-latest','gbp-save-current','gbp-fetch-tab','gbp-fetch-all','gbp-fetch-reviews'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = v;
     });
@@ -940,9 +1192,19 @@
            !!document.querySelector('[id*="performance-tab"]');
   }
 
+  // A page where reviews can be scraped: a Maps place / business panel with a
+  // detectable business id and a review count visible on the page.
+  function isReviewablePage() {
+    if (!extractBusinessId()) return false;
+    return /\breviews?\b/i.test(document.body?.innerText || '') &&
+           (window.location.href.includes('/maps/') ||
+            window.location.href.includes('business.google.com') ||
+            !!document.querySelector('[aria-label*="stars" i], [data-review-id]'));
+  }
+
   async function init() {
     const tryInject = () => {
-      if (isPerformancePage() && !document.getElementById('gbp-stats-panel')) {
+      if ((isPerformancePage() || isReviewablePage()) && !document.getElementById('gbp-stats-panel')) {
         injectPanel();
       }
     };

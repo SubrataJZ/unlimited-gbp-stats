@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-06-15
+- **New: Review tracking in the same extension.** One extension now crawls review data alongside performance metrics — no second tool needed.
+  - **Fetch Reviews** button on the floating panel scrapes a dated snapshot (total reviews, average rating, 1–5 star distribution) plus individual review cards (author, rating, text, Local Guide / photo flags). The panel now also appears on Google Maps / business review pages, not just the Performance page.
+  - Dashboard gains a **Performance / Reviews** view switcher. The Reviews view shows review-count trend, average-rating trend, star distribution, and a recent-reviews list.
+  - Review data is stored locally (IndexedDB `gbp_unlimited_stats` upgraded v1→v2, additive — existing data untouched) and synced to the **Postgres backend** at `POST /api/ingest/intel` (read back via `GET /api/ingest/intel`), published at `https://gbp.zixify.zixai.in/backend`.
+  - **Backend auto-connect:** signing in with Google now also connects the backend — it exchanges the Google token for a backend session (`POST /api/auth/google/extension`) and provisions a per-user `zx_` ingest key automatically. No manual key setup.
+
 ## [1.5.4] - 2026-06-14
 - **Security: Harden sync-server JWT secret** — removed hardcoded fallback `change-this-secret-in-env`; server now throws and exits at boot if `JWT_SECRET` env var is missing or empty (sync server v1.1.2).
 - **Security: Tighten extension host permissions** — removed over-broad `"https://*/*"` wildcard from `host_permissions` in manifest.json; kept all specific origins (`business.google.com`, `*.google.com`, `localhost`, `gbp.zixify.zixai.in`). This resolves a Chrome Web Store policy violation.

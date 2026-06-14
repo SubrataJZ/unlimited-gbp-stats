@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Unlimited GBP Stats — Dashboard</title>
+  <title>Unlimited GBP Stats — Dashboard · by ZixAI</title>
   <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
@@ -12,6 +12,8 @@
     <div class="topbar-left">
       <svg width="28" height="28" viewBox="0 0 128 128"><rect width="128" height="128" rx="16" fill="#1a1a2e"/><polyline points="20,90 40,70 55,80 75,40 95,55 110,30" fill="none" stroke="#8ab4f8" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <h1>Unlimited GBP Stats</h1>
+      <span style="font-size:10px;font-weight:600;background:linear-gradient(90deg,#8ab4f8,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:0.3px;margin-left:4px;align-self:center">by ZixAI</span>
+      <span id="appVersion" style="font-size:10px;color:#444;margin-left:6px;align-self:center"></span>
     </div>
     <div class="topbar-center">
       <div class="business-switcher">
@@ -105,6 +107,15 @@
         </div>
       </div>
     </header>
+
+    <!-- View Switcher: Performance / Reviews -->
+    <div class="view-switcher" id="viewSwitcher">
+      <button class="view-tab active" data-view="performance">📊 Performance</button>
+      <button class="view-tab" data-view="reviews">⭐ Reviews</button>
+    </div>
+
+    <!-- ═══ Performance View ═══ -->
+    <div id="performanceView">
 
     <!-- Metric Tabs -->
     <div class="metric-tabs" id="metricTabs">
@@ -254,6 +265,61 @@
         </table>
       </div>
     </div>
+
+    </div><!-- /#performanceView -->
+
+    <!-- ═══ Reviews View ═══ -->
+    <div id="reviewsView" style="display:none">
+      <!-- Summary stat cards -->
+      <div class="rv-stats" id="rvStats">
+        <div class="rv-card">
+          <div class="rv-num" id="rvTotal">—</div>
+          <div class="rv-lbl">Total reviews</div>
+        </div>
+        <div class="rv-card">
+          <div class="rv-num" id="rvRating">—</div>
+          <div class="rv-lbl">Average rating</div>
+        </div>
+        <div class="rv-card">
+          <div class="rv-num" id="rvGrowth">—</div>
+          <div class="rv-lbl">New reviews (period)</div>
+        </div>
+        <div class="rv-card">
+          <div class="rv-num" id="rvCaptured">—</div>
+          <div class="rv-lbl">Snapshots captured</div>
+        </div>
+      </div>
+
+      <!-- Empty state for reviews -->
+      <div id="rvEmpty" class="rv-empty" style="display:none">
+        <h3>No review data yet</h3>
+        <p>Open your business on <a href="https://maps.google.com/" target="_blank">Google Maps</a>, scroll to the Reviews section, then click <strong>⭐ Fetch Reviews</strong> on the floating panel.</p>
+      </div>
+
+      <!-- Review count over time -->
+      <div class="chart-section" id="rvCountSection">
+        <h3 class="rv-section-title">Review count over time</h3>
+        <div class="chart-container"><svg id="rvCountChart" class="chart-svg" aria-hidden="true"></svg></div>
+      </div>
+
+      <!-- Average rating trend -->
+      <div class="chart-section" id="rvRatingSection">
+        <h3 class="rv-section-title">Average rating trend</h3>
+        <div class="chart-container"><svg id="rvRatingChart" class="chart-svg" aria-hidden="true"></svg></div>
+      </div>
+
+      <!-- Star distribution -->
+      <div class="chart-section" id="rvStarSection">
+        <h3 class="rv-section-title">Star distribution</h3>
+        <div id="rvStarBars" class="rv-star-bars"></div>
+      </div>
+
+      <!-- Recent reviews -->
+      <div class="table-section" id="rvListSection">
+        <h3>Recent reviews</h3>
+        <div id="rvList" class="rv-list"></div>
+      </div>
+    </div><!-- /#reviewsView -->
   </main>
 
   <!-- Toast -->
@@ -287,78 +353,92 @@
     </div>
   </div>
 
-  <!-- ── Cloud Sync Modal ── -->
+  <!-- ── Cloud Auth Modal ── -->
   <div class="modal-overlay" id="cloudModal" style="display:none">
     <div class="modal cloud-modal">
       <div class="modal-header">
-        <h3>☁ Cloud Sync Settings</h3>
+        <h3>☁ Cloud Sync</h3>
         <button class="modal-close" id="cloudModalClose">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
       </div>
-      <div class="modal-body cloud-modal-body">
 
-        <!-- Status Banner -->
-        <div class="cloud-status-banner" id="cloudStatusBanner">
-          <span id="cloudStatusIcon">⚙</span>
-          <span id="cloudStatusText">Not configured</span>
+      <!-- Logged-in view -->
+      <div id="cloudLoggedIn" style="display:none">
+        <div class="modal-body cloud-modal-body">
+          <div class="cloud-status-banner ok" id="cloudStatusBanner">
+            <span>☁</span>
+            <span id="cloudStatusText">Connected</span>
+          </div>
+          <div class="cloud-user-info" id="cloudUserInfo"></div>
+          <p style="color:var(--text-muted);font-size:13px;margin:8px 0 0">
+            Data syncs automatically whenever you collect GBP stats and on browser startup. Use <strong>Force Sync</strong> to manually trigger an immediate bidirectional sync.
+          </p>
         </div>
-
-        <!-- How it works -->
-        <div class="cloud-info-box">
-          <strong>How it works</strong>
-          <ul>
-            <li>Run the included <code>server/server.js</code> on any host (local, Railway, Render, VPS…)</li>
-            <li>Every time you fetch GBP data, it is saved locally <em>and</em> pushed to your server</li>
-            <li>When you open the dashboard, the latest server data is pulled and merged automatically</li>
-            <li>Your business is identified by its unique <strong>Google Location Code</strong> (extracted from the GBP URL)</li>
-          </ul>
-        </div>
-
-        <!-- Server URL -->
-        <label class="modal-label" for="cloudServerUrl">Sync Server URL</label>
-        <input class="modal-input" type="url" id="cloudServerUrl"
-          placeholder="https://your-server.com  or  http://localhost:3000">
-
-        <!-- API Key -->
-        <label class="modal-label" for="cloudApiKey" style="margin-top:14px">
-          API Key
-          <span style="color:var(--text-muted);font-weight:400">(set in server/.env → API_KEY)</span>
-        </label>
-        <div class="cloud-key-wrap">
-          <input class="modal-input" type="password" id="cloudApiKey" placeholder="your-secret-api-key">
-          <button class="cloud-eye-btn" id="cloudKeyToggle" title="Show / hide key">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+        <div class="modal-footer cloud-modal-footer">
+          <button class="cloud-pull-btn" id="cloudSyncNowBtn" title="Push local data to server and pull any new data from server">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+            Force Sync
           </button>
-        </div>
-
-        <!-- Pull on load toggle -->
-        <label class="cloud-toggle-row" style="margin-top:16px">
-          <input type="checkbox" id="cloudAutoPull" checked>
-          <span class="toggle-slider"></span>
-          <span>Automatically pull latest server data when dashboard opens</span>
-        </label>
-
-        <!-- Test connection result -->
-        <div id="cloudTestResult" style="display:none;margin-top:12px"></div>
-
-        <!-- Server stats (shown after successful test) -->
-        <div id="cloudServerStats" style="display:none;margin-top:10px" class="cloud-server-stats"></div>
-      </div>
-
-      <div class="modal-footer cloud-modal-footer">
-        <button class="cloud-test-btn" id="cloudTestBtn">Test Connection</button>
-        <button class="cloud-pull-btn" id="cloudPullBtn" style="display:none">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-          Pull All from Server
-        </button>
-        <div style="margin-left:auto;display:flex;gap:8px">
-          <button class="dp-btn dp-cancel" id="cloudModalCancel">Cancel</button>
-          <button class="dp-btn dp-apply" id="cloudModalSave">Save</button>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="cloud-test-btn" id="cloudSignOutBtn">Sign Out</button>
+            <button class="dp-btn dp-cancel" id="cloudModalCancel">Close</button>
+          </div>
         </div>
       </div>
+
+      <!-- Auth view (sign in / register) -->
+      <div id="cloudAuthView">
+        <div class="cloud-auth-tabs">
+          <button class="cloud-auth-tab active" data-tab="login">Sign In</button>
+          <button class="cloud-auth-tab" data-tab="register">Register</button>
+        </div>
+        <div class="modal-body cloud-modal-body">
+          <div id="cloudAuthError" class="cloud-test-result error" style="display:none;margin-bottom:4px"></div>
+
+          <!-- Sign in form -->
+          <div id="formLogin">
+            <button type="button" class="cloud-google-btn" id="cloudGoogleLoginBtn">
+              <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.36-8.16 2.36-6.26 0-11.57-3.59-13.46-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+              Continue with Google
+            </button>
+            <div class="cloud-auth-divider"><span>or</span></div>
+            <label class="modal-label" for="loginEmail">Email</label>
+            <input class="modal-input" type="email" id="loginEmail" placeholder="you@example.com" autocomplete="email">
+            <label class="modal-label" style="margin-top:12px" for="loginPassword">Password</label>
+            <input class="modal-input" type="password" id="loginPassword" placeholder="Your password" autocomplete="current-password">
+          </div>
+
+          <!-- Register form -->
+          <div id="formRegister" style="display:none">
+            <button type="button" class="cloud-google-btn" id="cloudGoogleRegisterBtn">
+              <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.36-8.16 2.36-6.26 0-11.57-3.59-13.46-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+              Continue with Google
+            </button>
+            <div class="cloud-auth-divider"><span>or</span></div>
+            <label class="modal-label" for="regName">Name</label>
+            <input class="modal-input" type="text" id="regName" placeholder="Your name" autocomplete="name">
+            <label class="modal-label" style="margin-top:12px" for="regEmail">Email</label>
+            <input class="modal-input" type="email" id="regEmail" placeholder="you@example.com" autocomplete="email">
+            <label class="modal-label" style="margin-top:12px" for="regPassword">Password</label>
+            <input class="modal-input" type="password" id="regPassword" placeholder="Choose a password" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="modal-footer cloud-modal-footer">
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="dp-btn dp-cancel" id="cloudModalCancel2">Cancel</button>
+            <button class="dp-btn dp-apply" id="cloudAuthSubmit">Sign In</button>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
+
+  <!-- ── Footer ── -->
+  <footer style="text-align:center;padding:18px 0 14px;border-top:1px solid #1e1e30;margin-top:auto">
+    <span style="font-size:11px;color:#3a3a50">Developed &amp; powered by </span><a href="https://zixai.in" target="_blank" style="font-size:11px;font-weight:700;background:linear-gradient(90deg,#8ab4f8,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-decoration:none;letter-spacing:0.4px">ZixAI</a><span style="font-size:11px;color:#3a3a50"> &nbsp;·&nbsp; </span><span id="appVersionFooter" style="font-size:11px;color:#3a3a50"></span>
+  </footer>
 
   <script src="storage.js"></script>
   <script src="dashboard.js"></script>

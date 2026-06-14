@@ -10,7 +10,7 @@
 
 const GBPStorage = (() => {
   const DB_NAME = 'gbp_unlimited_stats';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   let _db = null;
 
   function open() {
@@ -30,6 +30,16 @@ const GBPStorage = (() => {
           metStore.createIndex('businessId', 'businessId', { unique: false });
           metStore.createIndex('businessMetric', ['businessId', 'metricType'], { unique: false });
           metStore.createIndex('businessMetricDate', ['businessId', 'metricType', 'year', 'month'], { unique: false });
+        }
+        // ── v2: review snapshots (one per business per capture day) ──
+        if (!db.objectStoreNames.contains('reviewSnapshots')) {
+          const snapStore = db.createObjectStore('reviewSnapshots', { keyPath: 'id' });
+          snapStore.createIndex('businessId', 'businessId', { unique: false });
+        }
+        // ── v2: individual scraped reviews (idempotent by businessId_externalId) ──
+        if (!db.objectStoreNames.contains('reviews')) {
+          const revStore = db.createObjectStore('reviews', { keyPath: 'id' });
+          revStore.createIndex('businessId', 'businessId', { unique: false });
         }
       };
       req.onsuccess = (e) => {
@@ -147,13 +157,81 @@ const GBPStorage = (() => {
     };
   }
 
+  // ── Review operations (v2) ──
+
+  function todayStr() {
+    return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+  }
+
+  /**
+   * Save a dated review snapshot. One snapshot per business per day —
+   * re-running on the same day overwrites that day's row.
+   * @param {object} snap { totalReviews, avgRating, stars:{1..5}, capturedOn? }
+   */
+  async function saveReviewSnapshot(businessId, snap) {
+    const { store } = await tx('reviewSnapshots', 'readwrite');
+    const capturedOn = snap.capturedOn || todayStr();
+    const record = {
+      id: `${businessId}_${capturedOn}`,
+      businessId,
+      capturedOn,
+      totalReviews: snap.totalReviews || 0,
+      avgRating:    snap.avgRating ?? null,
+      stars:        snap.stars || {},
+      collectedAt:  Date.now(),
+    };
+    await promisifyRequest(store.put(record));
+    return record;
+  }
+
+  async function getReviewSnapshots(businessId) {
+    const { store } = await tx('reviewSnapshots');
+    const index = store.index('businessId');
+    const all = await promisifyRequest(index.getAll(businessId));
+    return all.sort((a, b) => (a.capturedOn < b.capturedOn ? -1 : 1));
+  }
+
+  /**
+   * Save an array of individual reviews (idempotent by externalId).
+   * @param {Array} reviews [{ externalId, rating, text, author, isLocalGuide, hasPhoto, reviewedAt }]
+   */
+  async function saveReviews(businessId, reviews) {
+    if (!Array.isArray(reviews) || !reviews.length) return 0;
+    const { store } = await tx('reviews', 'readwrite');
+    let n = 0;
+    for (const r of reviews) {
+      if (!r || !r.externalId) continue;
+      await promisifyRequest(store.put({
+        id: `${businessId}_${r.externalId}`,
+        businessId,
+        externalId:   r.externalId,
+        rating:       r.rating || 0,
+        text:         r.text || '',
+        author:       r.author || '',
+        isLocalGuide: !!r.isLocalGuide,
+        hasPhoto:     !!r.hasPhoto,
+        reviewedAt:   r.reviewedAt || '',
+        collectedAt:  Date.now(),
+      }));
+      n++;
+    }
+    return n;
+  }
+
+  async function getReviews(businessId) {
+    const { store } = await tx('reviews');
+    const index = store.index('businessId');
+    return promisifyRequest(index.getAll(businessId));
+  }
+
   // ── Export / Import for backup ──
 
   async function exportAll() {
     const businesses = await getAllBusinesses();
-    const { store } = await tx('metrics');
-    const metrics = await promisifyRequest(store.getAll());
-    return { version: DB_VERSION, exportedAt: Date.now(), businesses, metrics };
+    const metrics = await promisifyRequest((await tx('metrics')).store.getAll());
+    const reviewSnapshots = await promisifyRequest((await tx('reviewSnapshots')).store.getAll());
+    const reviews = await promisifyRequest((await tx('reviews')).store.getAll());
+    return { version: DB_VERSION, exportedAt: Date.now(), businesses, metrics, reviewSnapshots, reviews };
   }
 
   async function importAll(data) {
@@ -164,6 +242,15 @@ const GBPStorage = (() => {
     const { store } = await tx('metrics', 'readwrite');
     for (const metric of data.metrics) {
       await promisifyRequest(store.put(metric));
+    }
+    // v2 stores — optional in older backups
+    if (Array.isArray(data.reviewSnapshots)) {
+      const { store: s } = await tx('reviewSnapshots', 'readwrite');
+      for (const snap of data.reviewSnapshots) await promisifyRequest(s.put(snap));
+    }
+    if (Array.isArray(data.reviews)) {
+      const { store: s } = await tx('reviews', 'readwrite');
+      for (const rev of data.reviews) await promisifyRequest(s.put(rev));
     }
   }
 
@@ -197,6 +284,10 @@ const GBPStorage = (() => {
     getAllMetricsForBusiness,
     getAvailableMonths,
     getOldestAndNewest,
+    saveReviewSnapshot,
+    getReviewSnapshots,
+    saveReviews,
+    getReviews,
     exportAll,
     importAll,
     getStats,
