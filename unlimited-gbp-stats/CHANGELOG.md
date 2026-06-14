@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-06-15
+- **New: per-listing Review buttons in Google Maps / Search results.** A button row (⭐ Review · 🔗 Open reviews) is now injected under **each** business in the results — yours and competitors. Clicking **Review** captures that listing's name, rating, and review count directly from the card (robust — no need to open a panel) and sends it as a snapshot; it also best-effort opens the business's reviews in a background tab to scrape individual reviews.
+  - Card detection is class-light and resilient (finds results by their rating+review-count pattern, with fallbacks) and logs what it matched to the page console for easy diagnosis as Google's DOM changes.
+  - Competitor listings are recorded as tracked businesses (`isOwn: false`) and appear in the dashboard's business switcher so their review trend can be viewed.
+  - Fixes the earlier limitation where "Fetch Reviews" only worked with a business's review panel already open.
+
 ## [1.6.0] - 2026-06-15
 - **New: Review tracking in the same extension.** One extension now crawls review data alongside performance metrics — no second tool needed.
   - **Fetch Reviews** button on the floating panel scrapes a dated snapshot (total reviews, average rating, 1–5 star distribution) plus individual review cards (author, rating, text, Local Guide / photo flags). The panel now also appears on Google Maps / business review pages, not just the Performance page.

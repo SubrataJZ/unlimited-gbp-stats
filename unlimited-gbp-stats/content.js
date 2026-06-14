@@ -1181,6 +1181,196 @@
     }
   });
 
+  // ══════════════════════════════════════════════════════════════════════════
+  //  PER-LISTING BUTTONS  (inject under each GBP card in Maps/Search results)
+  // ══════════════════════════════════════════════════════════════════════════
+  // Defensive, class-light: a "card" is detected by the rating+review-count
+  // pattern that every GBP result shows (e.g. "4.5 (1,390)"). Heavy logging so
+  // selector drift is easy to diagnose from the page console.
+
+  const GBP_ACTIONS_CLASS = 'gbp-zx-actions';
+  const GBP_DONE_ATTR     = 'data-gbp-zx';
+
+  function slugifyName(name) {
+    return 'gbpx-' + (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+  }
+
+  // Pull {name, rating, count, placeUrl} out of a result card, with fallbacks.
+  function extractCardData(card) {
+    const text = card.innerText || '';
+
+    // rating + count — "4.5(1,390)" / "4.5 \n (1,390)" / "4.5 stars 1,390 reviews"
+    let rating = null, count = null;
+    const rc = text.match(/([0-5](?:\.\d)?)\s*\(?\s*([\d,]{1,9})\s*\)?\s*(?:reviews?)?/i);
+    const ratingMatch = text.match(/\b([0-5]\.\d)\b/);
+    if (ratingMatch) rating = parseFloat(ratingMatch[1]);
+    const countMatch = text.match(/\(([\d,]{1,9})\)/) || text.match(/([\d,]{2,9})\s+reviews?/i);
+    if (countMatch) count = parseInt(countMatch[1].replace(/,/g, ''));
+    if (rating == null && rc) rating = parseFloat(rc[1]);
+    if (count == null && rc) count = parseInt(rc[2].replace(/,/g, ''));
+
+    // name — heading-like element, else aria-label of the place link, else 1st line
+    let name = '';
+    const nameEl = card.querySelector(
+      '.qBF1Pd, .fontHeadlineSmall, [role="heading"], a[aria-label]'
+    );
+    if (nameEl) name = (nameEl.getAttribute('aria-label') || nameEl.textContent || '').trim();
+    if (!name || name.length < 2) {
+      const firstLine = text.split('\n').map(s => s.trim()).filter(Boolean)[0];
+      if (firstLine) name = firstLine;
+    }
+
+    // place / review link
+    const link = card.querySelector('a[href*="/maps/place/"]') ||
+                 card.querySelector('a[href*="/maps/"]') ||
+                 (card.matches?.('a[href]') ? card : null);
+    const placeUrl = link ? link.href : null;
+
+    return { name: name.slice(0, 120), rating, count, placeUrl };
+  }
+
+  // Candidate card containers — try known wrappers, then a generic heuristic.
+  function findListingCards() {
+    const cards = new Set();
+
+    // Known Maps result wrappers / place links
+    document.querySelectorAll('div.Nv2PK, [role="article"], a.hfpxzc').forEach(el => {
+      const card = el.closest('div.Nv2PK') || el.closest('[role="article"]') || el;
+      if (card) cards.add(card);
+    });
+
+    // Generic fallback: any element holding a "(1,234)" near a rating, walked up
+    // to a reasonably-sized container that also has a link.
+    if (cards.size === 0) {
+      const leaves = [...document.querySelectorAll('span, div')].filter(
+        el => el.childElementCount === 0 && /\(\d[\d,]*\)/.test(el.textContent || '')
+      );
+      for (const leaf of leaves) {
+        let el = leaf;
+        for (let d = 0; d < 6 && el; d++) {
+          if (el.querySelector?.('a[href*="/maps/"], a[href]') &&
+              (el.innerText || '').length < 400) { cards.add(el); break; }
+          el = el.parentElement;
+        }
+      }
+    }
+    return [...cards];
+  }
+
+  function injectListingButtons() {
+    const cards = findListingCards();
+    let injected = 0;
+    for (const card of cards) {
+      if (card.getAttribute(GBP_DONE_ATTR)) continue;
+      const data = extractCardData(card);
+      // Only inject where we can identify a business with review data
+      if (!data.name || (data.count == null && data.rating == null)) continue;
+      card.setAttribute(GBP_DONE_ATTR, '1');
+
+      const bar = document.createElement('div');
+      bar.className = GBP_ACTIONS_CLASS;
+      bar.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 2px;padding:4px 0';
+      bar.innerHTML = `
+        <button type="button" class="gbp-zx-btn gbp-zx-review" style="${BTN_CSS}">⭐ Review</button>
+        <button type="button" class="gbp-zx-btn gbp-zx-open" style="${BTN_CSS}">🔗 Open reviews</button>
+      `;
+      bar.querySelector('.gbp-zx-review').addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        onListingReviewClick(card, e.currentTarget);
+      });
+      bar.querySelector('.gbp-zx-open').addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const d = extractCardData(card);
+        if (d.placeUrl) openReviewTab(d.placeUrl, d.name);
+      });
+
+      // Place the bar safely: never inside an <a> (would nest interactive els
+      // and risk triggering navigation) — insert right after it instead.
+      if (card.tagName === 'A') card.insertAdjacentElement('afterend', bar);
+      else card.appendChild(bar);
+      injected++;
+    }
+    if (injected) console.log(`[GBP] Injected listing buttons on ${injected} card(s)`);
+  }
+
+  const BTN_CSS = 'font:600 11px system-ui;cursor:pointer;border:1px solid #c98a3a;background:#fff3e0;color:#a85a00;border-radius:6px;padding:3px 8px;line-height:1.4';
+
+  // Capture the snapshot visible in the card and send it; then best-effort open
+  // the review link in a new tab to scrape individual reviews.
+  function onListingReviewClick(card, btn) {
+    const d = extractCardData(card);
+    console.log('[GBP] Listing review click:', d);
+    if (!d.name) { flashBtn(btn, '⚠ no name'); return; }
+
+    const businessId = slugifyName(d.name);
+    const snapshot = {
+      totalReviews: d.count || 0,
+      avgRating:    d.rating != null ? d.rating : null,
+      stars:        {},
+    };
+
+    chrome.runtime.sendMessage({
+      action: 'saveReviewData',
+      business: { id: businessId, name: d.name },
+      isOwn: false,                 // listing in results → treat as tracked/competitor
+      snapshot,
+      reviews: [],
+    }, (resp) => {
+      if (chrome.runtime.lastError) { flashBtn(btn, '⚠ err'); return; }
+      flashBtn(btn, resp && resp.success ? `✓ ${d.count ?? ''}★${d.rating ?? ''}` : '⚠');
+    });
+
+    // Best-effort: open the place's reviews to scrape individual reviews
+    if (d.placeUrl) openReviewTab(d.placeUrl, d.name);
+  }
+
+  function flashBtn(btn, label) {
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.textContent = label;
+    setTimeout(() => { btn.textContent = orig; }, 2500);
+  }
+
+  // Ask the background worker to open the place URL in a new tab flagged for
+  // auto-scrape. The content script on that tab (see auto-scrape hook in init)
+  // detects the flag, scrapes reviews, and sends them.
+  function openReviewTab(placeUrl, name) {
+    try {
+      const u = new URL(placeUrl, location.href);
+      u.hash = 'gbpx-scrape=' + encodeURIComponent(name || '');
+      chrome.runtime.sendMessage({ action: 'openReviewTab', url: u.toString() });
+    } catch (e) { console.warn('[GBP] openReviewTab failed:', e); }
+  }
+
+  // Auto-scrape hook: if THIS page was opened with the #gbpx-scrape flag, wait
+  // for the reviews panel and scrape individual reviews for that business.
+  async function maybeAutoScrapeReviews() {
+    const m = (location.hash || '').match(/gbpx-scrape=([^&]*)/);
+    if (!m) return;
+    const name = decodeURIComponent(m[1] || '');
+    console.log('[GBP] Auto-scrape reviews flagged for:', name);
+    // Let the place panel render, then try to open the reviews list
+    await sleep(2500);
+    await openReviewsPanel();
+    const reviews = await extractIndividualReviews().catch(() => []);
+    const snap = extractReviewSnapshot();
+    if (!reviews.length && !snap) { console.log('[GBP] Auto-scrape: nothing found'); return; }
+    chrome.runtime.sendMessage({
+      action: 'saveReviewData',
+      business: { id: slugifyName(name), name },
+      isOwn: false,
+      snapshot: snap,
+      reviews,
+    }, () => console.log(`[GBP] Auto-scrape sent ${reviews.length} reviews for ${name}`));
+  }
+
+  // Try to click into the Reviews tab/section of an open Maps place panel.
+  async function openReviewsPanel() {
+    const btn = [...document.querySelectorAll('button, [role="tab"], a')]
+      .find(el => /^reviews?\b/i.test((el.getAttribute('aria-label') || el.textContent || '').trim()));
+    if (btn) { realClick(btn); await sleep(2000); }
+  }
+
   // ── Init: inject panel when performance page is detected ──────────────────
   function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
 
@@ -1202,10 +1392,21 @@
             !!document.querySelector('[aria-label*="stars" i], [data-review-id]'));
   }
 
+  // Maps/Search results page where per-listing buttons make sense.
+  function isResultsPage() {
+    return /\/maps\/search\//.test(location.href) ||
+           /\/maps\//.test(location.href) ||
+           (/google\.[a-z.]+\/search/.test(location.href) && /\(\d[\d,]*\)/.test(document.body?.innerText || ''));
+  }
+
   async function init() {
     const tryInject = () => {
       if ((isPerformancePage() || isReviewablePage()) && !document.getElementById('gbp-stats-panel')) {
         injectPanel();
+      }
+      // Per-listing buttons on Maps/Search results
+      if (isResultsPage()) {
+        try { injectListingButtons(); } catch (e) { console.warn('[GBP] injectListingButtons error:', e); }
       }
     };
     // Try at multiple intervals (GBP modal opens lazily)
@@ -1213,6 +1414,11 @@
 
     const debouncedCheck = debounce(tryInject, 500);
     new MutationObserver(debouncedCheck).observe(document.documentElement, { childList: true, subtree: true });
+
+    // If this tab was opened by an "Open reviews"/Review click, auto-scrape.
+    if (location.hash.includes('gbpx-scrape=')) {
+      maybeAutoScrapeReviews().catch(e => console.warn('[GBP] auto-scrape error:', e));
+    }
   }
 
   if (!IS_IFRAME || IS_DIRECT_PERFORMANCE) {

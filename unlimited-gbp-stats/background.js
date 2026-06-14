@@ -160,11 +160,11 @@ async function connectBackend(googleAccessToken) {
  * (googlePlaceId) so review data lines up with the same business the dashboard
  * already tracks via metrics.
  */
-function buildIntelPayload(business, snapshot, reviews) {
+function buildIntelPayload(business, snapshot, reviews, isOwn = true) {
   const b = {
     name: business?.name || String(business?.id || 'Unknown'),
     googlePlaceId: String(business?.id || ''),
-    isOwn: true,
+    isOwn: !!isOwn,
   };
   if (snapshot && (snapshot.totalReviews || snapshot.avgRating != null)) {
     b.snapshot = {
@@ -195,11 +195,11 @@ function buildIntelPayload(business, snapshot, reviews) {
  * Push a review snapshot + individual reviews to the Postgres backend's
  * /api/ingest/intel. Never throws — local storage stays source of truth.
  */
-async function syncReviewToBackend(business, snapshot, reviews) {
+async function syncReviewToBackend(business, snapshot, reviews, isOwn = true) {
   const key = await getBackendKey();
   if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable review sync' };
 
-  const payload = buildIntelPayload(business, snapshot, reviews);
+  const payload = buildIntelPayload(business, snapshot, reviews, isOwn);
   const b = payload.businesses[0];
   if (!b.snapshot && !(b.reviews && b.reviews.length)) return { ok: false, error: 'Nothing to sync' };
 
@@ -711,7 +711,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ? GBPStorage.saveReviews(businessId, reviews) : 0)
       .then((reviewsSaved) => {
         // Push to the Postgres backend (fire-and-forget; never fail local save)
-        syncReviewToBackend(business, snapshot, reviews).catch(() => {});
+        syncReviewToBackend(business, snapshot, reviews, msg.isOwn !== false).catch(() => {});
         sendResponse({
           success: true,
           saved: {
@@ -725,6 +725,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         console.error('[GBP BG] saveReviewData error:', e);
         sendResponse({ success: false, reason: e.message });
       });
+    return true;
+  }
+
+  // ── Open a place's reviews in a new tab flagged for auto-scrape ───────────
+  if (msg.action === 'openReviewTab') {
+    if (msg.url) chrome.tabs.create({ url: msg.url, active: false });
+    sendResponse({ success: true });
     return true;
   }
 
