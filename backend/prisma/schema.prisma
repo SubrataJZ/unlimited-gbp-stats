@@ -232,7 +232,7 @@ model Membership {
 model TrackedBusiness {
   id            String  @id @default(cuid())
   orgId         String  @map("org_id")
-  googlePlaceId String? @unique @map("google_place_id")
+  googlePlaceId String? @map("google_place_id")
   name          String
   address       String?
   searchUrl     String? @map("search_url")
@@ -245,6 +245,7 @@ model TrackedBusiness {
   scrapedReviews ScrapedReview[]
   context        BusinessContext?
 
+  @@unique([orgId, googlePlaceId])
   @@index([orgId])
   @@map("tracked_businesses")
 }
