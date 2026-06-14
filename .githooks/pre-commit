@@ -83,4 +83,97 @@ if [ -n "$backend_code" ]; then
   fi
 fi
 
+# ── Guard 1: Secret scan ─────────────────────────────────────────────────────
+# Block if staged added lines contain known secret patterns.
+staged_diff=$(git diff --cached -U0 | grep '^+' || true)
+
+# Build the forbidden-fallback pattern at runtime so this script file does not
+# contain the literal string and cannot self-trigger.
+_p1="change-this-secret"; _p2="-in-env"; _bad_fallback="${_p1}${_p2}"
+
+if echo "$staged_diff" | grep -q "$_bad_fallback"; then
+  echo ""
+  echo "  ✗ COMMIT BLOCKED — Secret scan"
+  echo "  ----------------------------------------------------------------"
+  echo "  Staged diff contains the hardcoded JWT fallback secret."
+  echo "  Remove it and require JWT_SECRET from env before committing."
+  echo "  ----------------------------------------------------------------"
+  echo ""
+  exit 1
+fi
+
+if echo "$staged_diff" | grep -qE 'sk-or-[A-Za-z0-9_-]+'; then
+  echo ""
+  echo "  ✗ COMMIT BLOCKED — Secret scan"
+  echo "  ----------------------------------------------------------------"
+  echo "  Staged diff contains an OpenRouter API key (sk-or-...)."
+  echo "  Remove it and use an environment variable instead."
+  echo "  ----------------------------------------------------------------"
+  echo ""
+  exit 1
+fi
+
+if echo "$staged_diff" | grep -qE 'OPENROUTER_API_KEY\s*=\s*.+'; then
+  echo ""
+  echo "  ✗ COMMIT BLOCKED — Secret scan"
+  echo "  ----------------------------------------------------------------"
+  echo "  Staged diff contains an OPENROUTER_API_KEY assignment with a value."
+  echo "  Never commit API keys — use environment variables or a secrets manager."
+  echo "  ----------------------------------------------------------------"
+  echo ""
+  exit 1
+fi
+
+# Extra check: OpenRouter key material must never appear in client/extension code
+client_secret=$(git diff --cached --name-only | grep '^unlimited-gbp-stats/' | while read f; do
+  git show ":$f" 2>/dev/null | grep -E 'sk-or-[A-Za-z0-9_-]+|OPENROUTER_API_KEY\s*=\s*.+' || true
+done)
+
+if [ -n "$client_secret" ]; then
+  echo ""
+  echo "  ✗ COMMIT BLOCKED — Secret scan (client code)"
+  echo "  ----------------------------------------------------------------"
+  echo "  An OpenRouter key or OPENROUTER_API_KEY value was found inside"
+  echo "  unlimited-gbp-stats/ (client/extension code). The AI key must"
+  echo "  ONLY exist server-side (backend/). Remove it from extension files."
+  echo "  ----------------------------------------------------------------"
+  echo ""
+  exit 1
+fi
+
+# ── Guard 2: Manifest host-permission check ───────────────────────────────────
+if echo "$staged" | grep -q '^unlimited-gbp-stats/manifest.json$'; then
+  manifest_content=$(git show :unlimited-gbp-stats/manifest.json 2>/dev/null || true)
+  if echo "$manifest_content" | grep -qE '"https://\*/\*"|\"\*://\*/\*\"'; then
+    echo ""
+    echo "  ✗ COMMIT BLOCKED — Manifest host-permission guard"
+    echo "  ----------------------------------------------------------------"
+    echo "  unlimited-gbp-stats/manifest.json contains an over-broad wildcard"
+    echo "  host_permission (\"https://*/*\" or \"*://*/*\"). This violates Chrome"
+    echo "  Web Store policy. Remove the wildcard entry and use specific origins."
+    echo "  ----------------------------------------------------------------"
+    echo ""
+    exit 1
+  fi
+fi
+
+# ── Guard 3: Deprecated-backend warning (soft) ───────────────────────────────
+deprecated_server=$(echo "$staged" \
+  | grep '^unlimited-gbp-stats/server/' \
+  | grep -v '^unlimited-gbp-stats/server/package.json$' || true)
+
+if [ -n "$deprecated_server" ]; then
+  echo ""
+  echo "  ⚠ WARNING — Frozen backend"
+  echo "  ----------------------------------------------------------------"
+  echo "  You are committing changes to unlimited-gbp-stats/server/ which"
+  echo "  is FROZEN (security-only fixes, scheduled for deletion)."
+  echo "  If this is a security fix, proceed. For any new feature work,"
+  echo "  target backend/ (TypeScript + Prisma) instead."
+  echo "  Files: $(echo "$deprecated_server" | tr '\n' ' ')"
+  echo "  ----------------------------------------------------------------"
+  echo "  Commit proceeding despite warning."
+  echo ""
+fi
+
 exit 0
