@@ -22,11 +22,15 @@ const cors     = require('cors');
 const path     = require('path');
 const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
+const pkg      = require('./package.json');
 
 const app        = express();
 const PORT       = process.env.PORT       || 3000;
 const DB_PATH    = process.env.DB_PATH    || path.join(__dirname, 'gbp_data.sqlite');
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-env';
+if (!process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET environment variable is required — set it in .env before starting the server');
+}
+const JWT_SECRET = process.env.JWT_SECRET;
 const VERBOSE    = process.env.VERBOSE    === 'true';
 
 // ── Database ──────────────────────────────────────────────────────────────────
@@ -181,7 +185,14 @@ function saveOneMetric(userId, locationCode, metric) {
   const existing = stmts.getMetricById.get(id, userId);
   const isReal   = !metric.derived;
 
+  // Never overwrite a real record with a derived one
   if (existing && existing.derived === 0 && !isReal) return 'skipped';
+
+  // Never overwrite a real record with a lower total from another real record
+  // (keeps the highest value seen across all devices/scrapes)
+  if (existing && existing.derived === 0 && isReal) {
+    if ((metric.total || 0) < existing.total) return 'skipped';
+  }
 
   stmts.upsertMetric.run(
     id, userId, locationCode,
@@ -224,7 +235,7 @@ function requireAuth(req, res, next) {
 app.get('/health', (req, res) => {
   const userCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
   const recCount  = db.prepare('SELECT COUNT(*) AS n FROM metrics').get().n;
-  res.json({ ok: true, version: '2.0.0', users: userCount, records: recCount });
+  res.json({ ok: true, version: pkg.version, poweredBy: 'ZixAI', users: userCount, records: recCount });
 });
 
 /**

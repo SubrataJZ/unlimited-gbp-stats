@@ -8,19 +8,21 @@ datasource db {
 }
 
 model User {
-  id           String         @id @default(uuid())
-  googleId     String         @unique @map("google_id")
-  email        String         @unique
+  id           String  @id @default(uuid())
+  googleId     String  @unique @map("google_id")
+  email        String  @unique
   name         String?
-  avatarUrl    String?        @map("avatar_url")
-  accessToken  String?        @map("access_token")
-  refreshToken String?        @map("refresh_token")
+  avatarUrl    String? @map("avatar_url")
+  accessToken  String? @map("access_token")
+  refreshToken String? @map("refresh_token")
 
   locations     Location[]
   businesses    Business[]
   apiKeys       ApiKey[]
   refreshTokens RefreshToken[]
   auditLogs     AuditLog[]
+  memberships   Membership[]
+  aiUsage       AiUsage[]
   createdAt     DateTime       @default(now()) @map("created_at")
   updatedAt     DateTime       @updatedAt @map("updated_at")
 
@@ -110,15 +112,17 @@ model Review {
 }
 
 model Location {
-  id                String   @id @default(uuid())
-  googleLocationId  String   @unique @map("google_location_id")
-  businessName      String   @map("business_name")
-  userId            String   @map("user_id")
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String @id @default(uuid())
+  googleLocationId String @unique @map("google_location_id")
+  businessName     String @map("business_name")
+  userId           String @map("user_id")
+  user             User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  metrics           Metric[]
-  isActive          Boolean  @default(true) @map("is_active")
-  createdAt         DateTime @default(now()) @map("created_at")
+  metrics        Metric[]
+  reports        Report[]
+  yoyComparisons YoYComparison[]
+  isActive       Boolean         @default(true) @map("is_active")
+  createdAt      DateTime        @default(now()) @map("created_at")
 
   @@index([userId])
   @@map("locations")
@@ -129,14 +133,203 @@ model Metric {
   locationId String   @map("location_id")
   location   Location @relation(fields: [locationId], references: [googleLocationId], onDelete: Cascade)
 
-  date       DateTime @db.Date @map("date")
+  date       DateTime @map("date") @db.Date
   metricType String   @map("metric_type")
   value      Int
 
-  createdAt  DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([locationId, date, metricType])
   @@index([locationId])
   @@index([date])
   @@map("metrics")
+}
+
+model Report {
+  id         String   @id @default(uuid())
+  locationId String   @map("location_id")
+  location   Location @relation(fields: [locationId], references: [googleLocationId], onDelete: Cascade)
+
+  reportType     String   @map("report_type")
+  dateRangeStart DateTime @map("date_range_start") @db.Date
+  dateRangeEnd   DateTime @map("date_range_end") @db.Date
+
+  htmlContent String @map("html_content")
+  pdfContent  Bytes? @map("pdf_content")
+
+  generatedAt    DateTime  @default(now()) @map("generated_at")
+  expiresAt      DateTime? @map("expires_at")
+  downloadUrl    String?   @map("download_url")
+  recipientEmail String?   @map("recipient_email")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([locationId])
+  @@index([generatedAt])
+  @@index([expiresAt])
+  @@map("reports")
+}
+
+model YoYComparison {
+  id         String   @id @default(uuid())
+  locationId String   @map("location_id")
+  location   Location @relation(fields: [locationId], references: [googleLocationId], onDelete: Cascade)
+
+  metricType String @map("metric_type")
+  year       Int
+  month      Int
+
+  currentValue   Int    @map("current_value")
+  priorYearValue Int?   @map("prior_year_value")
+  yoyPercent     Float? @map("yoy_percent")
+
+  calculatedAt DateTime @default(now()) @map("calculated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([locationId, metricType, year, month])
+  @@index([locationId])
+  @@index([year, month])
+  @@map("yoy_comparisons")
+}
+
+// ── GBP Sentinel Pro models ───────────────────────────────────────────────────
+
+enum Role {
+  AGENCY_ADMIN
+  AGENCY_MEMBER
+  OWNER_READONLY
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  plan      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships       Membership[]
+  trackedBusinesses TrackedBusiness[]
+
+  @@map("organizations")
+}
+
+model Membership {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  orgId  String @map("org_id")
+  role   Role
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+  @@map("memberships")
+}
+
+model TrackedBusiness {
+  id            String  @id @default(cuid())
+  orgId         String  @map("org_id")
+  googlePlaceId String? @unique @map("google_place_id")
+  name          String
+  address       String?
+  searchUrl     String? @map("search_url")
+  logoUrl       String? @map("logo_url")
+  isOwn         Boolean @default(false) @map("is_own")
+  locationId    String? @map("location_id")
+
+  org            Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  snapshots      ProfileSnapshot[]
+  scrapedReviews ScrapedReview[]
+  context        BusinessContext?
+
+  @@index([orgId])
+  @@map("tracked_businesses")
+}
+
+model ProfileSnapshot {
+  id                      String   @id @default(cuid())
+  trackedBusinessId       String   @map("tracked_business_id")
+  capturedOn              DateTime @map("captured_on") @db.Date
+  totalReviews            Int      @map("total_reviews")
+  displayRating           Float?   @map("display_rating")
+  trueAverage             Float?   @map("true_average")
+  reviewsWithPhotos       Int      @default(0) @map("reviews_with_photos")
+  localGuideReviews       Int      @default(0) @map("local_guide_reviews")
+  avgReviewerContribution Float?   @map("avg_reviewer_contribution")
+
+  trackedBusiness TrackedBusiness @relation(fields: [trackedBusinessId], references: [id], onDelete: Cascade)
+
+  @@unique([trackedBusinessId, capturedOn])
+  @@index([trackedBusinessId])
+  @@map("profile_snapshots")
+}
+
+model ScrapedReview {
+  id                String    @id @default(cuid())
+  trackedBusinessId String    @map("tracked_business_id")
+  externalReviewId  String    @map("external_review_id")
+  authorName        String?   @map("author_name")
+  authorId          String?   @map("author_id")
+  authorReviewCount Int?      @map("author_review_count")
+  isLocalGuide      Boolean   @default(false) @map("is_local_guide")
+  hasPhoto          Boolean   @default(false) @map("has_photo")
+  rating            Int
+  text              String?
+  reviewedAt        DateTime? @map("reviewed_at")
+  scrapedAt         DateTime  @default(now()) @map("scraped_at")
+
+  trackedBusiness TrackedBusiness @relation(fields: [trackedBusinessId], references: [id], onDelete: Cascade)
+  reply           ReviewReply?
+
+  @@unique([trackedBusinessId, externalReviewId])
+  @@index([trackedBusinessId])
+  @@map("scraped_reviews")
+}
+
+model BusinessContext {
+  id                String  @id @default(cuid())
+  trackedBusinessId String  @unique @map("tracked_business_id")
+  tone              String?
+  services          String?
+  ownerName         String? @map("owner_name")
+  signature         String?
+
+  trackedBusiness TrackedBusiness @relation(fields: [trackedBusinessId], references: [id], onDelete: Cascade)
+
+  @@map("business_contexts")
+}
+
+model ReviewReply {
+  id              String   @id @default(cuid())
+  scrapedReviewId String   @unique @map("scraped_review_id")
+  draftText       String   @map("draft_text")
+  finalText       String?  @map("final_text")
+  status          String   @default("draft")
+  model           String?
+  createdByUserId String?  @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  scrapedReview ScrapedReview @relation(fields: [scrapedReviewId], references: [id], onDelete: Cascade)
+
+  @@map("review_replies")
+}
+
+model AiUsage {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  feature   String
+  model     String
+  tokensIn  Int      @default(0) @map("tokens_in")
+  tokensOut Int      @default(0) @map("tokens_out")
+  costUsd   Float    @default(0) @map("cost_usd")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("ai_usage")
 }

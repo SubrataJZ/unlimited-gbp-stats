@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.4] - 2026-06-14
+- **Security: Harden sync-server JWT secret** — removed hardcoded fallback `change-this-secret-in-env`; server now throws and exits at boot if `JWT_SECRET` env var is missing or empty (sync server v1.1.2).
+- **Security: Tighten extension host permissions** — removed over-broad `"https://*/*"` wildcard from `host_permissions` in manifest.json; kept all specific origins (`business.google.com`, `*.google.com`, `localhost`, `gbp.zixify.zixai.in`). This resolves a Chrome Web Store policy violation.
+
+## [1.5.3] - 2026-06-14
+- **Fixed: Year-over-Year (YoY) % comparison was inaccurate on the chart.** Three root causes:
+  - `getMetricsForRange` returns a *sparse* array (missing months omitted), so the current series and the comparison series were paired by array index — any gap silently compared the wrong months. Comparison values are now aligned to each current month **by calendar** (same month one year earlier for YoY).
+  - The green % label on the chart showed month-over-month change even in YoY compare mode. It now shows the exact % change vs the matching comparison month (same month last year) when comparison is active, and falls back to month-over-month only when no comparison is enabled.
+  - The tooltip YoY lookup never matched (key `"2025-03"` vs label `"Mar 2025"`); the % is now computed directly from the aligned values.
+- Comparison line now renders contiguous segments so a missing comparison month no longer drags the line to zero, and missing months show a `⊖ pending` indicator instead of a wrong %.
+
+## [1.5.2] - 2026-06-14
+- Fixed version text color in the floating panel footer (was dark `#444` on dark background and invisible) — now white
+
+## [1.5.1] - 2026-06-14
+- **Fixed: version number never updated in the UI.** All version displays were hardcoded `v1.1.0` and ignored the manifest. They now read dynamically from a single source of truth so a manifest bump propagates everywhere automatically:
+  - popup header, dashboard topbar + footer + tab title → `chrome.runtime.getManifest().version`
+  - content-script floating panel → `chrome.runtime.getManifest().version`
+  - sync-server `/health` endpoint → reads `package.json` version (was hardcoded `2.1.0`)
+
 ## [1.5.0] - 2026-06-14
 - Reworked Google sign-in to use `chrome.identity.launchWebAuthFlow` with `prompt=select_account` so users can pick any Google account (not just Chrome's default)
 - Uses `chrome.identity.getRedirectURL()` for the redirect URI instead of a hand-built string
