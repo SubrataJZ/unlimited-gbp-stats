@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-06-14
+- Reworked Google sign-in to use `chrome.identity.launchWebAuthFlow` with `prompt=select_account` so users can pick any Google account (not just Chrome's default)
+- Uses `chrome.identity.getRedirectURL()` for the redirect URI instead of a hand-built string
+- Rotated Google OAuth client to a Web Application client: `512083455568-3caijv22kvq0g5n2i1oajg3bmergclpb` (kept in sync across manifest.json and background.js)
+- Sync server URL now points to the domain `https://gbp.zixify.zixai.in` (via nginx) instead of a raw IP:port
+- Added a pre-commit SemVer guard (`.githooks/pre-commit`) so version bumps + CHANGELOG updates are mechanically enforced
+
 ## [1.4.0] - 2026-06-14
 - Added "Continue with Google" sign-in to the Cloud Sync modal (dashboard) for both Sign In and Register tabs
 - Switched Google OAuth from `launchWebAuthFlow` to `chrome.identity.getAuthToken` (no redirect URI needed — fixes `redirect_uri_mismatch`)

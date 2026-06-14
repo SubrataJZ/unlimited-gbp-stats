@@ -20,12 +20,8 @@ importScripts('storage.js');
 GBPStorage.open().catch(e => console.error('[GBP BG] Storage init error:', e));
 
 // ── Hardcoded server URL — change this to your deployed server ────────────────
-const SERVER_URL = 'http://gbp.zixify.zixai.in:3005'; // GBP Stats Server (Hetzner VPS)
-
-// ── Google OAuth client ID ────────────────────────────────────────────────────
-// Create one at https://console.cloud.google.com → APIs & Services → Credentials
-// Type: Web application, Redirect URI: https://<extensionId>.chromiumapp.org/
-const GOOGLE_CLIENT_ID = '512083455568-4o7052vjg67pl21vojekgrs0qcta4a1n.apps.googleusercontent.com';
+const SERVER_URL        = 'https://gbp.zixify.zixai.in'; // GBP Stats Server (Hetzner VPS)
+const GOOGLE_CLIENT_ID  = '512083455568-3caijv22kvq0g5n2i1oajg3bmergclpb.apps.googleusercontent.com';
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
@@ -100,14 +96,27 @@ async function syncMetricToServer(locationCode, businessName, metric) {
  * @param {string} businessId
  * @returns {Promise<{success:boolean, merged:number, error?:string}>}
  */
-async function pullFromServer(businessId) {
+/**
+ * Pull data for one business from the server and merge into local IndexedDB.
+ *
+ * Merge strategy — "take the best of both":
+ *   • If the record exists locally with a HIGHER total → keep local (don't overwrite).
+ *   • If the record exists locally with a LOWER total  → take server value.
+ *   • If the record only exists on server              → save it locally.
+ *   • Derived records are never used to overwrite real ones.
+ *
+ * @param {string}  businessId
+ * @param {boolean} full  When true, fetch ALL records (since=0), ignoring lastPull cache.
+ */
+async function pullFromServer(businessId, full = false) {
   const token = await getAuthToken();
   if (!token) return { success: false, error: 'Not logged in' };
 
   const lastPull = await new Promise(resolve =>
     chrome.storage.local.get(['gbpLastPull'], r => resolve(r.gbpLastPull || {}))
   );
-  const since = lastPull[businessId] || 0;
+  // full=true → always fetch everything; otherwise use cached timestamp
+  const since = full ? 0 : (lastPull[businessId] || 0);
 
   try {
     const url  = `${SERVER_URL}/api/business/${businessId}?since=${since}`;
@@ -126,9 +135,25 @@ async function pullFromServer(businessId) {
       await GBPStorage.saveBusiness({ id: business.id, name: business.name });
     }
 
-    // Merge each metric into local IndexedDB
+    // Merge each metric — take the higher total, never overwrite real with derived
     let merged = 0;
     for (const m of (metrics || [])) {
+      const serverIsReal = !m.derived;
+
+      // Check what we already have locally for this slot
+      const existing = await GBPStorage.getMetric(
+        m.businessId || businessId, m.metricType, m.year, m.month
+      );
+
+      if (existing) {
+        const localIsReal = !existing.derived;
+        // Never overwrite a real local record with a derived server record
+        if (localIsReal && !serverIsReal) continue;
+        // Keep local if it has a higher or equal total (local scrape is source of truth)
+        if (localIsReal && serverIsReal && existing.total >= m.total) continue;
+      }
+
+      // Server has better/missing data — save it
       const extra = buildExtraFields(m);
       await GBPStorage.saveMetric(
         m.businessId || businessId,
@@ -144,11 +169,161 @@ async function pullFromServer(businessId) {
     // Update last-pull timestamp
     await setLastPull(businessId, Date.now());
 
-    console.log(`[GBP BG] Pulled ${merged} records from server for ${businessId}`);
+    console.log(`[GBP BG] Pulled ${merged} records from server for ${businessId} (full=${full})`);
     return { success: true, merged };
 
   } catch (err) {
     console.warn('[GBP BG] Pull from server failed:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Bidirectional sync — push all local data up, then pull all server data down.
+ * Debounced: skips if a sync completed within the last 5 minutes.
+ * Safe to call repeatedly (all operations are idempotent upserts).
+ *
+ * @param {boolean} force  Skip the debounce and sync regardless of last sync time.
+ * @returns {Promise<{success:boolean, pushed:number, pulled:number, error?:string}>}
+ */
+async function autoSync(force = false) {
+  const token = await getAuthToken();
+  if (!token) return { success: false, error: 'Not logged in' };
+
+  // Debounce: don't auto-sync more than once every 5 minutes unless forced
+  if (!force) {
+    const { gbpLastAutoSync } = await new Promise(resolve =>
+      chrome.storage.local.get(['gbpLastAutoSync'], resolve)
+    );
+    const FIVE_MIN = 5 * 60 * 1000;
+    if (gbpLastAutoSync && (Date.now() - gbpLastAutoSync) < FIVE_MIN) {
+      console.log('[GBP BG] autoSync skipped — synced recently');
+      return { success: true, pushed: 0, pulled: 0, skipped: true };
+    }
+  }
+
+  await GBPStorage.open();
+  const pushResult = await pushAllToServer();
+  // force=true → full pull (since=0) so we compare ALL records, not just recent ones
+  const pullResult = await pullAllBusinesses(force);
+
+  // Record timestamp so the debounce works next time
+  await new Promise(resolve =>
+    chrome.storage.local.set({ gbpLastAutoSync: Date.now() }, resolve)
+  );
+
+  const pushed = pushResult.saved   || 0;
+  const pulled = pullResult.merged  || 0;
+  console.log(`[GBP BG] autoSync complete — pushed=${pushed} pulled=${pulled}`);
+  return { success: true, pushed, pulled };
+}
+
+/**
+ * Push ALL local data to the server using the /api/sync-bulk endpoint.
+ * Reads every business + metric from local IndexedDB and uploads them.
+ * This is used once to seed the server with data that was collected before
+ * cloud sync was set up, or after a server database wipe.
+ *
+ * @returns {Promise<{success:boolean, saved:number, skipped:number, businesses:number, error?:string}>}
+ */
+async function pushAllToServer() {
+  const token = await getAuthToken();
+  if (!token) return { success: false, error: 'Not logged in' };
+
+  try {
+    const exportData = await GBPStorage.exportAll();
+    const businesses = exportData.businesses || [];
+    const allMetrics = exportData.metrics   || [];
+
+    if (!businesses.length) return { success: true, saved: 0, skipped: 0, businesses: 0 };
+
+    let totalSaved   = 0;
+    let totalSkipped = 0;
+
+    for (const biz of businesses) {
+      const bizMetrics = allMetrics.filter(m => m.businessId === biz.id);
+      if (!bizMetrics.length) continue;
+
+      try {
+        const resp = await fetch(`${SERVER_URL}/api/sync-bulk`, {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            locationCode: biz.id,
+            businessName: biz.name,
+            metrics:      bizMetrics,
+          }),
+        });
+
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => resp.statusText);
+          console.warn(`[GBP BG] pushAll: HTTP ${resp.status} for ${biz.id}:`, text);
+          continue;
+        }
+
+        const data = await resp.json();
+        totalSaved   += data.saved   || 0;
+        totalSkipped += data.skipped || 0;
+        console.log(`[GBP BG] pushAll: ${biz.name || biz.id} → saved=${data.saved} skipped=${data.skipped}`);
+
+      } catch (bizErr) {
+        console.warn(`[GBP BG] pushAll: error for ${biz.id}:`, bizErr.message);
+      }
+    }
+
+    return { success: true, saved: totalSaved, skipped: totalSkipped, businesses: businesses.length };
+
+  } catch (err) {
+    console.warn('[GBP BG] pushAllToServer failed:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Pull ALL businesses for the current user from the server.
+ * First fetches the list of businesses via GET /api/businesses,
+ * then calls pullFromServer() for each one.
+ *
+ * @returns {Promise<{success:boolean, merged:number, businesses:number, error?:string}>}
+ */
+/**
+ * @param {boolean} full  When true, each business pulls ALL records (since=0),
+ *                        ignoring the lastPull timestamp cache. Use this for
+ *                        force-sync and sign-in scenarios.
+ */
+async function pullAllBusinesses(full = false) {
+  const token = await getAuthToken();
+  if (!token) return { success: false, error: 'Not logged in' };
+
+  try {
+    const resp = await fetch(`${SERVER_URL}/api/businesses`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText);
+      return { success: false, error: `HTTP ${resp.status}: ${text}` };
+    }
+
+    const { businesses } = await resp.json();
+    let totalMerged = 0;
+
+    for (const biz of (businesses || [])) {
+      // Server returns { id, name, lastUpdated } — 'id' is the location_code
+      await GBPStorage.saveBusiness({ id: biz.id, name: biz.name });
+
+      const result = await pullFromServer(biz.id, full);
+      if (result.success) totalMerged += result.merged;
+    }
+
+    console.log(`[GBP BG] pullAllBusinesses: ${(businesses || []).length} biz, ${totalMerged} merged (full=${full})`);
+    return { success: true, merged: totalMerged, businesses: (businesses || []).length };
+
+  } catch (err) {
+    console.warn('[GBP BG] pullAllBusinesses failed:', err.message);
     return { success: false, error: err.message };
   }
 }
@@ -167,30 +342,49 @@ function buildExtraFields(metric) {
 }
 
 /**
- * Sign in with Google using chrome.identity.getAuthToken (no redirect URI needed).
- * The manifest oauth2.client_id must match the Chrome App OAuth client.
+ * Sign in with Google using launchWebAuthFlow so the user can pick any account,
+ * not just the browser's default. prompt=select_account forces the account chooser.
  */
 async function authGoogleLogin() {
   return new Promise(resolve => {
-    chrome.identity.getAuthToken({ interactive: true }, async accessToken => {
-      if (chrome.runtime.lastError || !accessToken) {
-        resolve({ success: false, error: chrome.runtime.lastError?.message || 'Cancelled' });
-        return;
+    const redirectUri = chrome.identity.getRedirectURL();
+    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    authUrl.searchParams.set('client_id', GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set('response_type', 'token');
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('scope', 'email profile');
+    authUrl.searchParams.set('prompt', 'select_account');
+
+    chrome.identity.launchWebAuthFlow(
+      { url: authUrl.toString(), interactive: true },
+      async responseUrl => {
+        if (chrome.runtime.lastError || !responseUrl) {
+          resolve({ success: false, error: chrome.runtime.lastError?.message || 'Cancelled' });
+          return;
+        }
+        // Extract access_token from the redirect URL fragment
+        const hash = new URL(responseUrl).hash.slice(1);
+        const params = new URLSearchParams(hash);
+        const accessToken = params.get('access_token');
+        if (!accessToken) {
+          resolve({ success: false, error: 'No access token returned' });
+          return;
+        }
+        try {
+          const resp = await fetch(`${SERVER_URL}/api/auth/google`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ accessToken }),
+          });
+          const data = await resp.json();
+          if (!resp.ok) { resolve({ success: false, error: data.error || `HTTP ${resp.status}` }); return; }
+          await saveAuthSession(data.token, data.user);
+          resolve({ success: true, user: data.user });
+        } catch (err) {
+          resolve({ success: false, error: err.message });
+        }
       }
-      try {
-        const resp = await fetch(`${SERVER_URL}/api/auth/google`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ accessToken }),
-        });
-        const data = await resp.json();
-        if (!resp.ok) { resolve({ success: false, error: data.error || `HTTP ${resp.status}` }); return; }
-        await saveAuthSession(data.token, data.user);
-        resolve({ success: true, user: data.user });
-      } catch (err) {
-        resolve({ success: false, error: err.message });
-      }
-    });
+    );
   });
 }
 
@@ -237,35 +431,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ── Open dashboard ────────────────────────────────────────────────────────
   if (msg.action === 'openDashboard') {
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') })
-      .then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: false }));
-    return true;
-  }
-
-  // ── Cloud sync: server config (hardcoded — no user setup needed) ──────────
-  if (msg.action === 'getServerConfig') {
-    sendResponse({ config: { serverUrl: SERVER_URL } });
+    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
     return;
-  }
-
-  if (msg.action === 'saveServerConfig') {
-    // Config is hardcoded; nothing to persist.
-    sendResponse({ success: true });
-    return;
-  }
-
-  if (msg.action === 'testServerConnection') {
-    fetch(`${SERVER_URL}/health`)
-      .then(r => r.json())
-      .then(data => sendResponse({
-        ok: true,
-        version: data.version || '1.0',
-        businesses: data.businesses ?? null,
-        records: data.records ?? null,
-      }))
-      .catch(err => sendResponse({ ok: false, error: err.message }));
-    return true;
   }
 
   // ── Save a single metric record (called from content script iframe) ────────
@@ -353,7 +520,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // ── Auth: Google sign-in / sign-up ───────────────────────────────────────
+  // ── Bidirectional auto-sync (push + pull) ────────────────────────────────
+  if (msg.action === 'autoSync') {
+    GBPStorage.open()
+      .then(() => autoSync(msg.force === true))
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  // ── Push ALL local data up to the server ─────────────────────────────────
+  if (msg.action === 'pushAllToServer') {
+    GBPStorage.open()
+      .then(() => pushAllToServer())
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  // ── Pull ALL businesses + their data from the server ──────────────────────
+  if (msg.action === 'pullAllBusinesses') {
+    GBPStorage.open()
+      .then(() => pullAllBusinesses())
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  // ── Auth: Google OAuth sign-in ────────────────────────────────────────────
   if (msg.action === 'authGoogleLogin') {
     authGoogleLogin()
       .then(result => sendResponse(result))
@@ -428,4 +622,14 @@ chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
   }
+});
+
+// On browser startup, silently sync in the background (debounced to once per 5 min)
+chrome.runtime.onStartup.addListener(() => {
+  GBPStorage.open()
+    .then(() => autoSync(false))
+    .then(r => {
+      if (!r.skipped) console.log('[GBP BG] Startup auto-sync:', r);
+    })
+    .catch(e => console.warn('[GBP BG] Startup auto-sync failed:', e.message));
 });
