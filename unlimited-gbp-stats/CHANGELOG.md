@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-06-14
+- Added "Continue with Google" sign-in to the Cloud Sync modal (dashboard) for both Sign In and Register tabs
+- Switched Google OAuth from `launchWebAuthFlow` to `chrome.identity.getAuthToken` (no redirect URI needed — fixes `redirect_uri_mismatch`)
+- Added `oauth2` block and `identity` permission to manifest.json
+- Restored locked OAuth client ID (`512083455568-4o7052vjg67pl21vojekgrs0qcta4a1n`) — the code had drifted to a wrong ID
+- Server (`gbp-stats-sync-server` → v1.1.0): added `POST /api/auth/google` endpoint, `google_id` column with auto-migration, and Google user prepared statements
+- Fixed gbp-server Dockerfile to use `npm install` instead of `npm ci` (no committed lockfile)
+
 ## [1.3.1] - 2026-06-12
 - Fixed month-to-month growth percentage calculation accuracy
 - Only show growth % when both current and previous months have real (non-estimated) data
