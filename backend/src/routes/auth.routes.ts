@@ -5,7 +5,7 @@ import { validateJWT } from '../middlewares/auth.middleware';
 import { issueTokenPair, rotateRefreshToken, revokeAllRefreshTokens } from '../utils/tokens';
 import { auditEvents } from '../middlewares/audit.middleware';
 import { prisma } from '../index';
-import { AuthenticationError } from '../utils/errors';
+import { AuthenticationError, ValidationError } from '../utils/errors';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -87,6 +87,44 @@ router.get(
     });
 
     res.redirect(`${FRONTEND_URL}?${params.toString()}`);
+  })
+);
+
+/**
+ * POST /api/auth/google/extension
+ *
+ * Token-based login for the Chrome extension. The extension obtains a Google
+ * access token via launchWebAuthFlow and posts it here; we verify it, upsert
+ * the user, and return a backend access token. The extension then calls
+ * POST /api/auth/provision-extension to obtain its zx_ ingest key.
+ *
+ * Body: { accessToken: string }
+ */
+router.post(
+  '/google/extension',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { accessToken } = req.body || {};
+    if (!accessToken || typeof accessToken !== 'string') {
+      throw new ValidationError('accessToken is required');
+    }
+
+    const user = await googleService.handleExtensionAccessToken(accessToken);
+    if (!user) throw new AuthenticationError('Could not resolve user from Google token');
+
+    const { accessToken: token, refreshToken, expiresIn } = await issueTokenPair(
+      user.id,
+      user.email
+    );
+
+    await auditEvents.login(req, user.id, 'oauth');
+    logger.info(`Extension user ${user.id} logged in`);
+
+    res.json({
+      token,
+      refreshToken,
+      expiresIn,
+      user: { id: user.id, email: user.email, name: user.name },
+    });
   })
 );
 

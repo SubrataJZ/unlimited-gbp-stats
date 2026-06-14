@@ -121,6 +121,40 @@ class GoogleService {
   }
 
   /**
+   * Method: Handle Extension Access Token
+   *
+   * The Chrome extension authenticates the user with launchWebAuthFlow and
+   * obtains a Google access token directly (scope: email profile). This method
+   * verifies that token, then creates/updates the user — identity only, no
+   * Business-API calls (the extension token lacks business.manage scope).
+   *
+   * @param accessToken Google OAuth access token from the extension
+   * @returns The upserted user record
+   */
+  async handleExtensionAccessToken(accessToken: string) {
+    const googleUser = await this.fetchGoogleUserInfo(accessToken);
+    logger.info(`Extension login for: ${googleUser.email}`);
+
+    const user = await prisma.user.upsert({
+      where: { googleId: googleUser.id },
+      update: {
+        email: googleUser.email,
+        name: googleUser.name,
+        avatarUrl: googleUser.picture,
+        updatedAt: new Date(),
+      },
+      create: {
+        googleId: googleUser.id,
+        email: googleUser.email,
+        name: googleUser.name,
+        avatarUrl: googleUser.picture,
+      },
+    });
+
+    return user;
+  }
+
+  /**
    * Method: Exchange Authorization Code for Tokens
    *
    * Purpose:
