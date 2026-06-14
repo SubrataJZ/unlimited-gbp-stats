@@ -54,3 +54,17 @@ export class InternalServerError extends AppError {
     Object.setPrototypeOf(this, InternalServerError.prototype);
   }
 }
+
+export class ServiceUnavailableError extends AppError {
+  constructor(message: string = 'Service temporarily unavailable') {
+    super(503, message);
+    Object.setPrototypeOf(this, ServiceUnavailableError.prototype);
+  }
+}
+
+export class RateLimitError extends AppError {
+  constructor(message: string = 'Rate limit exceeded') {
+    super(429, message);
+    Object.setPrototypeOf(this, RateLimitError.prototype);
+  }
+}

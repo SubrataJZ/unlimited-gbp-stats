@@ -13,6 +13,7 @@ import ingestRoutes from './routes/ingest.routes';
 import authRoutes from './routes/auth.routes';
 import apiKeyRoutes from './routes/api-keys.routes';
 import locationsRoutes from './routes/locations.routes';
+import aiRoutes from './routes/ai.routes';
 import { errorHandler } from './middlewares/error.middleware';
 
 // Load environment variables
@@ -135,6 +136,7 @@ app.use('/api/ingest', ingestLimiter, ingestRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', apiKeyRoutes);
 app.use('/api/locations', locationsRoutes);
+app.use('/api/ai', aiRoutes);
 
 /**
  * =========================================
