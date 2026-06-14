@@ -17,6 +17,7 @@
     "https://business.google.com/*",
     "https://*.google.com/*",
     "http://localhost/*",
+    "https://gbp.zixify.zixai.in/*",
     "http://gbp.zixify.zixai.in/*",
     "http://gbp.zixify.zixai.in:3005/*"
   ],
