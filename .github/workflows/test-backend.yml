@@ -29,6 +29,9 @@ jobs:
           NODE_ENV: test
           COMPOSE_DOCKER_CLI_BUILD: 1
           DOCKER_BUILDKIT: 1
+          # Dummy secret so the now-required ${JWT_SECRET:?...} compose vars
+          # don't fail CI boot. Never used in prod — prod .env has a real one.
+          JWT_SECRET: ci-dummy-secret-not-used-in-prod
 
       - name: Check Docker container status
         run: |

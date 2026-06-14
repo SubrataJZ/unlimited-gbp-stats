@@ -50,7 +50,7 @@ services:
       GOOGLE_API_SCOPES: https://www.googleapis.com/auth/business.manage
 
       # Session & Security
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-key-12345}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-12345}
 
       # Logging
@@ -93,7 +93,7 @@ services:
     container_name: gbp_sync_server
     environment:
       PORT: 3005
-      JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-env}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       DB_PATH: /data/gbp_data.sqlite
       VERBOSE: ${VERBOSE:-false}
     ports:
