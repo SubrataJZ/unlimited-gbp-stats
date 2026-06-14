@@ -56,6 +56,14 @@ services:
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-debug}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+
+      # AI Review Reply Copilot (OpenRouter) — key is set only in the server .env.
+      # Empty default keeps CI/local boot working; the app returns 503 until set.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-3.5-sonnet}
+      AI_MONTHLY_COST_CAP_USD: ${AI_MONTHLY_COST_CAP_USD:-5}
+      OPENROUTER_APP_URL: ${OPENROUTER_APP_URL:-}
+      OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-}
     ports:
       - "${API_PORT:-3001}:3001"
     volumes:
