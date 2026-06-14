@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as ingestController from '../controllers/ingest.controller';
+import * as intelController from '../controllers/intel.controller';
 import { validateExtensionKey } from '../middlewares/auth.middleware';
 import { asyncHandler } from '../middlewares/error.middleware';
 
@@ -21,6 +22,17 @@ router.get(
   '/status',
   asyncHandler(validateExtensionKey),
   asyncHandler(ingestController.getIngestionStatus)
+);
+
+/**
+ * POST /api/ingest/intel
+ * Purpose: Idempotent sync of scraped GBP competitor/own-profile intelligence
+ * Auth: Per-user extension API key (zx_...) — legacy static key is rejected
+ */
+router.post(
+  '/intel',
+  asyncHandler(validateExtensionKey),
+  asyncHandler(intelController.ingestIntel)
 );
 
 export default router;
