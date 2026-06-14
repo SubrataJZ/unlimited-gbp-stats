@@ -3,7 +3,7 @@ import { asyncHandler } from '../middlewares/error.middleware';
 import { auditEvents } from '../middlewares/audit.middleware';
 import { ValidationError, AuthenticationError } from '../utils/errors';
 import logger from '../utils/logger';
-import { resolveOrgId, ingestIntel as runIngestIntel, IncomingBusiness, IncomingSnapshot, IncomingReview } from '../services/intel.service';
+import { resolveOrgId, ingestIntel as runIngestIntel, getIntelForOrg, IncomingBusiness, IncomingSnapshot, IncomingReview } from '../services/intel.service';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -292,4 +292,27 @@ export const ingestIntel = asyncHandler(async (req: Request, res: Response) => {
   logger.info(`Intel ingest complete for org ${orgId}:`, summary);
 
   res.status(200).json({ ok: true, summary });
+});
+
+/**
+ * GET /api/ingest/intel
+ *
+ * Returns the authenticated user's tracked businesses with their review
+ * snapshot timelines and recent reviews. Powers the extension dashboard's
+ * Reviews view. Requires a per-user API key (zx_...).
+ *
+ * @route  GET /api/ingest/intel
+ * @access Private — per-user extension key (zx_...) only
+ */
+export const getIntel = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError(
+      'Profile-intel read requires a per-user API key (zx_...)'
+    );
+  }
+
+  const orgId = await resolveOrgId(req.user.id);
+  const businesses = await getIntelForOrg(orgId);
+
+  res.status(200).json({ ok: true, businesses });
 });

@@ -35,4 +35,15 @@ router.post(
   asyncHandler(intelController.ingestIntel)
 );
 
+/**
+ * GET /api/ingest/intel
+ * Purpose: Read back the user's tracked businesses + review snapshots/reviews
+ * Auth: Per-user extension API key (zx_...)
+ */
+router.get(
+  '/intel',
+  asyncHandler(validateExtensionKey),
+  asyncHandler(intelController.getIntel)
+);
+
 export default router;

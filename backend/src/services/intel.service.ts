@@ -48,6 +48,69 @@ export async function resolveOrgId(userId: string): Promise<string> {
   return membership.orgId;
 }
 
+/**
+ * Read back all tracked businesses for an org, each with its snapshot timeline
+ * and recent reviews. Powers the extension dashboard's Reviews view.
+ *
+ * Queries ProfileSnapshot / ScrapedReview directly (rather than via relation
+ * includes) so it only depends on field names this service already writes.
+ */
+export async function getIntelForOrg(orgId: string) {
+  const businesses = await prisma.trackedBusiness.findMany({
+    where: { orgId },
+    select: {
+      id: true,
+      name: true,
+      googlePlaceId: true,
+      address: true,
+      logoUrl: true,
+      isOwn: true,
+    },
+  });
+
+  if (businesses.length === 0) return [];
+
+  const ids = businesses.map((b) => b.id);
+
+  const [snapshots, reviews] = await Promise.all([
+    prisma.profileSnapshot.findMany({
+      where: { trackedBusinessId: { in: ids } },
+      orderBy: { capturedOn: 'asc' },
+      select: {
+        trackedBusinessId: true,
+        capturedOn: true,
+        totalReviews: true,
+        displayRating: true,
+        trueAverage: true,
+        reviewsWithPhotos: true,
+        localGuideReviews: true,
+      },
+    }),
+    prisma.scrapedReview.findMany({
+      where: { trackedBusinessId: { in: ids } },
+      orderBy: { reviewedAt: 'desc' },
+      take: 1000,
+      select: {
+        trackedBusinessId: true,
+        externalReviewId: true,
+        rating: true,
+        text: true,
+        authorName: true,
+        isLocalGuide: true,
+        hasPhoto: true,
+        reviewedAt: true,
+      },
+    }),
+  ]);
+
+  // Group children under each business
+  return businesses.map((b) => ({
+    ...b,
+    snapshots: snapshots.filter((s) => s.trackedBusinessId === b.id),
+    reviews: reviews.filter((r) => r.trackedBusinessId === b.id),
+  }));
+}
+
 // ── Types mirroring the validated request payload ─────────────────────────────
 
 export interface IncomingSnapshot {
