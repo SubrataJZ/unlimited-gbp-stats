@@ -35,6 +35,17 @@
     // Pattern: /l/12314840327329864086
     const lMatch = window.location.href.match(/\/l\/(\d{10,})/);
     if (lMatch) return lMatch[1];
+    // Search "all reviews" panel: #mpd=~12314840327329864086/customers/reviews
+    const mpdMatch = window.location.href.match(/#mpd=~?(\d{10,})/);
+    if (mpdMatch) return mpdMatch[1];
+    // Maps place-detail URLs: cid= param or feature-id (!1s0x<hex>:0x<CIDhex>)
+    // Return the decimal CID to match this function's numeric-id contract
+    const cidParam = window.location.href.match(/[?&#](?:lud)?cid=(\d{6,})/i);
+    if (cidParam) return cidParam[1];
+    const fidHex = window.location.href.match(/!1s0x[0-9a-f]+:0x([0-9a-f]+)/i);
+    if (fidHex) {
+      try { return BigInt('0x' + fidHex[1]).toString(); } catch (e) { /* fall through */ }
+    }
     // From data-p attributes
     const dataPEl = document.querySelector('[data-p*="12"]');
     if (dataPEl) {
@@ -760,8 +771,23 @@
     return m ? Math.round(parseFloat(m[1])) : 0;
   }
 
+  // ── Resolve the document containing review cards ────────────────────────────
+  // Maps renders cards in the top document; Search "all reviews" panel renders
+  // them in a same-origin iframe. This helper finds the right document for both.
+  const CARD_SEL = '.jftiEf, [data-review-id], [jscontroller][data-review-id], article.VaHEVc';
+  const resolveReviewDoc = () => {
+    if (document.querySelectorAll(CARD_SEL).length) return document;
+    for (const f of document.querySelectorAll('iframe')) {
+      let d;
+      try { d = f.contentDocument; } catch (e) { continue; }
+      if (d && d.querySelectorAll(CARD_SEL).length) return d;
+    }
+    return document;
+  };
+
+
   // ── Snapshot: total reviews, average rating, 1–5 star distribution ──────────
-  function extractReviewSnapshot() {
+  function extractReviewSnapshot(doc = resolveReviewDoc()) {
     const snap = { totalReviews: 0, avgRating: null, stars: {} };
 
     // Walk leaf text nodes once — reused for several heuristics.
@@ -770,7 +796,7 @@
       if (node.nodeType === 3 && node.textContent.trim()) leaves.push(node);
       else if (node.nodeType === 1) node.childNodes.forEach(walk);
     };
-    walk(document.body);
+    walk(doc.body);
 
     // Total reviews — "1,234 reviews" / "(1,234)"
     for (const n of leaves) {
@@ -787,7 +813,7 @@
     }
 
     // Average rating — a standalone number 0.0–5.0 (e.g. "4.5"), or from aria-label
-    const ratingAria = document.querySelector('[aria-label*="stars" i], [aria-label*="rated" i]');
+    const ratingAria = doc.querySelector('[aria-label*="stars" i], [aria-label*="rated" i]');
     if (ratingAria) {
       const m = (ratingAria.getAttribute('aria-label') || '').match(/([0-5](?:\.\d)?)/);
       if (m) snap.avgRating = parseFloat(m[1]);
@@ -801,7 +827,7 @@
 
     // Star distribution — histogram rows with aria-labels like
     // "5 stars, 1,234 reviews" or table rows. Try aria-labels first.
-    for (const el of document.querySelectorAll('[aria-label]')) {
+    for (const el of doc.querySelectorAll('[aria-label]')) {
       const m = el.getAttribute('aria-label').match(/([1-5])\s*stars?,?\s*([\d,]+)\s*reviews?/i);
       if (m) snap.stars[m[1]] = parseInt(m[2].replace(/,/g, '')) || 0;
     }
@@ -810,42 +836,112 @@
     return hasData ? snap : null;
   }
 
+  // ── Convert relative date strings ("2 weeks ago") to YYYY-MM-DD ────────────
+  function parseRelativeReviewDate(relStr, now = new Date()) {
+    if (!relStr) return null;
+    const s = relStr.trim();
+
+    // Absolute: "June 2025" / "March 2024"
+    const absMonth = s.match(/^([a-z]+)\s+(\d{4})$/i);
+    if (absMonth) {
+      const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+      const mo = MONTHS[absMonth[1].slice(0,3).toLowerCase()];
+      if (mo !== undefined) return new Date(parseInt(absMonth[2]), mo, 1).toISOString().slice(0, 10);
+    }
+
+    // Absolute: "March 12, 2024"
+    const absDay = s.match(/^[a-z]+ \d{1,2},? \d{4}$/i);
+    if (absDay) {
+      const d = new Date(s);
+      if (!isNaN(d)) return d.toISOString().slice(0, 10);
+    }
+
+    // Relative: "N unit(s) ago"
+    const rel = s.match(/^(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago$/i);
+    if (rel) {
+      const n = parseInt(rel[1]);
+      const d = new Date(now);
+      switch (rel[2].toLowerCase()) {
+        case 'second': d.setSeconds(d.getSeconds() - n); break;
+        case 'minute': d.setMinutes(d.getMinutes() - n); break;
+        case 'hour':   d.setHours(d.getHours() - n); break;
+        case 'day':    d.setDate(d.getDate() - n); break;
+        case 'week':   d.setDate(d.getDate() - n * 7); break;
+        case 'month':  d.setMonth(d.getMonth() - n); break;
+        case 'year':   d.setFullYear(d.getFullYear() - n); break;
+      }
+      return d.toISOString().slice(0, 10);
+    }
+
+    // "a week/month/year ago"
+    const aRel = s.match(/^a\s+(week|month|year)\s+ago$/i);
+    if (aRel) {
+      const d = new Date(now);
+      switch (aRel[1].toLowerCase()) {
+        case 'week':  d.setDate(d.getDate() - 7); break;
+        case 'month': d.setMonth(d.getMonth() - 1); break;
+        case 'year':  d.setFullYear(d.getFullYear() - 1); break;
+      }
+      return d.toISOString().slice(0, 10);
+    }
+
+    return null;
+  }
+
   // ── Individual review cards (scrolls the reviews list to lazy-load more) ─────
   async function extractIndividualReviews(maxScrolls = 8) {
-    // Find the scrollable reviews container (Maps) — fall back to the page.
-    const findCard = () =>
-      document.querySelectorAll('.jftiEf, [data-review-id], [jscontroller][data-review-id]');
+    const doc = resolveReviewDoc();
+    const findCard = () => doc.querySelectorAll(CARD_SEL);
 
     let cards = findCard();
     if (cards.length) {
-      // Scroll the nearest scrollable ancestor to load more cards.
       let scroller = cards[0].closest('[role="main"], .m6QErb, .DxyBCb') ||
-                     document.scrollingElement || document.body;
+                     doc.scrollingElement || doc.body;
       let lastCount = 0;
       for (let s = 0; s < maxScrolls; s++) {
         scroller.scrollTop = scroller.scrollHeight;
         await sleep(900);
         cards = findCard();
-        if (cards.length === lastCount) break; // no new cards loaded
+        if (cards.length === lastCount) break;
         lastCount = cards.length;
       }
     }
 
+    const now = new Date();
     const out = [];
     const seen = new Set();
     for (const card of findCard()) {
+      // Author — Maps: .d4r55  |  Search/GBP panel: .PskQHd
       const author =
-        card.querySelector('.d4r55, [class*="title"], [aria-label]')?.textContent?.trim() ||
+        card.querySelector('.d4r55, .PskQHd, [class*="title"]')?.textContent?.trim() ||
         card.getAttribute('aria-label') || '';
+
       const ratingEl = card.querySelector('[aria-label*="star" i], [role="img"][aria-label]');
       const rating = parseStarLabel(ratingEl?.getAttribute('aria-label') || '');
-      const text = card.querySelector('.wiI7pd, .MyEned, [class*="reviewText"]')?.textContent?.trim() || '';
-      const date = card.querySelector('.rsqaWe, .dehysf, [class*="date"]')?.textContent?.trim() || '';
+
+      // Review text — Maps: .wiI7pd  |  Search/GBP panel: .Fv38Af
+      const text = card.querySelector('.wiI7pd, .Fv38Af, .MyEned, [class*="reviewText"]')?.textContent?.trim() || '';
+
+      // Relative date — Maps: .rsqaWe  |  Search/GBP panel: .KEfuhb
+      const dateRaw = card.querySelector('.rsqaWe, .KEfuhb, .dehysf, [class*="date"]')?.textContent?.trim() || '';
+      const reviewedAtISO = parseRelativeReviewDate(dateRaw, now);
+
+      // Contributor line e.g. "Local Guide · 42 reviews" — Maps: .RfnDt  |  panel: .WEBjve
+      const contributorText = card.querySelector('.RfnDt, .WEBjve, [class*="contributor"]')?.textContent?.trim() || '';
+      const countMatch = contributorText.match(/(\d+)\s+reviews?/i);
+      const authorReviewCount = countMatch ? parseInt(countMatch[1]) : null;
+
       const isLocalGuide = /local guide/i.test(card.textContent);
       const hasPhoto = !!card.querySelector('img[src*="googleusercontent"], button[aria-label*="Photo" i]');
 
-      if (!rating && !text) continue; // skip empty/unparsable cards
-      const externalId = card.getAttribute('data-review-id') || hashReview(author, date, text);
+      // Owner response block — Maps: .CDe7pd  |  generic class substrings
+      const ownerResponded = !!(
+        card.querySelector('.CDe7pd, [class*="ownerResponse"], [class*="owner-response"]') ||
+        /response from the owner/i.test(card.textContent)
+      );
+
+      if (!rating && !text) continue;
+      const externalId = card.getAttribute('data-review-id') || hashReview(author, dateRaw, text);
       if (seen.has(externalId)) continue;
       seen.add(externalId);
 
@@ -854,9 +950,12 @@
         rating,
         text: text.slice(0, 5000),
         author: author.slice(0, 200),
+        authorReviewCount,
         isLocalGuide,
         hasPhoto,
-        reviewedAt: date,
+        ownerResponded,
+        reviewedAt: dateRaw,
+        reviewedAtISO,
       });
     }
     return out;
@@ -868,8 +967,10 @@
     const businessName = extractBusinessName();
     if (!businessId) return { success: false, reason: 'Could not detect business ID on this page.' };
 
+    const reviewDoc = resolveReviewDoc();
+
     progressCb?.('Reading review summary…', 0, 1);
-    const snapshot = extractReviewSnapshot();
+    const snapshot = extractReviewSnapshot(reviewDoc);
 
     progressCb?.('Loading individual reviews…', 0, 1);
     let reviews = [];
@@ -1386,9 +1487,12 @@
   // detectable business id and a review count visible on the page.
   function isReviewablePage() {
     if (!extractBusinessId()) return false;
+    const href = window.location.href;
+    // Explicit reviews URL patterns (Search "all reviews" panel, GBP customers tab)
+    if (/#mpd=/.test(href) || /\/customers\/reviews/.test(href)) return true;
     return /\breviews?\b/i.test(document.body?.innerText || '') &&
-           (window.location.href.includes('/maps/') ||
-            window.location.href.includes('business.google.com') ||
+           (href.includes('/maps/') ||
+            href.includes('business.google.com') ||
             !!document.querySelector('[aria-label*="stars" i], [data-review-id]'));
   }
 

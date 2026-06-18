@@ -46,4 +46,27 @@ router.get(
   asyncHandler(intelController.getIntel)
 );
 
+/**
+ * GET /api/ingest/intel/:businessId/audit
+ * Purpose: Deep review audit (velocity timeline + neutral authenticity signals)
+ * Auth: Per-user extension API key (zx_...) — Agency/Pro role only
+ */
+router.get(
+  '/intel/:businessId/audit',
+  asyncHandler(validateExtensionKey),
+  asyncHandler(intelController.getAudit)
+);
+
+/**
+ * GET /api/ingest/intel/:businessId/audit-report
+ * Purpose: Server-rendered HTML audit report (same data as /audit, as a
+ *          self-contained page). Neutral framing; disclaimer always prominent.
+ * Auth: Per-user extension API key (zx_...) — Agency/Pro role only
+ */
+router.get(
+  '/intel/:businessId/audit-report',
+  asyncHandler(validateExtensionKey),
+  asyncHandler(intelController.getAuditReport)
+);
+
 export default router;

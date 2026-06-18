@@ -3,6 +3,18 @@
  * On success, stores token + user in chrome.storage then closes this tab.
  */
 
+// ── Wire up all event listeners (replaces inline HTML handlers — MV3 CSP blocks those) ──
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('loginTab').addEventListener('click', () => switchTab('login'));
+  document.getElementById('signupTab').addEventListener('click', () => switchTab('signup'));
+  document.getElementById('loginForm').addEventListener('submit', handleLogin);
+  document.getElementById('signupForm').addEventListener('submit', handleSignup);
+  document.getElementById('toggleLoginPw').addEventListener('click', () => togglePw('loginPassword'));
+  document.getElementById('toggleSignupPw').addEventListener('click', () => togglePw('signupPassword'));
+  document.getElementById('googleLoginBtn').addEventListener('click', handleGoogleSignIn);
+  document.getElementById('googleSignupBtn').addEventListener('click', handleGoogleSignIn);
+});
+
 // ── Switch between Login / Signup tabs ────────────────────────────────────────
 function switchTab(tab) {
   const isLogin = tab === 'login';

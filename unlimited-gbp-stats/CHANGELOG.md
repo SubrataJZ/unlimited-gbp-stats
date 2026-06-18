@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.3] - 2026-06-19
+- **Review Audit capture (feeds the new server-side audit report).** The review scraper now captures richer per-review signals used by the deep audit: each reviewer's total review count (`authorReviewCount`), whether the owner responded (`ownerResponded`), and a normalized `YYYY-MM-DD` review date parsed from Google's relative strings ("2 weeks ago", "a month ago", "June 2025").
+- **Search "all reviews" panel + Maps coverage.** Review cards are now read from both surfaces: Maps (`.d4r55` / `.wiI7pd` / `.rsqaWe`) and the Search/business reviews panel (`.PskQHd` / `.Fv38Af` / `.KEfuhb`), with the Maps selectors kept as fallbacks. The Search "all reviews" page (`#mpd=~…/customers/reviews`) is now recognized, and its cards — which render inside a same-origin iframe — are resolved and scraped correctly.
+- Internal: snapshot extraction resolves the correct review document automatically; owner-response detection uses a text-regex primary with a class fallback.
+
 ## [1.7.0] - 2026-06-15
 - **New: per-listing Review buttons in Google Maps / Search results.** A button row (⭐ Review · 🔗 Open reviews) is now injected under **each** business in the results — yours and competitors. Clicking **Review** captures that listing's name, rating, and review count directly from the card (robust — no need to open a panel) and sends it as a snapshot; it also best-effort opens the business's reviews in a background tab to scrape individual reviews.
   - Card detection is class-light and resilient (finds results by their rating+review-count pattern, with fallbacks) and logs what it matched to the page console for easy diagnosis as Google's DOM changes.

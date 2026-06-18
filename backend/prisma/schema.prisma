@@ -277,6 +277,7 @@ model ScrapedReview {
   authorReviewCount Int?      @map("author_review_count")
   isLocalGuide      Boolean   @default(false) @map("is_local_guide")
   hasPhoto          Boolean   @default(false) @map("has_photo")
+  ownerResponded    Boolean   @default(false) @map("owner_responded")
   rating            Int
   text              String?
   reviewedAt        DateTime? @map("reviewed_at")

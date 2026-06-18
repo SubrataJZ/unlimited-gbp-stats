@@ -3,6 +3,10 @@
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Single source of truth: always show the manifest version
+  const vEl = document.getElementById('appVersion');
+  if (vEl) vEl.textContent = 'v' + chrome.runtime.getManifest().version;
+
   await loadAuthState();
   await loadStats();
   await loadBusinesses();

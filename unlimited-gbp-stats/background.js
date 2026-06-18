@@ -184,9 +184,41 @@ function buildIntelPayload(business, snapshot, reviews, isOwn = true) {
         ...(r.author ? { authorName: String(r.author).slice(0, 200) } : {}),
         isLocalGuide: !!r.isLocalGuide,
         hasPhoto: !!r.hasPhoto,
-        // reviewedAt omitted: scraper captures relative strings ("2 weeks ago")
-        // which the backend would reject as invalid dates.
+        // Include parsed ISO date when available; never send the relative string.
+        ...(r.reviewedAtISO ? { reviewedAt: String(r.reviewedAtISO) } : {}),
+        // Pass through authorReviewCount when it's a finite integer.
+        ...(Number.isFinite(r.authorReviewCount) && r.authorReviewCount > 0
+          ? { authorReviewCount: Math.round(r.authorReviewCount) } : {}),
+        // ownerResponded: always include as a boolean.
+        ownerResponded: !!r.ownerResponded,
       }));
+
+    // Compute snapshot aggregates from scraped reviews and merge into snapshot.
+    // Only when reviews were actually scraped (non-empty array).
+    const withPhotos      = reviews.filter(r => r.hasPhoto).length;
+    const localGuides     = reviews.filter(r => r.isLocalGuide).length;
+    const contributions   = reviews
+      .map(r => r.authorReviewCount)
+      .filter(v => Number.isFinite(v) && v > 0);
+    const avgContrib = contributions.length
+      ? Math.round((contributions.reduce((a, v) => a + v, 0) / contributions.length) * 100) / 100
+      : undefined;
+    const validRatings = reviews.filter(r => Number.isFinite(r.rating) && r.rating >= 1 && r.rating <= 5);
+    const trueAverage = validRatings.length
+      ? Math.round((validRatings.reduce((a, r) => a + r.rating, 0) / validRatings.length) * 100) / 100
+      : undefined;
+
+    // Ensure we have a snapshot object to merge into (create a minimal one if absent)
+    if (!b.snapshot) {
+      b.snapshot = {
+        totalReviews: validRatings.length,
+        capturedOn: new Date().toISOString(),
+      };
+    }
+    b.snapshot.reviewsWithPhotos   = withPhotos;
+    b.snapshot.localGuideReviews   = localGuides;
+    if (avgContrib !== undefined)  b.snapshot.avgReviewerContribution = avgContrib;
+    if (trueAverage !== undefined) b.snapshot.trueAverage = trueAverage;
   }
   return { businesses: [b] };
 }

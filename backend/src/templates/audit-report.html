@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Review Audit — {{businessName}}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      background: #f5f5f5;
+    }
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      background: #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      padding: 40px;
+      text-align: center;
+    }
+    .header h1 { font-size: 32px; margin-bottom: 8px; }
+    .header .subtitle { font-size: 15px; opacity: 0.85; margin-bottom: 4px; }
+    .header .meta { font-size: 13px; opacity: 0.7; }
+    .content { padding: 40px; }
+    .section { margin-bottom: 40px; }
+    .section h2 {
+      font-size: 20px;
+      color: #1a1a2e;
+      margin-bottom: 16px;
+      border-bottom: 2px solid #8ab4f8;
+      padding-bottom: 8px;
+    }
+    .section-note {
+      font-size: 13px;
+      color: #888;
+      margin-bottom: 14px;
+    }
+
+    /* Disclaimer */
+    .disclaimer-box {
+      background: #fff8e1;
+      border-left: 4px solid #f9a825;
+      padding: 16px 20px;
+      border-radius: 4px;
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 40px;
+    }
+    .disclaimer-box strong { color: #e65100; }
+
+    /* Meta row */
+    .meta-row { display: flex; gap: 24px; flex-wrap: wrap; font-size: 14px; color: #555; }
+    .meta-row span strong { color: #1a1a2e; }
+
+    /* Signals table */
+    .signals-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .signals-table tr:nth-child(even) { background: #f9f9f9; }
+    .signals-table td { padding: 10px 14px; border-bottom: 1px solid #eee; }
+    .signal-label { color: #555; width: 60%; }
+    .signal-value { font-weight: 600; color: #1a1a2e; text-align: right; }
+
+    /* Rating distribution */
+    .rating-dist { font-size: 14px; }
+    .dist-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .dist-label { width: 28px; text-align: right; font-weight: 600; color: #1a1a2e; }
+    .dist-bar-wrap { flex: 1; height: 16px; background: #f0f0f0; border-radius: 8px; overflow: hidden; }
+    .dist-bar { height: 100%; background: #8ab4f8; border-radius: 8px; }
+    .dist-count { width: 90px; font-size: 12px; color: #666; }
+
+    /* Velocity chart */
+    .chart-wrap { overflow-x: auto; }
+
+    /* Anomalies */
+    .anomaly-list { padding-left: 20px; font-size: 14px; line-height: 2; }
+    .anomaly-list li { color: #444; }
+
+    /* Keywords */
+    .keyword-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .keyword-chip {
+      background: #e8f0fe;
+      color: #1a73e8;
+      border-radius: 16px;
+      padding: 4px 12px;
+      font-size: 13px;
+    }
+    .keyword-chip em { font-style: normal; color: #888; font-size: 11px; }
+
+    /* Utility */
+    .no-data { color: #999; font-size: 13px; font-style: italic; }
+
+    .footer {
+      background: #f5f5f5;
+      padding: 20px 40px;
+      text-align: center;
+      font-size: 12px;
+      color: #999;
+      border-top: 1px solid #eee;
+    }
+
+    @media print {
+      body { background: white; }
+      .container { box-shadow: none; }
+      .section { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="header">
+      <h1>{{businessName}}</h1>
+      <div class="subtitle">Review Audit Report</div>
+      <div class="meta">Generated: {{generatedAt}}</div>
+    </div>
+
+    <div class="content">
+
+      <!-- Disclaimer — always first and prominent -->
+      <div class="disclaimer-box">
+        <strong>Important:</strong> {{disclaimer}}
+      </div>
+
+      <!-- Sample overview -->
+      <div class="section">
+        <h2>Sample Overview</h2>
+        <div class="meta-row">
+          <span><strong>Sample size:</strong> {{sampleSizes}}</span>
+          <span><strong>Date range:</strong> {{dateRange}}</span>
+        </div>
+      </div>
+
+      <!-- Aggregate signals -->
+      <div class="section">
+        <h2>Aggregate Signals</h2>
+        <p class="section-note">Internal aggregates computed from the scraped sample — not a determination of review authenticity.</p>
+        {{signalsTable}}
+      </div>
+
+      <!-- Rating distribution -->
+      <div class="section">
+        <h2>Rating Distribution</h2>
+        {{ratingDistribution}}
+      </div>
+
+      <!-- Velocity timeline -->
+      <div class="section">
+        <h2>Review Velocity Timeline</h2>
+        <p class="section-note">Monthly review count (bars) and cumulative total (orange line).</p>
+        {{velocityChart}}
+      </div>
+
+      <!-- Velocity anomalies -->
+      <div class="section">
+        <h2>Velocity Anomalies</h2>
+        <p class="section-note">Months where the review count was 3× or more above the median active-month baseline. A burst may reflect a marketing push, press coverage, or other activity — this is an internal signal only.</p>
+        {{anomaliesList}}
+      </div>
+
+      <!-- Keywords -->
+      <div class="section">
+        <h2>Top Keywords — Single Terms</h2>
+        {{unigramsList}}
+      </div>
+
+      <div class="section">
+        <h2>Top Keywords — Two-Word Phrases</h2>
+        {{bigramsList}}
+      </div>
+
+    </div>
+
+    <div class="footer">
+      <p>Generated by GBP Sentinel on {{generatedAt}}</p>
+      <p style="margin-top:4px;font-size:11px;">{{disclaimer}}</p>
+    </div>
+
+  </div>
+</body>
+</html>

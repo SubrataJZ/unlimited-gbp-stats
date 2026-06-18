@@ -3,7 +3,10 @@ import { asyncHandler } from '../middlewares/error.middleware';
 import { auditEvents } from '../middlewares/audit.middleware';
 import { ValidationError, AuthenticationError } from '../utils/errors';
 import logger from '../utils/logger';
-import { resolveOrgId, ingestIntel as runIngestIntel, getIntelForOrg, IncomingBusiness, IncomingSnapshot, IncomingReview } from '../services/intel.service';
+import { resolveOrgId, resolveMembership, ingestIntel as runIngestIntel, getIntelForOrg, IncomingBusiness, IncomingSnapshot, IncomingReview } from '../services/intel.service';
+import { getAuditForBusiness } from '../services/audit.service';
+import { renderAuditReportHtml } from '../services/audit.report';
+import { prisma } from '../index';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -159,6 +162,7 @@ function validateReview(raw: unknown, bizIndex: number, revIndex: number): Incom
     authorReviewCount: optionalInt('authorReviewCount'),
     isLocalGuide: optionalBool('isLocalGuide'),
     hasPhoto: optionalBool('hasPhoto'),
+    ownerResponded: optionalBool('ownerResponded'),
   };
 }
 
@@ -315,4 +319,74 @@ export const getIntel = asyncHandler(async (req: Request, res: Response) => {
   const businesses = await getIntelForOrg(orgId);
 
   res.status(200).json({ ok: true, businesses });
+});
+
+/**
+ * GET /api/ingest/intel/:businessId/audit
+ *
+ * Computes the deep review audit (velocity timeline + neutral authenticity
+ * signals + keyword frequencies) for one tracked business. Agency/Pro only —
+ * read-only Owner members are rejected by the service-layer tier gate.
+ *
+ * @route  GET /api/ingest/intel/:businessId/audit
+ * @access Private — per-user extension key (zx_...), Agency/Pro role
+ */
+export const getAudit = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError(
+      'Profile-intel read requires a per-user API key (zx_...)'
+    );
+  }
+
+  const businessId = req.params.businessId;
+  if (!businessId || typeof businessId !== 'string') {
+    throw new ValidationError('A businessId path parameter is required');
+  }
+
+  const { orgId, role } = await resolveMembership(req.user.id);
+  const audit = await getAuditForBusiness(orgId, businessId, role);
+
+  res.status(200).json({ ok: true, audit });
+});
+
+/**
+ * GET /api/ingest/intel/:businessId/audit-report
+ *
+ * Renders the deep review audit as a self-contained HTML page.  Agency/Pro
+ * only — the tier gate is enforced by getAuditForBusiness (same as getAudit).
+ * Neutral framing: every signal is labelled as an internal aggregate; the
+ * disclaimer from AuditResult is always rendered prominently.
+ *
+ * @route  GET /api/ingest/intel/:businessId/audit-report
+ * @access Private — per-user extension key (zx_...), Agency/Pro role
+ */
+export const getAuditReport = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError(
+      'Profile-intel read requires a per-user API key (zx_...)'
+    );
+  }
+
+  const businessId = req.params.businessId;
+  if (!businessId || typeof businessId !== 'string') {
+    throw new ValidationError('A businessId path parameter is required');
+  }
+
+  const { orgId, role } = await resolveMembership(req.user.id);
+
+  // Tier gate + org-scoping enforced inside getAuditForBusiness.
+  const audit = await getAuditForBusiness(orgId, businessId, role);
+
+  // Fetch the business name for the report title.  We query AFTER the audit
+  // call so the tier/ownership checks run first; the business row is always
+  // present at this point (getAuditForBusiness would have thrown NotFoundError).
+  const business = await prisma.trackedBusiness.findFirst({
+    where: { id: businessId, orgId },
+    select: { name: true },
+  });
+  const businessName = business?.name ?? 'Business';
+
+  const html = renderAuditReportHtml(businessName, audit);
+
+  res.status(200).set('Content-Type', 'text/html; charset=utf-8').send(html);
 });

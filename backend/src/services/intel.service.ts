@@ -49,6 +49,23 @@ export async function resolveOrgId(userId: string): Promise<string> {
 }
 
 /**
+ * Resolve the caller's orgId together with their role in that org. Used by
+ * tier-gated reads (e.g. the deep review audit) that must distinguish
+ * Agency/Pro members from read-only Owners.
+ */
+export async function resolveMembership(
+  userId: string
+): Promise<{ orgId: string; role: 'AGENCY_ADMIN' | 'AGENCY_MEMBER' | 'OWNER_READONLY' }> {
+  const orgId = await resolveOrgId(userId);
+  const membership = await prisma.membership.findFirst({
+    where: { userId, orgId },
+    select: { role: true },
+  });
+  // resolveOrgId guarantees a membership exists (it creates one when absent).
+  return { orgId, role: membership!.role };
+}
+
+/**
  * Read back all tracked businesses for an org, each with its snapshot timeline
  * and recent reviews. Powers the extension dashboard's Reviews view.
  *
@@ -98,6 +115,7 @@ export async function getIntelForOrg(orgId: string) {
         authorName: true,
         isLocalGuide: true,
         hasPhoto: true,
+        ownerResponded: true,
         reviewedAt: true,
       },
     }),
@@ -133,6 +151,7 @@ export interface IncomingReview {
   authorReviewCount?: number;
   isLocalGuide?: boolean;
   hasPhoto?: boolean;
+  ownerResponded?: boolean;
 }
 
 export interface IncomingBusiness {
@@ -327,6 +346,7 @@ export async function ingestIntel(
             authorReviewCount: rev.authorReviewCount,
             isLocalGuide: rev.isLocalGuide ?? false,
             hasPhoto: rev.hasPhoto ?? false,
+            ownerResponded: rev.ownerResponded ?? false,
           },
           update: {
             rating: rev.rating,
@@ -337,6 +357,7 @@ export async function ingestIntel(
             authorReviewCount: rev.authorReviewCount ?? undefined,
             isLocalGuide: rev.isLocalGuide ?? false,
             hasPhoto: rev.hasPhoto ?? false,
+            ownerResponded: rev.ownerResponded ?? false,
           },
         });
 

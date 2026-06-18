@@ -4,6 +4,17 @@
 .env.*.local
 .env.production.local
 .claude/settings.local.json
+.claude/worktrees/
+# Private keys & deploy creds — never commit
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*deploy*key*
+*_root_zixai*
+# Local VPS/ops helper scripts (may embed tokens passed as args)
+vps-*.py
+vps-*.sh
 
 # ─── Dependencies ───────────────────────────────────────────────────────
 node_modules/
