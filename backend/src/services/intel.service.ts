@@ -233,6 +233,11 @@ export async function ingestIntel(
             },
           });
           trackedBusinessId = existing.id;
+          logger.info('[reconcile] matched by googlePlaceId', {
+            orgId,
+            googlePlaceId: biz.googlePlaceId,
+            trackedBusinessId: existing.id,
+          });
         } else {
           // Phase C: name+address reconciliation before creating a new row.
           // Catches cases where the same business was previously stored under a
@@ -267,6 +272,15 @@ export async function ingestIntel(
             const shouldBackfill =
               !existingGpid || existingGpid.startsWith('gbpx-');
 
+            logger.info('[reconcile] attached by name+address', {
+              orgId,
+              incomingName: biz.name,
+              incomingGpid: biz.googlePlaceId,
+              matchedId: reconciled.id,
+              priorGpid: existingGpid,
+              backfilled: shouldBackfill,
+            });
+
             await tx.trackedBusiness.update({
               where: { id: reconciled.id },
               data: {
@@ -292,6 +306,11 @@ export async function ingestIntel(
               select: { id: true },
             });
             trackedBusinessId = created.id;
+            logger.info('[reconcile] created new', {
+              orgId,
+              googlePlaceId: biz.googlePlaceId,
+              name: biz.name,
+            });
           }
         }
       } else {
