@@ -26,6 +26,9 @@
     compareData: null,            // single metric (custom mode)
     comparePeriodData: [],        // array of metrics (yoy/prev modes)
     allMonths: [],
+    // Reviews view
+    reviewRateGranularity: 'month',
+    currentReviews: [],
   };
 
   // ── API Helper Functions ──────────────────────────────────────────────────
@@ -712,12 +715,99 @@
       ? latest.totalReviews - first.totalReviews : null;
     document.getElementById('rvGrowth').textContent =
       growth != null ? (growth >= 0 ? `+${growth}` : `${growth}`) : '—';
-    document.getElementById('rvCaptured').textContent = snapshots ? snapshots.length : 0;
+    // Store reviews for granularity toggle re-renders
+    state.currentReviews = reviews || [];
 
-    renderReviewLineChart('rvCountChart', snapshots, s => s.totalReviews, { color: '#8ab4f8' });
+    // "New reviews (period)" = count in the most recent bucket of current granularity
+    (function () {
+      var buckets = window.GBPDate
+        ? window.GBPDate.bucketReviewsByPeriod(state.currentReviews, state.reviewRateGranularity)
+        : [];
+      var lastBucketCount = buckets.length ? buckets[buckets.length - 1].count : 0;
+      document.getElementById('rvCaptured').textContent = lastBucketCount;
+    })();
+
+    renderReviewRateChart(state.currentReviews, state.reviewRateGranularity);
     renderReviewLineChart('rvRatingChart', snapshots, s => s.avgRating, { color: '#fdd663', min: 0, max: 5 });
     renderStarDistribution(latest, reviews);
     renderRecentReviews(reviews);
+
+    // Wire granularity toggle buttons (safe to call multiple times — replaces listeners via re-assignment)
+    document.querySelectorAll('.rv-gran-btn').forEach(function (btn) {
+      btn.onclick = function () {
+        state.reviewRateGranularity = btn.dataset.gran;
+        // Update active styles
+        document.querySelectorAll('.rv-gran-btn').forEach(function (b) {
+          var isActive = b.dataset.gran === state.reviewRateGranularity;
+          b.style.color = isActive ? '#8ab4f8' : '#888';
+          b.style.borderColor = isActive ? '#8ab4f8' : '#2a2a3e';
+          if (isActive) b.classList.add('rv-gran-active');
+          else b.classList.remove('rv-gran-active');
+        });
+        // Re-compute "new reviews (period)" for the selected granularity
+        var buckets = window.GBPDate
+          ? window.GBPDate.bucketReviewsByPeriod(state.currentReviews, state.reviewRateGranularity)
+          : [];
+        var lastCount = buckets.length ? buckets[buckets.length - 1].count : 0;
+        document.getElementById('rvCaptured').textContent = lastCount;
+        renderReviewRateChart(state.currentReviews, state.reviewRateGranularity);
+      };
+    });
+  }
+
+  // ── Review rate bar chart (bucketed by actual review date) ──
+  function renderReviewRateChart(reviews, granularity) {
+    var svg = document.getElementById('rvCountChart');
+    if (!svg) return;
+    var W = 700, H = 240, padL = 48, padR = 16, padT = 20, padB = 34;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+
+    if (!window.GBPDate) {
+      svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" fill="#666" text-anchor="middle" font-size="13">Date utility not loaded</text>';
+      return;
+    }
+
+    var buckets = window.GBPDate.bucketReviewsByPeriod(reviews, granularity || 'month');
+
+    if (!buckets.length) {
+      svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" fill="#666" text-anchor="middle" font-size="13">No dated reviews yet — fetch reviews to see your rate</text>';
+      return;
+    }
+
+    var counts = buckets.map(function (b) { return b.count; });
+    var maxCount = Math.max.apply(null, counts) || 1;
+
+    var barAreaW = W - padL - padR;
+    var barAreaH = H - padT - padB;
+    var barW = Math.max(2, (barAreaW / buckets.length) * 0.7);
+    var gap  = barAreaW / buckets.length;
+
+    // Gridlines (5 lines)
+    var gridlines = '';
+    for (var g = 0; g <= 4; g++) {
+      var gy = padT + (g / 4) * barAreaH;
+      var gv = Math.round(maxCount - (g / 4) * maxCount);
+      gridlines += '<line x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + gy.toFixed(1) + '" stroke="#2a2a3e" stroke-width="1"/>';
+      gridlines += '<text x="' + (padL - 8) + '" y="' + (gy + 4).toFixed(1) + '" fill="#666" text-anchor="end" font-size="10">' + gv + '</text>';
+    }
+
+    // Bars
+    var bars = '';
+    var labelEvery = Math.ceil(buckets.length / 7);
+    var xlabels = '';
+
+    for (var i = 0; i < buckets.length; i++) {
+      var bx = padL + i * gap + (gap - barW) / 2;
+      var bh = (buckets[i].count / maxCount) * barAreaH;
+      var by = padT + barAreaH - bh;
+      bars += '<rect x="' + bx.toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + Math.max(1, bh).toFixed(1) + '" fill="#8ab4f8" rx="2"/>';
+      if (i % labelEvery === 0 || i === buckets.length - 1) {
+        var lx = padL + i * gap + gap / 2;
+        xlabels += '<text x="' + lx.toFixed(1) + '" y="' + (H - 12) + '" fill="#888" text-anchor="middle" font-size="9">' + buckets[i].label + '</text>';
+      }
+    }
+
+    svg.innerHTML = gridlines + bars + xlabels;
   }
 
   // Minimal inline SVG line chart over dated snapshots.

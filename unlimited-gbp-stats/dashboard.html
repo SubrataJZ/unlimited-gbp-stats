@@ -298,7 +298,15 @@
 
       <!-- Review count over time -->
       <div class="chart-section" id="rvCountSection">
-        <h3 class="rv-section-title">Review count over time</h3>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+          <h3 class="rv-section-title" style="margin-bottom:0">Reviews per period</h3>
+          <div id="rvGranToggle" style="display:flex;gap:4px">
+            <button class="rv-gran-btn" data-gran="day"   style="padding:4px 10px;font-size:11px;border:1px solid #2a2a3e;border-radius:4px;background:#1a1a2e;color:#888;cursor:pointer">Day</button>
+            <button class="rv-gran-btn" data-gran="week"  style="padding:4px 10px;font-size:11px;border:1px solid #2a2a3e;border-radius:4px;background:#1a1a2e;color:#888;cursor:pointer">Week</button>
+            <button class="rv-gran-btn rv-gran-active" data-gran="month" style="padding:4px 10px;font-size:11px;border:1px solid #8ab4f8;border-radius:4px;background:#1a1a2e;color:#8ab4f8;cursor:pointer">Month</button>
+            <button class="rv-gran-btn" data-gran="year"  style="padding:4px 10px;font-size:11px;border:1px solid #2a2a3e;border-radius:4px;background:#1a1a2e;color:#888;cursor:pointer">Year</button>
+          </div>
+        </div>
         <div class="chart-container"><svg id="rvCountChart" class="chart-svg" aria-hidden="true"></svg></div>
       </div>
 
@@ -441,6 +449,7 @@
   </footer>
 
   <script src="storage.js"></script>
+  <script src="review-date.js"></script>
   <script src="dashboard.js"></script>
 </body>
 </html>

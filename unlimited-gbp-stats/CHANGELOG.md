@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.0] - 2026-06-19
+- **Fixed: the review trend now tracks when reviews were actually written — not when you fetched them.** The "reviews over time" chart used to plot data against each *capture* date, so the line only moved on days you clicked Fetch Reviews. It now buckets your individual reviews by their real review dates, so a single fetch instantly shows your full multi-year history.
+- **New: review-rate granularity toggle — Day / Week / Month / Year.** See how many reviews you're earning per period, with continuous gap-filled timelines (quiet periods show as zero, so the trend is honest).
+- The "New reviews (period)" stat now reflects the most recent period of the selected granularity (previously it showed the number of capture sessions).
+- Internal: the normalized review date (`reviewedAtISO`) is now persisted locally; a shared `review-date.js` utility parses absolute ("7 Feb 2023"), relative ("2 weeks ago"), and ISO dates, with unit-test coverage guarding against the fetched-date regression.
+
 ## [1.8.3] - 2026-06-19
 - **Review Audit capture (feeds the new server-side audit report).** The review scraper now captures richer per-review signals used by the deep audit: each reviewer's total review count (`authorReviewCount`), whether the owner responded (`ownerResponded`), and a normalized `YYYY-MM-DD` review date parsed from Google's relative strings ("2 weeks ago", "a month ago", "June 2025").
 - **Search "all reviews" panel + Maps coverage.** Review cards are now read from both surfaces: Maps (`.d4r55` / `.wiI7pd` / `.rsqaWe`) and the Search/business reviews panel (`.PskQHd` / `.Fv38Af` / `.KEfuhb`), with the Maps selectors kept as fallbacks. The Search "all reviews" page (`#mpd=~…/customers/reviews`) is now recognized, and its cards — which render inside a same-origin iframe — are resolved and scraped correctly.

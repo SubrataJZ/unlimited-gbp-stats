@@ -210,8 +210,9 @@ const GBPStorage = (() => {
         author:       r.author || '',
         isLocalGuide: !!r.isLocalGuide,
         hasPhoto:     !!r.hasPhoto,
-        reviewedAt:   r.reviewedAt || '',
-        collectedAt:  Date.now(),
+        reviewedAt:    r.reviewedAt || '',
+        reviewedAtISO: r.reviewedAtISO || '',
+        collectedAt:   Date.now(),
       }));
       n++;
     }

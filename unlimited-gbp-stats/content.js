@@ -840,20 +840,24 @@
   function parseRelativeReviewDate(relStr, now = new Date()) {
     if (!relStr) return null;
     const s = relStr.trim();
+    // Format from LOCAL date components (not toISOString, which shifts to UTC and
+    // rolls the calendar day back/forward in non-UTC timezones).
+    const ymd = (d) =>
+      d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 
     // Absolute: "June 2025" / "March 2024"
     const absMonth = s.match(/^([a-z]+)\s+(\d{4})$/i);
     if (absMonth) {
       const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
       const mo = MONTHS[absMonth[1].slice(0,3).toLowerCase()];
-      if (mo !== undefined) return new Date(parseInt(absMonth[2]), mo, 1).toISOString().slice(0, 10);
+      if (mo !== undefined) return ymd(new Date(parseInt(absMonth[2]), mo, 1));
     }
 
     // Absolute: "March 12, 2024"
     const absDay = s.match(/^[a-z]+ \d{1,2},? \d{4}$/i);
     if (absDay) {
       const d = new Date(s);
-      if (!isNaN(d)) return d.toISOString().slice(0, 10);
+      if (!isNaN(d)) return ymd(d);
     }
 
     // Relative: "N unit(s) ago"
@@ -870,7 +874,7 @@
         case 'month':  d.setMonth(d.getMonth() - n); break;
         case 'year':   d.setFullYear(d.getFullYear() - n); break;
       }
-      return d.toISOString().slice(0, 10);
+      return ymd(d);
     }
 
     // "a week/month/year ago"
@@ -882,7 +886,15 @@
         case 'month': d.setMonth(d.getMonth() - 1); break;
         case 'year':  d.setFullYear(d.getFullYear() - 1); break;
       }
-      return d.toISOString().slice(0, 10);
+      return ymd(d);
+    }
+
+    // Absolute: "7 Feb 2023" / "16 Nov 2024"  (Day Month Year)
+    const dmy = s.match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})$/i);
+    if (dmy) {
+      const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+      const mo = MONTHS[dmy[2].slice(0,3).toLowerCase()];
+      if (mo !== undefined) return ymd(new Date(parseInt(dmy[3]), mo, parseInt(dmy[1])));
     }
 
     return null;
