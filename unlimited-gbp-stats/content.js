@@ -941,28 +941,35 @@
   }
 
   // ── Individual review cards (scrolls the reviews list to lazy-load more) ─────
-  async function extractIndividualReviews(maxScrolls = 8) {
+  // maxScrolls=30: each scroll loads ~10 reviews → covers ~300 reviews.
+  // Trade-off: ~30s background time for full coverage vs. 8s for ~80 reviews.
+  async function extractIndividualReviews(maxScrolls = 30) {
     const doc = resolveReviewDoc();
-    const findCard = () => doc.querySelectorAll(CARD_SEL);
 
-    let cards = findCard();
+    let cards = getReviewCards(doc);
     if (cards.length) {
-      let scroller = cards[0].closest('[role="main"], .m6QErb, .DxyBCb') ||
-                     doc.scrollingElement || doc.body;
-      let lastCount = 0;
+      const scroller = findScrollableAncestor(cards[0]) ||
+                       doc.scrollingElement || doc.body;
+      let lastCount = countDistinctReviews(doc);
+      let noGrowthStreak = 0;
       for (let s = 0; s < maxScrolls; s++) {
         scroller.scrollTop = scroller.scrollHeight;
-        await sleep(900);
-        cards = findCard();
-        if (cards.length === lastCount) break;
-        lastCount = cards.length;
+        await sleep(1000);
+        const newCount = countDistinctReviews(doc);
+        if (newCount === lastCount) {
+          noGrowthStreak++;
+          if (noGrowthStreak >= 2) break; // two consecutive no-growth → done
+        } else {
+          noGrowthStreak = 0;
+        }
+        lastCount = newCount;
       }
     }
 
     const now = new Date();
     const out = [];
     const seen = new Set();
-    for (const card of findCard()) {
+    for (const card of getReviewCards(doc)) {
       // Author — Maps: .d4r55  |  Search/GBP panel: .PskQHd
       const author =
         card.querySelector('.d4r55, .PskQHd, [class*="title"]')?.textContent?.trim() ||
@@ -1518,11 +1525,70 @@
     }, () => console.log(`[GBP] Auto-scrape sent ${reviews.length} reviews for ${name}`));
   }
 
+  // ── Distinct review-id counter (collapses over-matched CARD_SEL duplicates) ──
+  function countDistinctReviews(doc) {
+    const ids = new Set();
+    doc.querySelectorAll('[data-review-id]').forEach(el => {
+      const id = el.getAttribute('data-review-id');
+      if (id) ids.add(id);
+    });
+    return ids.size || doc.querySelectorAll(CARD_SEL).length;
+  }
+
+  // ── Outermost review card getter (no over-matching nested [data-review-id]) ─
+  // Maps cards: .jftiEf   Search/GBP iframe cards: article.VaHEVc
+  // Falls back to outermost [data-review-id] elements when neither class exists.
+  function getReviewCards(doc) {
+    const primary = [...doc.querySelectorAll('.jftiEf, article.VaHEVc')];
+    if (primary.length) return primary;
+    // Outermost: exclude any element whose ancestor already has data-review-id
+    return [...doc.querySelectorAll('[data-review-id]')]
+      .filter(el => !el.parentElement?.closest('[data-review-id]'));
+  }
+
+  // ── Scrollable-ancestor finder (cross-document / iframe safe) ─────────────
+  function findScrollableAncestor(el) {
+    if (!el) return null;
+    const win = el.ownerDocument.defaultView || window;
+    let node = el.parentElement;
+    while (node && node !== document.body) {
+      try {
+        const st = win.getComputedStyle(node);
+        if ((st.overflowY === 'auto' || st.overflowY === 'scroll') &&
+            node.scrollHeight > node.clientHeight + 20) {
+          return node;
+        }
+      } catch (e) { /* cross-origin frame — skip */ }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
   // Try to click into the Reviews tab/section of an open Maps place panel.
   async function openReviewsPanel() {
-    const btn = [...document.querySelectorAll('button, [role="tab"], a')]
-      .find(el => /^reviews?\b/i.test((el.getAttribute('aria-label') || el.textContent || '').trim()));
-    if (btn) { realClick(btn); await sleep(2000); }
+    try {
+      const btn = [...document.querySelectorAll('button, [role="tab"], a')]
+        .find(el => /^reviews?\b/i.test((el.getAttribute('aria-label') || el.textContent || '').trim()));
+      if (!btn) return;
+
+      const doc = resolveReviewDoc();
+      const beforeCount = countDistinctReviews(doc);
+
+      // Native click first (proved to work in live probe), then synthetic belt-and-suspenders
+      btn.click();
+      realClick(btn);
+      await sleep(2000);
+
+      // Verify the panel actually opened; retry once if not
+      const afterCount = countDistinctReviews(resolveReviewDoc());
+      if (afterCount <= beforeCount) {
+        btn.click();
+        realClick(btn);
+        await sleep(2000);
+      }
+    } catch (e) {
+      console.warn('[GBP] openReviewsPanel:', e);
+    }
   }
 
   // ── Init: inject panel when performance page is detected ──────────────────

@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.1] - 2026-06-20
+- **Fixed: review scraping now loads the full reviews list, not just the ~3 visible preview cards.** Opening a business's reviews now uses a real native click that reliably triggers Google's Reviews panel (the previous synthetic click silently failed), and the scraper scrolls the actual reviews container — found generically rather than via hardcoded Google class names — until no new reviews load.
+- Internal: review cards are detected by distinct `data-review-id` (no more inflated counts from nested elements); the scroll loop tracks real growth and stops after two consecutive idle passes; default scroll budget raised to cover ~300 reviews.
+
 ## [1.12.0] - 2026-06-20
 - **Fixed: the same business is no longer tracked under multiple IDs.** A business captured from a Maps/Search listing card now resolves to its canonical Google CID (parsed from the place link) instead of a name-based slug, so the same business seen on a search card, a Maps place panel, and the Search "all reviews" page collapses to a single tracked profile instead of three.
 - The Search "all reviews" (`#mpd`) page now recovers the real CID from the page (place links / `data-fid`) instead of falling back to that surface's local id.
