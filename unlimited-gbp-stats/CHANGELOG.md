@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.11.0] - 2026-06-19
+- **New: Review Momentum panel** — a bento-grid row of six cards inserted above the "Reviews per period" chart, showing at a glance how your reviews are performing:
+  - **Momentum** — reviews earned in the latest period of your selected granularity (Day/Week/Month/Year), with a colour-coded up/down/flat arrow and percentage vs the prior period. Direction is conveyed by both colour and glyph, never colour alone.
+  - **Forecast** — projected review total 3 months out based on your recent monthly pace, plus the underlying reviews-per-month rate. Shows "Not enough data yet" when there is no history.
+  - **Your Records** — trophy-icon rows for your best-ever month and best-ever day by review count. Rows are hidden individually when data is not available.
+  - **Streak** — consecutive non-zero periods in a row (respects selected granularity), plus a milestone hint showing how many reviews remain to reach the next milestone (3 → 6 → 12 → 25 → 50 → 100 …).
+  - **Monthly Goal ring** — an SVG donut showing this month's review count against an owner-set target (default 10). Target persists per-business in `chrome.storage.local`. Ring turns green and reads "Goal smashed!" when the target is met. Visual fill is capped at 100% but the percentage text shows the true value.
+  - **Get More Reviews** — a share card with a Copy review link button that builds the deeplink from the business's `googlePlaceId` (preferred) or `searchUrl`. Clicking copies to clipboard and shows "Copied!" for 2 s. Button is disabled with a hint when no link can be constructed.
+- **New: avg-rating overlay on the review rate chart** — a gold line traces the per-bucket average star rating on a right-side 0–5 axis. Line breaks at gap-filled zero buckets (no artificial interpolation). A legend line below the chart reads "bars = review count · line = avg rating". Right padding expanded to 48 px to accommodate the rating labels.
+- **New: Review Pace vs Tracked Profiles** — shown below the momentum grid whenever more than one business is tracked. Loads all businesses' reviews in parallel, computes reviews/month for each, and renders a compact ranked horizontal-bar list (top 5) with your profile highlighted in accent blue and labelled "You". Read-only; fails silently on error.
+- All momentum/streak/goal cards re-render when the Day/Week/Month/Year granularity toggle changes. Panel hides automatically when the current business has no reviews.
+- SVG icons only — no emoji used in new markup (trophy, flame, share/link, arrows are all inline SVG paths).
+- Animation transitions wrapped in `@media (prefers-reduced-motion: reduce)` to disable for users who prefer it.
+
+## [1.10.0] - 2026-06-19
+- **New: review insight computations** — five pure, unit-tested functions added to `review-date.js` and exposed on `window.GBPDate` / `module.exports`, powering an upcoming Review Momentum panel:
+  - `avgRating` per bucket — each period bucket now carries a rounded average star rating (null for zero-count gap buckets).
+  - `computeMomentum(reviews, granularity, now)` — compares the last two periods and returns `{ current, previous, deltaPct, direction }` for velocity trend arrows.
+  - `computeForecast(reviews, now)` — averages the last ≤6 months and returns `{ perMonth, projectedTotal, byLabel }` projecting 3 months ahead.
+  - `computeBestPeriods(reviews, now)` — returns `{ bestMonth, bestDay }`: the highest-count month and day buckets (ties → earliest).
+  - `computeStreak(reviews, granularity, now)` — counts consecutive non-zero buckets from the most recent end; gap-filled zeros break the streak.
+- **New: pre-commit guard for review-date tests** — if `review-date.js` or `review-date.test.js` is staged, the hook runs `node unlimited-gbp-stats/review-date.test.js` and blocks the commit on failure (skips gracefully when `node` is absent).
+
 ## [1.9.0] - 2026-06-19
 - **Fixed: the review trend now tracks when reviews were actually written — not when you fetched them.** The "reviews over time" chart used to plot data against each *capture* date, so the line only moved on days you clicked Fetch Reviews. It now buckets your individual reviews by their real review dates, so a single fetch instantly shows your full multi-year history.
 - **New: review-rate granularity toggle — Day / Week / Month / Year.** See how many reviews you're earning per period, with continuous gap-filled timelines (quiet periods show as zero, so the trend is honest).

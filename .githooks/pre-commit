@@ -176,4 +176,29 @@ if [ -n "$deprecated_server" ]; then
   echo ""
 fi
 
+# ── Guard 4: Review-date unit tests ──────────────────────────────────────────
+review_date_changed=$(echo "$staged" \
+  | grep -E '^unlimited-gbp-stats/review-date\.(js|test\.js)$' || true)
+
+if [ -n "$review_date_changed" ]; then
+  if ! command -v node > /dev/null 2>&1; then
+    echo ""
+    echo "  ⚠ WARNING — node not found; skipping review-date tests"
+    echo ""
+  else
+    if ! node unlimited-gbp-stats/review-date.test.js > /dev/null 2>&1; then
+      echo ""
+      echo "  ✗ COMMIT BLOCKED — Review-date tests"
+      echo "  ----------------------------------------------------------------"
+      echo "  unlimited-gbp-stats/review-date.test.js failed."
+      echo "  Run: node unlimited-gbp-stats/review-date.test.js to see details."
+      echo "  Fix the failures before committing."
+      echo "  ----------------------------------------------------------------"
+      echo "  To bypass intentionally: git commit --no-verify"
+      echo ""
+      exit 1
+    fi
+  fi
+fi
+
 exit 0

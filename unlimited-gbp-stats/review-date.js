@@ -180,12 +180,14 @@
     }
   }
 
+  function round2(n) { return Math.round(n * 100) / 100; }
+
   /**
    * Bucket reviews by actual review date.
    * @param {Array} reviews
    * @param {string} granularity  'day'|'week'|'month'|'year'
    * @param {Date} [now=new Date()]
-   * @returns {Array<{key, label, count, cumulative}>}
+   * @returns {Array<{key, label, count, cumulative, avgRating}>}
    */
   function bucketReviewsByPeriod(reviews, granularity, now) {
     if (now === undefined) now = new Date();
@@ -193,6 +195,7 @@
 
     // Resolve dates and bucket
     var counts = {};
+    var ratingSums = {};
     var minKey = null, maxKey = null;
 
     for (var i = 0; i < reviews.length; i++) {
@@ -200,6 +203,11 @@
       if (!d) continue;
       var k = bucketKey(d, granularity);
       counts[k] = (counts[k] || 0) + 1;
+      // Only accumulate valid ratings 1..5
+      var r = reviews[i].rating;
+      if (r >= 1 && r <= 5) {
+        ratingSums[k] = (ratingSums[k] || 0) + r;
+      }
       if (minKey === null || k < minKey) minKey = k;
       if (maxKey === null || k > maxKey) maxKey = k;
     }
@@ -228,7 +236,9 @@
       for (var ki = 0; ki < keys.length; ki++) {
         var kk = keys[ki];
         cum += counts[kk];
-        result.push({ key: kk, label: bucketLabel(kk, granularity), count: counts[kk], cumulative: cum });
+        var avg = (counts[kk] > 0 && ratingSums[kk] !== undefined)
+          ? round2(ratingSums[kk] / counts[kk]) : null;
+        result.push({ key: kk, label: bucketLabel(kk, granularity), count: counts[kk], cumulative: cum, avgRating: avg });
       }
       return result;
     }
@@ -238,7 +248,9 @@
       iters++;
       var cnt = counts[current] || 0;
       cumulative += cnt;
-      result.push({ key: current, label: bucketLabel(current, granularity), count: cnt, cumulative: cumulative });
+      var avgR = (cnt > 0 && ratingSums[current] !== undefined)
+        ? round2(ratingSums[current] / cnt) : null;
+      result.push({ key: current, label: bucketLabel(current, granularity), count: cnt, cumulative: cumulative, avgRating: avgR });
       if (current === maxKey) break;
       current = nextKey(current, granularity);
     }
@@ -246,10 +258,113 @@
     return result;
   }
 
+  // ── Insight functions ───────────────────────────────────────────────────────
+
+  /**
+   * Compute review velocity momentum between the last two buckets.
+   * @param {Array} reviews
+   * @param {string} granularity
+   * @param {Date} [now]
+   * @returns {{ current, previous, deltaPct, direction }}
+   */
+  function computeMomentum(reviews, granularity, now) {
+    if (now === undefined) now = new Date();
+    var buckets = bucketReviewsByPeriod(reviews, granularity, now);
+    if (buckets.length === 0) return { current: 0, previous: 0, deltaPct: 0, direction: 'flat' };
+    var current = buckets[buckets.length - 1].count;
+    var previous = buckets.length >= 2 ? buckets[buckets.length - 2].count : 0;
+    var deltaPct;
+    if (previous > 0) {
+      deltaPct = Math.round((current - previous) / previous * 100);
+    } else if (current > 0) {
+      deltaPct = 100;
+    } else {
+      deltaPct = 0;
+    }
+    var direction = current > previous ? 'up' : current < previous ? 'down' : 'flat';
+    return { current: current, previous: previous, deltaPct: deltaPct, direction: direction };
+  }
+
+  /**
+   * Forecast review volume for the next 3 months based on recent monthly rate.
+   * @param {Array} reviews
+   * @param {Date} [now]
+   * @returns {{ perMonth, projectedTotal, byLabel }}
+   */
+  function computeForecast(reviews, now) {
+    if (now === undefined) now = new Date();
+    var buckets = bucketReviewsByPeriod(reviews, 'month', now);
+    var slice = buckets.length > 6 ? buckets.slice(buckets.length - 6) : buckets;
+    var perMonth = 0;
+    if (slice.length > 0) {
+      var total = 0;
+      for (var i = 0; i < slice.length; i++) total += slice[i].count;
+      perMonth = round2(total / slice.length);
+    }
+    var projectedTotal = Math.round(perMonth * 3);
+    // 3 months from now — use local date components to avoid UTC off-by-one
+    var MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var future = new Date(now.getFullYear(), now.getMonth() + 3, 1);
+    var byLabel = MONTH_SHORT[future.getMonth()] + ' ' + future.getFullYear();
+    return { perMonth: perMonth, projectedTotal: projectedTotal, byLabel: byLabel };
+  }
+
+  /**
+   * Find the best (highest-count) month and day buckets.
+   * @param {Array} reviews
+   * @param {Date} [now]
+   * @returns {{ bestMonth: {key,label,count}|null, bestDay: {key,label,count}|null }}
+   */
+  function computeBestPeriods(reviews, now) {
+    if (now === undefined) now = new Date();
+    var monthBuckets = bucketReviewsByPeriod(reviews, 'month', now);
+    var dayBuckets   = bucketReviewsByPeriod(reviews, 'day',   now);
+
+    function bestOf(buckets) {
+      if (!buckets.length) return null;
+      var best = null;
+      for (var i = 0; i < buckets.length; i++) {
+        var b = buckets[i];
+        if (best === null || b.count > best.count) {
+          best = { key: b.key, label: b.label, count: b.count };
+        }
+      }
+      return (best && best.count > 0) ? best : null;
+    }
+
+    return { bestMonth: bestOf(monthBuckets), bestDay: bestOf(dayBuckets) };
+  }
+
+  /**
+   * Count consecutive non-zero buckets from the end (most recent) backwards.
+   * @param {Array} reviews
+   * @param {string} granularity
+   * @param {Date} [now]
+   * @returns {number}
+   */
+  function computeStreak(reviews, granularity, now) {
+    if (now === undefined) now = new Date();
+    var buckets = bucketReviewsByPeriod(reviews, granularity, now);
+    if (!buckets.length) return 0;
+    var streak = 0;
+    for (var i = buckets.length - 1; i >= 0; i--) {
+      if (buckets[i].count >= 1) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
+
   var GBPDate = {
     parseRelativeReviewDate: parseRelativeReviewDate,
     resolveReviewDate: resolveReviewDate,
     bucketReviewsByPeriod: bucketReviewsByPeriod,
+    computeMomentum: computeMomentum,
+    computeForecast: computeForecast,
+    computeBestPeriods: computeBestPeriods,
+    computeStreak: computeStreak,
   };
 
   if (typeof window !== 'undefined') { window.GBPDate = GBPDate; }

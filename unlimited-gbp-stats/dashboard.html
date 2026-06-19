@@ -296,6 +296,97 @@
         <p>Open your business on <a href="https://maps.google.com/" target="_blank">Google Maps</a>, scroll to the Reviews section, then click <strong>⭐ Fetch Reviews</strong> on the floating panel.</p>
       </div>
 
+      <!-- ═══ Review Momentum Panel ═══ -->
+      <div id="rvMomentumSection" style="display:none;margin-bottom:16px">
+        <h3 class="rv-section-title" style="margin-bottom:10px">Review Momentum</h3>
+
+        <!-- Bento grid of momentum cards -->
+        <div id="rvMomentumGrid" style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+
+          <!-- Momentum card -->
+          <div class="rv-bento-card" id="rvMomentumCard">
+            <div class="rv-bento-title">MOMENTUM</div>
+            <div class="rv-bento-metric" id="rvMomCurrent">0</div>
+            <div class="rv-bento-trend" id="rvMomTrend" aria-live="polite"></div>
+          </div>
+
+          <!-- Forecast card -->
+          <div class="rv-bento-card" id="rvForecastCard">
+            <div class="rv-bento-title">FORECAST</div>
+            <div class="rv-bento-body" id="rvForecastText"></div>
+            <div class="rv-bento-sub" id="rvForecastSub"></div>
+          </div>
+
+          <!-- Records card -->
+          <div class="rv-bento-card" id="rvRecordsCard">
+            <div class="rv-bento-title">YOUR RECORDS</div>
+            <div id="rvRecordsBestMonth" class="rv-record-row" style="display:none">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="#fdd663" aria-hidden="true"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+              <span id="rvRecordsBestMonthTxt"></span>
+            </div>
+            <div id="rvRecordsBestDay" class="rv-record-row" style="display:none">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="#fdd663" aria-hidden="true"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+              <span id="rvRecordsBestDayTxt"></span>
+            </div>
+            <div id="rvRecordsNone" style="color:#666;font-size:12px">No records yet.</div>
+          </div>
+
+          <!-- Streak card -->
+          <div class="rv-bento-card" id="rvStreakCard">
+            <div class="rv-bento-title">STREAK</div>
+            <div class="rv-bento-streak-row">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#f28b82" aria-hidden="true"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z"/></svg>
+              <span id="rvStreakText" style="font-size:15px;font-weight:600;color:#e0e0e0"></span>
+            </div>
+            <div class="rv-bento-sub" id="rvStreakMilestone"></div>
+          </div>
+
+          <!-- Goal ring card -->
+          <div class="rv-bento-card" id="rvGoalCard">
+            <div class="rv-bento-title">MONTHLY GOAL</div>
+            <div style="display:flex;align-items:center;gap:12px;margin:8px 0">
+              <svg id="rvGoalRing" width="84" height="84" viewBox="0 0 84 84" aria-label="Monthly goal ring" role="img">
+                <circle cx="42" cy="42" r="34" fill="none" stroke="#2a2a3e" stroke-width="8"/>
+                <circle id="rvGoalArc" cx="42" cy="42" r="34" fill="none" stroke="#8ab4f8" stroke-width="8"
+                  stroke-linecap="round" stroke-dasharray="213.63" stroke-dashoffset="213.63"
+                  transform="rotate(-90 42 42)" style="transition:stroke-dashoffset .3s ease,stroke .3s ease"/>
+                <text id="rvGoalPct" x="42" y="47" text-anchor="middle" font-size="15" font-weight="700" fill="#e0e0e0">0%</text>
+              </svg>
+              <div>
+                <div id="rvGoalStatus" class="rv-bento-sub"></div>
+                <div style="margin-top:8px;display:flex;align-items:center;gap:6px">
+                  <label for="rvGoalInput" style="font-size:11px;color:#888">Target:</label>
+                  <input type="number" id="rvGoalInput" min="1" value="10"
+                    style="width:54px;padding:3px 6px;font-size:12px;background:#1a1a2e;border:1px solid #2a2a3e;border-radius:4px;color:#e0e0e0;cursor:pointer"
+                    aria-label="Monthly review goal target">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Get more reviews / share card -->
+          <div class="rv-bento-card" id="rvShareCard">
+            <div class="rv-bento-title">GET MORE REVIEWS</div>
+            <div class="rv-bento-sub" style="margin:6px 0 10px">Every review builds your momentum — ask a happy customer today.</div>
+            <button id="rvCopyLinkBtn" class="rv-share-btn" aria-label="Copy review link to clipboard">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              <span id="rvCopyLinkTxt">Copy review link</span>
+            </button>
+            <div id="rvShareHint" style="font-size:11px;color:#888;margin-top:6px;display:none"></div>
+          </div>
+
+        </div><!-- /#rvMomentumGrid -->
+
+        <!-- Competitor pace (shown only when multiple businesses tracked) -->
+        <div id="rvCompeteSection" style="display:none;margin-top:12px">
+          <div class="rv-bento-card">
+            <div class="rv-bento-title">REVIEW PACE vs TRACKED PROFILES</div>
+            <div id="rvCompeteList" style="margin-top:8px"></div>
+          </div>
+        </div>
+
+      </div><!-- /#rvMomentumSection -->
+
       <!-- Review count over time -->
       <div class="chart-section" id="rvCountSection">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px">
@@ -308,6 +399,7 @@
           </div>
         </div>
         <div class="chart-container"><svg id="rvCountChart" class="chart-svg" aria-hidden="true"></svg></div>
+        <div class="rv-chart-legend" id="rvCountLegend" aria-hidden="true"></div>
       </div>
 
       <!-- Average rating trend -->

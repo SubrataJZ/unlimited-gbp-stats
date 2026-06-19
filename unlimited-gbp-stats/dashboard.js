@@ -732,6 +732,10 @@
     renderStarDistribution(latest, reviews);
     renderRecentReviews(reviews);
 
+    // Momentum panel
+    renderMomentumPanel(state.currentReviews);
+    renderCompetitorPace();
+
     // Wire granularity toggle buttons (safe to call multiple times — replaces listeners via re-assignment)
     document.querySelectorAll('.rv-gran-btn').forEach(function (btn) {
       btn.onclick = function () {
@@ -751,15 +755,17 @@
         var lastCount = buckets.length ? buckets[buckets.length - 1].count : 0;
         document.getElementById('rvCaptured').textContent = lastCount;
         renderReviewRateChart(state.currentReviews, state.reviewRateGranularity);
+        // Re-render granularity-aware momentum cards
+        renderMomentumPanel(state.currentReviews);
       };
     });
   }
 
-  // ── Review rate bar chart (bucketed by actual review date) ──
+  // ── Review rate bar chart (bucketed by actual review date) with avg-rating overlay ──
   function renderReviewRateChart(reviews, granularity) {
     var svg = document.getElementById('rvCountChart');
     if (!svg) return;
-    var W = 700, H = 240, padL = 48, padR = 16, padT = 20, padB = 34;
+    var W = 700, H = 240, padL = 48, padR = 48, padT = 20, padB = 34;
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
 
     if (!window.GBPDate) {
@@ -771,6 +777,8 @@
 
     if (!buckets.length) {
       svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" fill="#666" text-anchor="middle" font-size="13">No dated reviews yet — fetch reviews to see your rate</text>';
+      var legendEl = document.getElementById('rvCountLegend');
+      if (legendEl) legendEl.textContent = '';
       return;
     }
 
@@ -782,13 +790,21 @@
     var barW = Math.max(2, (barAreaW / buckets.length) * 0.7);
     var gap  = barAreaW / buckets.length;
 
-    // Gridlines (5 lines)
+    // Left gridlines (count axis)
     var gridlines = '';
     for (var g = 0; g <= 4; g++) {
       var gy = padT + (g / 4) * barAreaH;
       var gv = Math.round(maxCount - (g / 4) * maxCount);
       gridlines += '<line x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + gy.toFixed(1) + '" stroke="#2a2a3e" stroke-width="1"/>';
       gridlines += '<text x="' + (padL - 8) + '" y="' + (gy + 4).toFixed(1) + '" fill="#666" text-anchor="end" font-size="10">' + gv + '</text>';
+    }
+
+    // Right axis labels (rating 0–5)
+    var rightAxis = '';
+    for (var rg = 0; rg <= 4; rg++) {
+      var rgy = padT + (rg / 4) * barAreaH;
+      var rgv = (5 - (rg / 4) * 5).toFixed(1);
+      rightAxis += '<text x="' + (W - padR + 8) + '" y="' + (rgy + 4).toFixed(1) + '" fill="#665a00" text-anchor="start" font-size="10">' + rgv + '</text>';
     }
 
     // Bars
@@ -807,7 +823,309 @@
       }
     }
 
-    svg.innerHTML = gridlines + bars + xlabels;
+    // Avg-rating line overlay (gold, second y-axis 0–5, break on null)
+    var ratingLine = '';
+    var ratingDots = '';
+    var hasRatings = false;
+    var prevPt = null;
+
+    function ratingY(r) { return padT + barAreaH - (r / 5) * barAreaH; }
+    function ptX(idx) { return padL + idx * gap + gap / 2; }
+
+    for (var ri = 0; ri < buckets.length; ri++) {
+      var ar = buckets[ri].avgRating;
+      if (ar === null || ar === undefined) {
+        prevPt = null; // break the line at gaps
+        continue;
+      }
+      hasRatings = true;
+      var rx = ptX(ri);
+      var ry = ratingY(ar);
+      if (prevPt !== null) {
+        ratingLine += '<line x1="' + prevPt.x.toFixed(1) + '" y1="' + prevPt.y.toFixed(1) + '" x2="' + rx.toFixed(1) + '" y2="' + ry.toFixed(1) + '" stroke="#fdd663" stroke-width="2" stroke-linejoin="round"/>';
+      }
+      ratingDots += '<circle cx="' + rx.toFixed(1) + '" cy="' + ry.toFixed(1) + '" r="2.5" fill="#fdd663"/>';
+      prevPt = { x: rx, y: ry };
+    }
+
+    svg.innerHTML = gridlines + (hasRatings ? rightAxis : '') + bars + xlabels + ratingLine + ratingDots;
+
+    // Update legend
+    var legendEl = document.getElementById('rvCountLegend');
+    if (legendEl) {
+      legendEl.textContent = hasRatings ? 'bars = review count  ·  line = avg rating' : 'bars = review count';
+    }
+  }
+
+  // ── Review Momentum Panel ──────────────────────────────────────────────────
+  function renderMomentumPanel(reviews) {
+    var sec = document.getElementById('rvMomentumSection');
+    if (!sec) return;
+
+    // Hide if no GBPDate or no reviews
+    if (!window.GBPDate || !reviews || !reviews.length) {
+      sec.style.display = 'none';
+      return;
+    }
+    sec.style.display = '';
+
+    var gran = state.reviewRateGranularity || 'month';
+    var granLabel = gran === 'day' ? 'day' : gran === 'week' ? 'week' : gran === 'year' ? 'year' : 'month';
+
+    // ── 1. Momentum card ──
+    var momentum = window.GBPDate.computeMomentum(reviews, gran);
+    document.getElementById('rvMomCurrent').textContent = momentum.current;
+
+    var trendEl = document.getElementById('rvMomTrend');
+    if (trendEl) {
+      var arrowSvg, arrowColor, dirText;
+      if (momentum.direction === 'up') {
+        arrowColor = '#81c995';
+        arrowSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="' + arrowColor + '" aria-hidden="true"><path d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>';
+        dirText = 'up';
+      } else if (momentum.direction === 'down') {
+        arrowColor = '#f28b82';
+        arrowSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="' + arrowColor + '" aria-hidden="true"><path d="M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z"/></svg>';
+        dirText = 'down';
+      } else {
+        arrowColor = '#888';
+        arrowSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="' + arrowColor + '" aria-hidden="true"><path d="M22 12l-4-4v3H3v2h15v3z"/></svg>';
+        dirText = 'flat';
+      }
+      var sign = momentum.deltaPct > 0 ? '+' : '';
+      trendEl.innerHTML = arrowSvg + '<span style="color:' + arrowColor + '">' + dirText + ' ' + sign + momentum.deltaPct + '% vs last ' + granLabel + '</span>';
+    }
+
+    // ── 2. Forecast card ──
+    var forecast = window.GBPDate.computeForecast(reviews);
+    var forecastText = document.getElementById('rvForecastText');
+    var forecastSub = document.getElementById('rvForecastSub');
+    if (forecastText && forecastSub) {
+      if (forecast.perMonth === 0) {
+        forecastText.textContent = 'Not enough data yet';
+        forecastSub.textContent = '';
+      } else {
+        forecastText.textContent = '~' + forecast.projectedTotal + ' reviews by ' + forecast.byLabel;
+        forecastSub.textContent = '≈ ' + forecast.perMonth + '/month at current pace';
+      }
+    }
+
+    // ── 3. Records card ──
+    var best = window.GBPDate.computeBestPeriods(reviews);
+    var rowMonth = document.getElementById('rvRecordsBestMonth');
+    var rowMonthTxt = document.getElementById('rvRecordsBestMonthTxt');
+    var rowDay = document.getElementById('rvRecordsBestDay');
+    var rowDayTxt = document.getElementById('rvRecordsBestDayTxt');
+    var rowNone = document.getElementById('rvRecordsNone');
+    var hasRecord = false;
+    if (rowMonth && rowMonthTxt) {
+      if (best.bestMonth) {
+        rowMonth.style.display = '';
+        rowMonthTxt.textContent = 'Best month: ' + best.bestMonth.label + ' (' + best.bestMonth.count + ')';
+        hasRecord = true;
+      } else {
+        rowMonth.style.display = 'none';
+      }
+    }
+    if (rowDay && rowDayTxt) {
+      if (best.bestDay) {
+        rowDay.style.display = '';
+        rowDayTxt.textContent = 'Best day: ' + best.bestDay.label + ' (' + best.bestDay.count + ')';
+        hasRecord = true;
+      } else {
+        rowDay.style.display = 'none';
+      }
+    }
+    if (rowNone) rowNone.style.display = hasRecord ? 'none' : '';
+
+    // ── 4. Streak card ──
+    var streak = window.GBPDate.computeStreak(reviews, gran);
+    var streakTextEl = document.getElementById('rvStreakText');
+    var streakMilestone = document.getElementById('rvStreakMilestone');
+    if (streakTextEl) {
+      streakTextEl.textContent = streak > 0
+        ? streak + ' ' + granLabel + (streak !== 1 ? 's' : '') + ' in a row'
+        : 'No active streak — a new review starts one!';
+    }
+    if (streakMilestone) {
+      // milestone hint: next milestone for total reviews
+      var totalCount = reviews.length;
+      var milestones = [3, 6, 12, 25, 50, 100, 250, 500, 1000];
+      var nextMilestone = null;
+      for (var mi = 0; mi < milestones.length; mi++) {
+        if (milestones[mi] > totalCount) { nextMilestone = milestones[mi]; break; }
+      }
+      if (nextMilestone) {
+        streakMilestone.textContent = (nextMilestone - totalCount) + ' to go to ' + nextMilestone + ' reviews';
+      } else {
+        streakMilestone.textContent = totalCount + ' reviews tracked — legendary!';
+      }
+    }
+
+    // ── 5. Goal ring card ──
+    renderGoalRing(reviews);
+    _wireGoalInput(reviews);
+
+    // ── 6. Share card ──
+    renderShareCard();
+  }
+
+  // Render the goal ring (called standalone on goal input change too)
+  function renderGoalRing(reviews) {
+    var goalInput = document.getElementById('rvGoalInput');
+    var arc = document.getElementById('rvGoalArc');
+    var pctEl = document.getElementById('rvGoalPct');
+    var statusEl = document.getElementById('rvGoalStatus');
+    if (!arc || !pctEl) return;
+
+    var target = goalInput ? (parseInt(goalInput.value) || 10) : 10;
+
+    // thisMonthCount: use month buckets, last bucket (current month)
+    var thisMonthCount = 0;
+    if (window.GBPDate && reviews && reviews.length) {
+      var monthBuckets = window.GBPDate.bucketReviewsByPeriod(reviews, 'month');
+      if (monthBuckets.length) thisMonthCount = monthBuckets[monthBuckets.length - 1].count;
+    }
+
+    var pct = Math.round((thisMonthCount / Math.max(1, target)) * 100);
+    var displayPct = Math.min(100, pct);
+    var CIRCUM = 213.63; // 2 * pi * 34
+    var offset = CIRCUM - (displayPct / 100) * CIRCUM;
+    arc.setAttribute('stroke-dashoffset', offset.toFixed(2));
+
+    var goalMet = pct >= 100;
+    arc.setAttribute('stroke', goalMet ? '#81c995' : '#8ab4f8');
+    pctEl.setAttribute('fill', goalMet ? '#81c995' : '#e0e0e0');
+    pctEl.textContent = pct + '%';
+
+    if (statusEl) {
+      statusEl.textContent = goalMet
+        ? 'Goal smashed!'
+        : thisMonthCount + ' / ' + target + ' this month';
+      statusEl.style.color = goalMet ? '#81c995' : '#aaa';
+    }
+  }
+
+  // Wire goal input (idempotent — replaces listener each render)
+  function _wireGoalInput(reviews) {
+    var goalInput = document.getElementById('rvGoalInput');
+    if (!goalInput) return;
+    // Load persisted value
+    var storageKey = 'rvGoal_' + (state.businessId || 'default');
+    chrome.storage.local.get([storageKey], function (result) {
+      if (result[storageKey]) goalInput.value = result[storageKey];
+      renderGoalRing(reviews);
+    });
+    goalInput.oninput = function () {
+      var val = parseInt(goalInput.value) || 10;
+      var obj = {};
+      obj[storageKey] = val;
+      chrome.storage.local.set(obj);
+      renderGoalRing(reviews);
+    };
+  }
+
+  // Render share / copy-link card
+  function renderShareCard() {
+    var btn = document.getElementById('rvCopyLinkBtn');
+    var hint = document.getElementById('rvShareHint');
+    if (!btn) return;
+
+    // Build review link from current business
+    var reviewUrl = null;
+    GBPStorage.getBusiness(state.businessId).then(function (biz) {
+      if (!biz) return;
+      if (biz.googlePlaceId && /^ChI/.test(biz.googlePlaceId)) {
+        reviewUrl = 'https://search.google.com/local/writereview?placeid=' + encodeURIComponent(biz.googlePlaceId);
+      } else if (biz.searchUrl) {
+        reviewUrl = biz.searchUrl;
+      }
+
+      if (reviewUrl) {
+        btn.disabled = false;
+        if (hint) hint.style.display = 'none';
+        btn.onclick = function () {
+          navigator.clipboard.writeText(reviewUrl).then(function () {
+            var txtEl = document.getElementById('rvCopyLinkTxt');
+            if (txtEl) {
+              txtEl.textContent = 'Copied!';
+              setTimeout(function () { txtEl.textContent = 'Copy review link'; }, 2000);
+            }
+          }).catch(function (err) {
+            console.warn('Clipboard write failed:', err);
+          });
+        };
+      } else {
+        btn.disabled = true;
+        if (hint) {
+          hint.style.display = '';
+          hint.textContent = 'Open this profile on Google to get its review link';
+        }
+      }
+    }).catch(function (err) {
+      console.warn('renderShareCard: getBusiness error', err);
+      btn.disabled = true;
+    });
+  }
+
+  // ── Competitor Pace card (async, read-only, silent on error) ──────────────
+  async function renderCompetitorPace() {
+    var sec = document.getElementById('rvCompeteSection');
+    if (!sec) return;
+    try {
+      var allBiz = await GBPStorage.getAllBusinesses();
+      if (!allBiz || allBiz.length <= 1) {
+        sec.style.display = 'none';
+        return;
+      }
+
+      // Load reviews for all businesses in parallel
+      var paceData = await Promise.all(allBiz.map(async function (biz) {
+        try {
+          var revs = await GBPStorage.getReviews(biz.id);
+          var perMonth = 0;
+          if (window.GBPDate && revs && revs.length) {
+            perMonth = window.GBPDate.computeForecast(revs).perMonth;
+          }
+          return { id: biz.id, name: biz.name || biz.id, perMonth: perMonth };
+        } catch (e) {
+          return { id: biz.id, name: biz.name || biz.id, perMonth: 0 };
+        }
+      }));
+
+      // Sort descending, take top 5
+      paceData.sort(function (a, b) { return b.perMonth - a.perMonth; });
+      var top5 = paceData.slice(0, 5);
+      var maxPace = top5.length ? (top5[0].perMonth || 1) : 1;
+
+      var listEl = document.getElementById('rvCompeteList');
+      if (!listEl) { sec.style.display = 'none'; return; }
+
+      var html = '';
+      for (var pi = 0; pi < top5.length; pi++) {
+        var item = top5[pi];
+        var isYou = item.id === state.businessId;
+        var fillPct = Math.max(2, Math.round((item.perMonth / maxPace) * 100));
+        var nameLabel = (isYou ? 'You' : '') + (item.name ? (isYou ? ' — ' + item.name : item.name) : '');
+        html += '<div class="rv-pace-row">'
+          + '<span class="rv-pace-name' + (isYou ? ' rv-pace-you' : '') + '" title="' + _esc(item.name) + '">' + _esc(nameLabel) + '</span>'
+          + '<div class="rv-pace-track"><div class="rv-pace-fill' + (isYou ? ' rv-pace-you-fill' : '') + '" style="width:' + fillPct + '%"></div></div>'
+          + '<span class="rv-pace-val' + (isYou ? ' rv-pace-you' : '') + '">' + item.perMonth + '/mo</span>'
+          + '</div>';
+      }
+      listEl.innerHTML = html;
+      sec.style.display = '';
+    } catch (err) {
+      console.warn('renderCompetitorPace failed:', err);
+      if (sec) sec.style.display = 'none';
+    }
+  }
+
+  // HTML-escape helper (safe for attribute values and text nodes)
+  function _esc(str) {
+    return (str || '').replace(/[<>&"]/g, function (c) {
+      return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c];
+    });
   }
 
   // Minimal inline SVG line chart over dated snapshots.
