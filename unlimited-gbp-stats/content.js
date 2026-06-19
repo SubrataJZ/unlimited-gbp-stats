@@ -941,9 +941,13 @@
   }
 
   // ── Individual review cards (scrolls the reviews list to lazy-load more) ─────
-  // maxScrolls=30: each scroll loads ~10 reviews → covers ~300 reviews.
-  // Trade-off: ~30s background time for full coverage vs. 8s for ~80 reviews.
-  async function extractIndividualReviews(maxScrolls = 30) {
+  // maxScrolls=60: each scroll loads ~10 reviews; "More reviews" pagination clicks
+  // load the next batch (~100 reviews each) when scrolling alone stalls.
+  // Covers up to maxReviews=1500 reviews before stopping (safety cap for businesses
+  // with thousands of reviews). The 2-consecutive-no-growth break exits early for
+  // small sets so the full 60-iteration budget is rarely spent.
+  // Trade-off: up to ~90s for very large sets vs. ~8s for ~80 reviews.
+  async function extractIndividualReviews(maxScrolls = 60, maxReviews = 1500) {
     const doc = resolveReviewDoc();
 
     let cards = getReviewCards(doc);
@@ -953,12 +957,27 @@
       let lastCount = countDistinctReviews(doc);
       let noGrowthStreak = 0;
       for (let s = 0; s < maxScrolls; s++) {
+        // Safety cap — stop before runaway on huge review sets
+        if (countDistinctReviews(doc) >= maxReviews) break;
+
         scroller.scrollTop = scroller.scrollHeight;
         await sleep(1000);
-        const newCount = countDistinctReviews(doc);
+        let newCount = countDistinctReviews(doc);
+
         if (newCount === lastCount) {
-          noGrowthStreak++;
-          if (noGrowthStreak >= 2) break; // two consecutive no-growth → done
+          // Scroll stalled — try clicking the "More reviews" pagination button
+          const clicked = clickMoreReviews(doc);
+          if (clicked) {
+            await sleep(1200);
+            newCount = countDistinctReviews(doc);
+          }
+          // Only count as no-growth if still stalled after the click attempt
+          if (newCount === lastCount) {
+            noGrowthStreak++;
+            if (noGrowthStreak >= 2) break; // two consecutive no-growth → done
+          } else {
+            noGrowthStreak = 0; // More-reviews click produced new cards
+          }
         } else {
           noGrowthStreak = 0;
         }
@@ -1564,11 +1583,48 @@
     return null;
   }
 
+  // ── "More reviews" button clicker (pagination past the ~100-review lazy-load cap) ─
+  // Finds and clicks a "More Reviews" / "See all reviews" / "All reviews" control.
+  // Searches the given doc first, then falls back to the top document (the place-panel
+  // button can live in the top frame while cards are inside an iframe).
+  // Returns true if an element was clicked, false otherwise. Never throws.
+  function clickMoreReviews(doc) {
+    try {
+      const MORE_RE = /^(?:more reviews|see (?:all|more) reviews|all reviews)\b/i;
+      const SELS = 'button, a, [role="button"], span';
+
+      // Helper: find first matching element in a document
+      const findIn = (searchDoc) => {
+        try {
+          return [...searchDoc.querySelectorAll(SELS)].find(el => {
+            const label = (el.getAttribute('aria-label') || el.textContent || '').trim();
+            return MORE_RE.test(label);
+          });
+        } catch (_) { return null; }
+      };
+
+      let el = findIn(doc);
+      // Fallback: top document (place-panel button in top frame, cards in iframe)
+      if (!el && doc !== document) {
+        try { el = findIn(document); } catch (_) { /* cross-origin guard */ }
+      }
+
+      if (!el) return false;
+      el.click();
+      realClick(el);
+      return true;
+    } catch (e) {
+      console.warn('[GBP] clickMoreReviews:', e);
+      return false;
+    }
+  }
+
   // Try to click into the Reviews tab/section of an open Maps place panel.
   async function openReviewsPanel() {
     try {
+      // Match plain "Reviews" tab AND "More reviews (N)" place-panel link
       const btn = [...document.querySelectorAll('button, [role="tab"], a')]
-        .find(el => /^reviews?\b/i.test((el.getAttribute('aria-label') || el.textContent || '').trim()));
+        .find(el => /^(?:reviews?|more reviews)\b/i.test((el.getAttribute('aria-label') || el.textContent || '').trim()));
       if (!btn) return;
 
       const doc = resolveReviewDoc();

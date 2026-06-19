@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.2] - 2026-06-20
+- **Fixed: large review sets are now captured past the ~100-review lazy-load cap.** When Google stops auto-loading and shows a "More Reviews" button, the scraper now clicks it to paginate; the Maps search → place-panel "More reviews (N)" link is also opened automatically (previously only the 3-review preview was captured). Capture is bounded to 1,500 reviews per session for stability.
+
 ## [1.12.1] - 2026-06-20
 - **Fixed: review scraping now loads the full reviews list, not just the ~3 visible preview cards.** Opening a business's reviews now uses a real native click that reliably triggers Google's Reviews panel (the previous synthetic click silently failed), and the scraper scrolls the actual reviews container — found generically rather than via hardcoded Google class names — until no new reviews load.
 - Internal: review cards are detected by distinct `data-review-id` (no more inflated counts from nested elements); the scroll loop tracks real growth and stops after two consecutive idle passes; default scroll budget raised to cover ~300 reviews.
