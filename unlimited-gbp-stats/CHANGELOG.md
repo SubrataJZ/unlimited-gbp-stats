@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.0] - 2026-06-20
+- **Fixed: the same business is no longer tracked under multiple IDs.** A business captured from a Maps/Search listing card now resolves to its canonical Google CID (parsed from the place link) instead of a name-based slug, so the same business seen on a search card, a Maps place panel, and the Search "all reviews" page collapses to a single tracked profile instead of three.
+- The Search "all reviews" (`#mpd`) page now recovers the real CID from the page (place links / `data-fid`) instead of falling back to that surface's local id.
+- Internal: shared `extractCidFromUrl()` helper; `extractBusinessId()` refactored to reuse it. Backend reconciles incoming businesses by normalized name+address and backfills the canonical CID when an older slug/empty id is found (no schema change).
+
 ## [1.11.0] - 2026-06-19
 - **New: Review Momentum panel** — a bento-grid row of six cards inserted above the "Reviews per period" chart, showing at a glance how your reviews are performing:
   - **Momentum** — reviews earned in the latest period of your selected granularity (Day/Week/Month/Year), with a colour-coded up/down/flat arrow and percentage vs the prior period. Direction is conveyed by both colour and glyph, never colour alone.

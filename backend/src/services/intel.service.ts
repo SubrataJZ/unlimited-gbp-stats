@@ -1,6 +1,16 @@
 import { prisma } from '../index';
 import logger from '../utils/logger';
 
+// Normalize a string for fuzzy name/address matching: lowercase, trim, collapse
+// whitespace, strip punctuation. Deterministic and simple.
+function normalizeForMatch(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s]/g, '')   // strip punctuation
+    .replace(/\s+/g, ' ');     // collapse whitespace
+}
+
 /**
  * Resolve (or auto-create) the orgId for a given userId.
  *
@@ -224,19 +234,65 @@ export async function ingestIntel(
           });
           trackedBusinessId = existing.id;
         } else {
-          const created = await tx.trackedBusiness.create({
-            data: {
-              orgId,
-              googlePlaceId: biz.googlePlaceId,
-              name: biz.name,
-              address: biz.address,
-              searchUrl: biz.searchUrl,
-              logoUrl: biz.logoUrl,
-              isOwn: biz.isOwn ?? false,
-            },
-            select: { id: true },
-          });
-          trackedBusinessId = created.id;
+          // Phase C: name+address reconciliation before creating a new row.
+          // Catches cases where the same business was previously stored under a
+          // different id (slug vs CID vs local-id).
+          let reconciled: { id: string; googlePlaceId: string | null } | null = null;
+
+          if (biz.name) {
+            const candidates = await tx.trackedBusiness.findMany({
+              where: { orgId },
+              select: { id: true, googlePlaceId: true, name: true, address: true },
+            });
+
+            const incomingName = normalizeForMatch(biz.name);
+            const incomingAddr = biz.address ? normalizeForMatch(biz.address) : null;
+
+            for (const c of candidates) {
+              if (normalizeForMatch(c.name) !== incomingName) continue;
+              // If both have an address, require it to match too
+              if (incomingAddr && c.address && normalizeForMatch(c.address) !== incomingAddr) continue;
+              reconciled = { id: c.id, googlePlaceId: c.googlePlaceId };
+              break;
+            }
+          }
+
+          if (reconciled) {
+            // Found a matching row — update it instead of creating a duplicate.
+            bizIsNew = false;
+            trackedBusinessId = reconciled.id;
+
+            // Backfill googlePlaceId only if the existing value is absent or a slug
+            const existingGpid = reconciled.googlePlaceId;
+            const shouldBackfill =
+              !existingGpid || existingGpid.startsWith('gbpx-');
+
+            await tx.trackedBusiness.update({
+              where: { id: reconciled.id },
+              data: {
+                name: biz.name,
+                address: biz.address ?? undefined,
+                searchUrl: biz.searchUrl ?? undefined,
+                logoUrl: biz.logoUrl ?? undefined,
+                isOwn: biz.isOwn ?? false,
+                ...(shouldBackfill ? { googlePlaceId: biz.googlePlaceId } : {}),
+              },
+            });
+          } else {
+            const created = await tx.trackedBusiness.create({
+              data: {
+                orgId,
+                googlePlaceId: biz.googlePlaceId,
+                name: biz.name,
+                address: biz.address,
+                searchUrl: biz.searchUrl,
+                logoUrl: biz.logoUrl,
+                isOwn: biz.isOwn ?? false,
+              },
+              select: { id: true },
+            });
+            trackedBusinessId = created.id;
+          }
         }
       } else {
         // No googlePlaceId — fall back to name + address lookup

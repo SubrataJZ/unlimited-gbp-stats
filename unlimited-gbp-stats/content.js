@@ -28,6 +28,46 @@
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   // ── Business ID extraction (handles multiple URL patterns) ──────────────────
+  // Shared helper: extract a decimal CID from any URL string.
+  // Tries ?cid= / ?ludcid= param first, then !1s0x...:0x<hex> feature-id.
+  // Regexes directly on the raw string — tolerant of relative URLs.
+  // Returns decimal CID string or null.
+  function extractCidFromUrl(url) {
+    if (!url) return null;
+    try {
+      const cidParam = url.match(/[?&#](?:lud)?cid=(\d{6,})/i);
+      if (cidParam) return cidParam[1];
+      const fidHex = url.match(/!1s0x[0-9a-f]+:0x([0-9a-f]+)/i);
+      if (fidHex) {
+        try { return BigInt('0x' + fidHex[1]).toString(); } catch (e) { /* fall through */ }
+      }
+    } catch (e) { /* defensive */ }
+    return null;
+  }
+
+  // Best-effort DOM scan for a CID when on a #mpd search panel page.
+  // Checks place links and data-fid attributes; never throws.
+  function findCidInDom() {
+    try {
+      // Try the first /maps/place/ anchor that contains a CID
+      const anchors = document.querySelectorAll('a[href*="/maps/place/"]');
+      for (const a of anchors) {
+        const cid = extractCidFromUrl(a.href);
+        if (cid) return cid;
+      }
+      // Try data-fid="0x<hex>:0x<hex>"
+      const fidEl = document.querySelector('[data-fid]');
+      if (fidEl) {
+        const fid = fidEl.getAttribute('data-fid') || '';
+        const m = fid.match(/:0x([0-9a-f]+)/i);
+        if (m) {
+          try { return BigInt('0x' + m[1]).toString(); } catch (e) { /* fall through */ }
+        }
+      }
+    } catch (e) { /* defensive */ }
+    return null;
+  }
+
   function extractBusinessId() {
     // Pattern: /local/business/12314840327329864086/
     const localMatch = window.location.href.match(/\/local\/business\/(\d{10,})/);
@@ -36,16 +76,16 @@
     const lMatch = window.location.href.match(/\/l\/(\d{10,})/);
     if (lMatch) return lMatch[1];
     // Search "all reviews" panel: #mpd=~12314840327329864086/customers/reviews
+    // Phase B: try DOM CID recovery first, fall back to local-id from URL
     const mpdMatch = window.location.href.match(/#mpd=~?(\d{10,})/);
-    if (mpdMatch) return mpdMatch[1];
+    if (mpdMatch) {
+      const domCid = findCidInDom();
+      return domCid || mpdMatch[1];
+    }
     // Maps place-detail URLs: cid= param or feature-id (!1s0x<hex>:0x<CIDhex>)
     // Return the decimal CID to match this function's numeric-id contract
-    const cidParam = window.location.href.match(/[?&#](?:lud)?cid=(\d{6,})/i);
-    if (cidParam) return cidParam[1];
-    const fidHex = window.location.href.match(/!1s0x[0-9a-f]+:0x([0-9a-f]+)/i);
-    if (fidHex) {
-      try { return BigInt('0x' + fidHex[1]).toString(); } catch (e) { /* fall through */ }
-    }
+    const cidFromUrl = extractCidFromUrl(window.location.href);
+    if (cidFromUrl) return cidFromUrl;
     // From data-p attributes
     const dataPEl = document.querySelector('[data-p*="12"]');
     if (dataPEl) {
@@ -1415,7 +1455,8 @@
     console.log('[GBP] Listing review click:', d);
     if (!d.name) { flashBtn(btn, '⚠ no name'); return; }
 
-    const businessId = slugifyName(d.name);
+    const cid = extractCidFromUrl(d.placeUrl);
+    const businessId = cid || slugifyName(d.name);
     const snapshot = {
       totalReviews: d.count || 0,
       avgRating:    d.rating != null ? d.rating : null,
@@ -1470,7 +1511,7 @@
     if (!reviews.length && !snap) { console.log('[GBP] Auto-scrape: nothing found'); return; }
     chrome.runtime.sendMessage({
       action: 'saveReviewData',
-      business: { id: slugifyName(name), name },
+      business: { id: extractBusinessId() || slugifyName(name), name },
       isOwn: false,
       snapshot: snap,
       reviews,
