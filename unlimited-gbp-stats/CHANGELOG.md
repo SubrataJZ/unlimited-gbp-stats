@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.4] - 2026-06-21
+- **Fixed: review scraping now captures the full list instead of only ~3.** The reviews list is virtualized — Google recycles review cards out of the DOM as you scroll — so the previous single end-of-scroll extraction pass only ever saw the last visible window (3–8 cards) regardless of how many had loaded. The scraper now **harvests reviews incrementally on every scroll step** into an id-keyed accumulator, so recycled cards are banked before they disappear.
+- Review cards are now located by Google's stable `data-review-id` attribute first (falling back to the `.jftiEf` / `article.VaHEVc` classes only when no id is present), making extraction immune to Google's frequent CSS-class rotation.
+- Lazy-loading is now driven by `scrollIntoView()` on the last card in addition to scrolling the detected container, so loading continues even when the exact scroll container can't be identified. The scroll container is re-resolved each step, and the no-growth cutoff was relaxed to three consecutive idle passes.
+
 ## [1.12.3] - 2026-06-21
 - **Fixed: Maps split-view place panel now scrapes past the initial ~3 review preview.** The "More reviews" pagination button is now matched even when its text has a prefix character, count, or icon before the keyword (e.g. "8 More reviews", "→ More reviews"). The previous `^`-anchored regex silently missed those variants and left scraping stuck at the preview count.
 

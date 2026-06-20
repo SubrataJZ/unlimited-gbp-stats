@@ -947,96 +947,77 @@
   // with thousands of reviews). The 2-consecutive-no-growth break exits early for
   // small sets so the full 60-iteration budget is rarely spent.
   // Trade-off: up to ~90s for very large sets vs. ~8s for ~80 reviews.
-  async function extractIndividualReviews(maxScrolls = 60, maxReviews = 1500) {
+  async function extractIndividualReviews(maxScrolls = 80, maxReviews = 1500) {
     const doc = resolveReviewDoc();
+    const now = new Date();
+
+    // Accumulator keyed by externalId. We harvest on EVERY scroll step (not just
+    // once at the end) because Google's reviews list is virtualized — cards get
+    // recycled out of the DOM as you scroll, so a single final pass would only
+    // capture the last visible window. Banking incrementally is recycle-proof.
+    const collected = new Map();
+    const harvest = () => {
+      for (const card of getReviewCards(doc)) {
+        const rev = extractReviewFromCard(card, now);
+        if (rev && !collected.has(rev.externalId)) collected.set(rev.externalId, rev);
+      }
+    };
+
+    harvest(); // bank whatever is rendered before we start scrolling
 
     let cards = getReviewCards(doc);
     if (cards.length) {
-      const scroller = findScrollableAncestor(cards[0]) ||
-                       doc.scrollingElement || doc.body;
-      let lastCount = countDistinctReviews(doc);
+      let scroller = findScrollableAncestor(cards[0]) ||
+                     doc.scrollingElement || doc.body;
+      let lastSize = collected.size;
       let noGrowthStreak = 0;
       for (let s = 0; s < maxScrolls; s++) {
         // Safety cap — stop before runaway on huge review sets
-        if (countDistinctReviews(doc) >= maxReviews) break;
+        if (collected.size >= maxReviews) break;
 
-        scroller.scrollTop = scroller.scrollHeight;
+        // Drive lazy-load two ways: scroll the container we found AND bring the
+        // last card into view. scrollIntoView works even when we picked the wrong
+        // scroll container (the most common failure on Maps' rotating DOM).
+        try { scroller.scrollTop = scroller.scrollHeight; } catch (e) { /* ignore */ }
+        const visible = getReviewCards(doc);
+        if (visible.length) {
+          try { visible[visible.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ }
+        }
         await sleep(1000);
-        let newCount = countDistinctReviews(doc);
 
-        if (newCount === lastCount) {
-          // Scroll stalled — try clicking the "More reviews" pagination button
+        harvest();
+        let size = collected.size;
+
+        if (size === lastSize) {
+          // Stalled — try the "More reviews" pagination button, then re-harvest
           const clicked = clickMoreReviews(doc);
           if (clicked) {
             await sleep(1200);
-            newCount = countDistinctReviews(doc);
+            harvest();
+            size = collected.size;
           }
-          // Only count as no-growth if still stalled after the click attempt
-          if (newCount === lastCount) {
+          if (size === lastSize) {
             noGrowthStreak++;
-            if (noGrowthStreak >= 2) break; // two consecutive no-growth → done
+            if (noGrowthStreak >= 3) break; // three consecutive no-growth → done
           } else {
-            noGrowthStreak = 0; // More-reviews click produced new cards
+            noGrowthStreak = 0;
           }
         } else {
           noGrowthStreak = 0;
         }
-        lastCount = newCount;
+        lastSize = size;
+
+        // Re-resolve the scroll container — opening "More reviews" can swap it.
+        const c2 = getReviewCards(doc);
+        if (c2.length) {
+          const sc2 = findScrollableAncestor(c2[0]);
+          if (sc2) scroller = sc2;
+        }
       }
     }
 
-    const now = new Date();
-    const out = [];
-    const seen = new Set();
-    for (const card of getReviewCards(doc)) {
-      // Author — Maps: .d4r55  |  Search/GBP panel: .PskQHd
-      const author =
-        card.querySelector('.d4r55, .PskQHd, [class*="title"]')?.textContent?.trim() ||
-        card.getAttribute('aria-label') || '';
-
-      const ratingEl = card.querySelector('[aria-label*="star" i], [role="img"][aria-label]');
-      const rating = parseStarLabel(ratingEl?.getAttribute('aria-label') || '');
-
-      // Review text — Maps: .wiI7pd  |  Search/GBP panel: .Fv38Af
-      const text = card.querySelector('.wiI7pd, .Fv38Af, .MyEned, [class*="reviewText"]')?.textContent?.trim() || '';
-
-      // Relative date — Maps: .rsqaWe  |  Search/GBP panel: .KEfuhb
-      const dateRaw = card.querySelector('.rsqaWe, .KEfuhb, .dehysf, [class*="date"]')?.textContent?.trim() || '';
-      const reviewedAtISO = parseRelativeReviewDate(dateRaw, now);
-
-      // Contributor line e.g. "Local Guide · 42 reviews" — Maps: .RfnDt  |  panel: .WEBjve
-      const contributorText = card.querySelector('.RfnDt, .WEBjve, [class*="contributor"]')?.textContent?.trim() || '';
-      const countMatch = contributorText.match(/(\d+)\s+reviews?/i);
-      const authorReviewCount = countMatch ? parseInt(countMatch[1]) : null;
-
-      const isLocalGuide = /local guide/i.test(card.textContent);
-      const hasPhoto = !!card.querySelector('img[src*="googleusercontent"], button[aria-label*="Photo" i]');
-
-      // Owner response block — Maps: .CDe7pd  |  generic class substrings
-      const ownerResponded = !!(
-        card.querySelector('.CDe7pd, [class*="ownerResponse"], [class*="owner-response"]') ||
-        /response from the owner/i.test(card.textContent)
-      );
-
-      if (!rating && !text) continue;
-      const externalId = card.getAttribute('data-review-id') || hashReview(author, dateRaw, text);
-      if (seen.has(externalId)) continue;
-      seen.add(externalId);
-
-      out.push({
-        externalId,
-        rating,
-        text: text.slice(0, 5000),
-        author: author.slice(0, 200),
-        authorReviewCount,
-        isLocalGuide,
-        hasPhoto,
-        ownerResponded,
-        reviewedAt: dateRaw,
-        reviewedAtISO,
-      });
-    }
-    return out;
+    harvest(); // final sweep for anything loaded after the last step
+    return [...collected.values()];
   }
 
   // Scrape reviews + snapshot, then persist via the background worker.
@@ -1555,14 +1536,62 @@
   }
 
   // ── Outermost review card getter (no over-matching nested [data-review-id]) ─
-  // Maps cards: .jftiEf   Search/GBP iframe cards: article.VaHEVc
-  // Falls back to outermost [data-review-id] elements when neither class exists.
+  // Prefer Google's own per-review id attribute — it is far more stable than the
+  // CSS class names (.jftiEf etc.), which Google rotates frequently. Returns the
+  // OUTERMOST data-review-id elements (excludes nested ones, which inflate counts
+  // ~10x). Falls back to the known card classes only when no data-review-id at all
+  // is present in the document.
   function getReviewCards(doc) {
-    const primary = [...doc.querySelectorAll('.jftiEf, article.VaHEVc')];
-    if (primary.length) return primary;
-    // Outermost: exclude any element whose ancestor already has data-review-id
-    return [...doc.querySelectorAll('[data-review-id]')]
+    const byId = [...doc.querySelectorAll('[data-review-id]')]
       .filter(el => !el.parentElement?.closest('[data-review-id]'));
+    if (byId.length) return byId;
+    return [...doc.querySelectorAll('.jftiEf, article.VaHEVc')];
+  }
+
+  // ── Extract one review object from a card element (null if not a real review) ─
+  // Selectors carry Maps + Search/GBP-panel variants with generic fallbacks.
+  // Rating is read from an aria-label (robust to class rotation); the card is
+  // kept if it has either a rating OR text.
+  function extractReviewFromCard(card, now) {
+    const author =
+      card.querySelector('.d4r55, .PskQHd, [class*="title"]')?.textContent?.trim() ||
+      card.getAttribute('aria-label') || '';
+
+    const ratingEl = card.querySelector('[aria-label*="star" i], [role="img"][aria-label]');
+    const rating = parseStarLabel(ratingEl?.getAttribute('aria-label') || '');
+
+    const text = card.querySelector('.wiI7pd, .Fv38Af, .MyEned, [class*="reviewText"]')?.textContent?.trim() || '';
+
+    const dateRaw = card.querySelector('.rsqaWe, .KEfuhb, .dehysf, [class*="date"]')?.textContent?.trim() || '';
+    const reviewedAtISO = parseRelativeReviewDate(dateRaw, now);
+
+    const contributorText = card.querySelector('.RfnDt, .WEBjve, [class*="contributor"]')?.textContent?.trim() || '';
+    const countMatch = contributorText.match(/(\d+)\s+reviews?/i);
+    const authorReviewCount = countMatch ? parseInt(countMatch[1]) : null;
+
+    const isLocalGuide = /local guide/i.test(card.textContent);
+    const hasPhoto = !!card.querySelector('img[src*="googleusercontent"], button[aria-label*="Photo" i]');
+
+    const ownerResponded = !!(
+      card.querySelector('.CDe7pd, [class*="ownerResponse"], [class*="owner-response"]') ||
+      /response from the owner/i.test(card.textContent)
+    );
+
+    if (!rating && !text) return null;
+    const externalId = card.getAttribute('data-review-id') || hashReview(author, dateRaw, text);
+
+    return {
+      externalId,
+      rating,
+      text: text.slice(0, 5000),
+      author: author.slice(0, 200),
+      authorReviewCount,
+      isLocalGuide,
+      hasPhoto,
+      ownerResponded,
+      reviewedAt: dateRaw,
+      reviewedAtISO,
+    };
   }
 
   // ── Scrollable-ancestor finder (cross-document / iframe safe) ─────────────
