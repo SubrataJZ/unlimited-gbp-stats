@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.3] - 2026-06-21
+- **Fixed: Maps split-view place panel now scrapes past the initial ~3 review preview.** The "More reviews" pagination button is now matched even when its text has a prefix character, count, or icon before the keyword (e.g. "8 More reviews", "→ More reviews"). The previous `^`-anchored regex silently missed those variants and left scraping stuck at the preview count.
+
 ## [1.12.2] - 2026-06-20
 - **Fixed: large review sets are now captured past the ~100-review lazy-load cap.** When Google stops auto-loading and shows a "More Reviews" button, the scraper now clicks it to paginate; the Maps search → place-panel "More reviews (N)" link is also opened automatically (previously only the 3-review preview was captured). Capture is bounded to 1,500 reviews per session for stability.
 

@@ -1590,7 +1590,7 @@
   // Returns true if an element was clicked, false otherwise. Never throws.
   function clickMoreReviews(doc) {
     try {
-      const MORE_RE = /^(?:more reviews|see (?:all|more) reviews|all reviews)\b/i;
+      const MORE_RE = /(?:more reviews|see (?:all|more) reviews|all reviews)\b/i;
       const SELS = 'button, a, [role="button"], span';
 
       // Helper: find first matching element in a document
