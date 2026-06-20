@@ -1619,7 +1619,12 @@
   // Returns true if an element was clicked, false otherwise. Never throws.
   function clickMoreReviews(doc) {
     try {
-      const MORE_RE = /(?:more reviews|see (?:all|more) reviews|all reviews)\b/i;
+      // Anchored to the START of the label so "More reviews (1,434)" matches but
+      // "Get more reviews" (the owner-panel PROMOTE button) does NOT. EXCLUDE_RE
+      // is a belt-and-suspenders guard against promote / reply / write controls
+      // that also happen to contain the word "review".
+      const MORE_RE = /^(?:more reviews|see (?:all|more) reviews|all reviews)\b/i;
+      const EXCLUDE_RE = /get more reviews|reply to reviews|write a review|share/i;
       const SELS = 'button, a, [role="button"], span';
 
       // Helper: find first matching element in a document
@@ -1627,7 +1632,7 @@
         try {
           return [...searchDoc.querySelectorAll(SELS)].find(el => {
             const label = (el.getAttribute('aria-label') || el.textContent || '').trim();
-            return MORE_RE.test(label);
+            return MORE_RE.test(label) && !EXCLUDE_RE.test(label);
           });
         } catch (_) { return null; }
       };

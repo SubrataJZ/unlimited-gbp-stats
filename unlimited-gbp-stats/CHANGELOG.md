@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.5] - 2026-06-21
+- **Fixed: fetching reviews no longer triggers the "Get more reviews" promote dialog.** On the owner reviews panel, the pagination-button matcher had been broadened in 1.12.3 and was wrongly matching the **"Get more reviews"** button (it contains the substring "more reviews"). The match is now anchored to the start of the label, and promote/reply/share/write controls are explicitly excluded, so only a genuine "More reviews (N)" pagination link is ever clicked.
+
 ## [1.12.4] - 2026-06-21
 - **Fixed: review scraping now captures the full list instead of only ~3.** The reviews list is virtualized — Google recycles review cards out of the DOM as you scroll — so the previous single end-of-scroll extraction pass only ever saw the last visible window (3–8 cards) regardless of how many had loaded. The scraper now **harvests reviews incrementally on every scroll step** into an id-keyed accumulator, so recycled cards are banked before they disappear.
 - Review cards are now located by Google's stable `data-review-id` attribute first (falling back to the `.jftiEf` / `article.VaHEVc` classes only when no id is present), making extraction immune to Google's frequent CSS-class rotation.
