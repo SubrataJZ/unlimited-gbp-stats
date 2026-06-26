@@ -16,6 +16,9 @@ RUN npm ci || npm install
 # Copy source code
 COPY src ./src
 
+# Copy scripts directory (for dedup, migrations, etc.)
+COPY scripts ./scripts
+
 # Copy entrypoint script
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh

@@ -1,6 +1,6 @@
 {
   "name": "zixify-backend",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "description": "Production backend for Zixify - Google Business Profile data archival platform",
   "main": "dist/index.js",
   "scripts": {
