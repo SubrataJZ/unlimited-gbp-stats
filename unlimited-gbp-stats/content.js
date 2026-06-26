@@ -969,14 +969,12 @@
   async function extractIndividualReviews(maxScrolls = 80, maxReviews = 1500) {
     const now = new Date();
 
-    // Accumulator keyed by externalId. We harvest on EVERY scroll step (not just
-    // once at the end) because Google's reviews list is virtualized — cards get
-    // recycled out of the DOM as you scroll, so a single final pass would only
-    // capture the last visible window. Banking incrementally is recycle-proof.
+    // Accumulator keyed by externalId. Harvested on every step because Google's
+    // list is virtualized — cards are recycled out of the DOM as you scroll.
     const collected = new Map();
 
-    // Re-resolve the review document on every harvest — clicking "More reviews"
-    // can remount the iframe content, invalidating the original doc reference.
+    // Re-resolve the review document on every harvest — "More reviews" clicks
+    // can remount the iframe content, invalidating any cached doc reference.
     const harvestNow = () => {
       const d = resolveReviewDoc();
       for (const card of getReviewCards(d)) {
@@ -986,74 +984,78 @@
       return d;
     };
 
-    let doc = harvestNow(); // bank whatever is rendered before we start scrolling
+    const randDelay = () => 1500 + Math.floor(Math.random() * 1000); // 1500–2500ms
 
-    let cards = getReviewCards(doc);
-    if (cards.length) {
-      let scroller = findScrollableAncestor(cards[0]) ||
-                     doc.scrollingElement || doc.body;
-      let lastSize = collected.size;
-      let noGrowthStreak = 0;
-      for (let s = 0; s < maxScrolls; s++) {
-        // Safety cap — stop before runaway on huge review sets
-        if (collected.size >= maxReviews) break;
+    let doc = harvestNow();
+    let lastSize = collected.size;
+    let noGrowthStreak = 0;
 
-        // Drive lazy-load three ways:
-        // 1. Scroll the detected container element
-        // 2. Scroll the iframe window itself (catches Search modal iframe)
-        // 3. scrollIntoView on the last visible card
-        try { scroller.scrollTop = scroller.scrollHeight; } catch (e) { /* ignore */ }
-        try { doc.defaultView?.scrollTo(0, doc.body.scrollHeight); } catch (e) { /* ignore */ }
-        const visible = getReviewCards(doc);
-        if (visible.length) {
-          try { visible[visible.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ }
-        }
-        await sleep(1500);
+    for (let s = 0; s < maxScrolls; s++) {
+      if (collected.size >= maxReviews) break;
 
+      // ── Primary scroll: scrollIntoView on the last card ──────────────────
+      // Let the browser figure out which ancestor to scroll — bypasses Google's
+      // nested div traps and works identically in Maps and the Search iframe.
+      doc = resolveReviewDoc();
+      const visible = getReviewCards(doc);
+      if (visible.length) {
+        const lastCard = visible[visible.length - 1];
+        console.log(`[SCRAPER-DEBUG] step ${s}: scrollIntoView on last card`,
+          lastCard.getAttribute('data-review-id') || lastCard.className.slice(0, 40));
+        try {
+          lastCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        } catch (e) { /* cross-origin guard */ }
+      } else {
+        // No cards visible — try scrolling the doc window directly as fallback
+        console.log(`[SCRAPER-DEBUG] step ${s}: no cards visible, scrolling doc window`);
+        try { doc.defaultView?.scrollTo(0, doc.body?.scrollHeight ?? 99999); } catch (e) {}
+      }
+
+      await sleep(randDelay());
+      doc = harvestNow();
+      let size = collected.size;
+      console.log(`[SCRAPER-DEBUG] step ${s}: collected=${size} (was ${lastSize})`);
+
+      if (size === lastSize) {
+        // Stalled — wait for any in-flight spinner/fetch before declaring it
+        await waitForSpinner(doc, 5000);
         doc = harvestNow();
-        let size = collected.size;
+        size = collected.size;
 
         if (size === lastSize) {
-          // Stalled — wait for any in-flight network fetch to settle before deciding
-          await waitForSpinner(doc, 5000);
-          doc = harvestNow();
-          size = collected.size;
-
-          if (size === lastSize) {
-            // Still stalled — try the "More reviews" pagination button
-            const clicked = clickMoreReviews(doc);
-            if (clicked) {
-              await sleep(2500);
-              // Re-resolve doc after click — "More reviews" can swap the iframe
-              doc = resolveReviewDoc();
-              await waitForSpinner(doc, 5000);
-              doc = harvestNow();
-              size = collected.size;
-            }
-          }
-
-          if (size === lastSize) {
-            noGrowthStreak++;
-            console.log(`[GBP] scroll stall ${noGrowthStreak}/6, collected=${collected.size}`);
-            if (noGrowthStreak >= 6) break; // six consecutive no-growth → truly done
+          // Still stalled — fire the "More reviews" pagination button
+          console.log(`[SCRAPER-DEBUG] stall detected, attempting clickMoreReviews…`);
+          const clicked = clickMoreReviews(doc);
+          if (clicked) {
+            await sleep(randDelay() + 1000); // extra budget for network fetch
+            doc = resolveReviewDoc();        // doc may have remounted after click
+            await waitForSpinner(doc, 6000);
+            doc = harvestNow();
+            size = collected.size;
+            console.log(`[SCRAPER-DEBUG] post-click collected=${size}`);
           } else {
-            noGrowthStreak = 0;
+            console.log(`[SCRAPER-DEBUG] clickMoreReviews returned false — no button found`);
+          }
+        }
+
+        if (size === lastSize) {
+          noGrowthStreak++;
+          console.log(`[SCRAPER-DEBUG] no-growth streak ${noGrowthStreak}/6`);
+          if (noGrowthStreak >= 6) {
+            console.log(`[SCRAPER-DEBUG] breaking — 6 consecutive stalls, final count=${collected.size}`);
+            break;
           }
         } else {
           noGrowthStreak = 0;
         }
-        lastSize = size;
-
-        // Re-resolve the scroll container — opening "More reviews" can swap it.
-        const c2 = getReviewCards(doc);
-        if (c2.length) {
-          const sc2 = findScrollableAncestor(c2[0]);
-          if (sc2) scroller = sc2;
-        }
+      } else {
+        noGrowthStreak = 0;
       }
+      lastSize = size;
     }
 
     harvestNow(); // final sweep for anything loaded after the last step
+    console.log(`[SCRAPER-DEBUG] done — total collected=${collected.size}`);
     return [...collected.values()];
   }
 
@@ -1650,39 +1652,51 @@
   }
 
   // ── "More reviews" button clicker (pagination past the ~100-review lazy-load cap) ─
-  // Finds and clicks a "More Reviews" / "See all reviews" / "All reviews" control.
-  // Searches the given doc first, then falls back to the top document (the place-panel
-  // button can live in the top frame while cards are inside an iframe).
-  // Returns true if an element was clicked, false otherwise. Never throws.
+  // Uses a broad contains-match so "More reviews (1,434)", "Load more reviews",
+  // "See all reviews" etc. all match regardless of surrounding text or count suffix.
+  // Dispatches a full pointer+mouse synthetic event chain so Google's jsaction
+  // framework registers the interaction even when .click() is swallowed.
+  // Returns true if an element was found and fired, false otherwise. Never throws.
   function clickMoreReviews(doc) {
     try {
-      // Anchored to the START of the label so "More reviews (1,434)" matches but
-      // "Get more reviews" (the owner-panel PROMOTE button) does NOT. EXCLUDE_RE
-      // is a belt-and-suspenders guard against promote / reply / write controls
-      // that also happen to contain the word "review".
-      const MORE_RE = /^(?:more reviews|see (?:all|more) reviews|all reviews)\b/i;
+      // BROAD: label contains both "review" and ("more" or "all" or "load")
+      // EXCLUDE: owner-panel promote / reply / write / share buttons
       const EXCLUDE_RE = /get more reviews|reply to reviews|write a review|share/i;
-      const SELS = 'button, a, [role="button"], span';
+      const SELS = 'button, a, [role="button"], [jsaction], span[role], div[role="button"]';
 
-      // Helper: find first matching element in a document
+      const labelOf = (el) => (el.getAttribute('aria-label') || el.textContent || '').trim();
+      const isMoreBtn = (el) => {
+        const lbl = labelOf(el).toLowerCase();
+        return lbl.includes('review') &&
+               (lbl.includes('more') || lbl.includes('all') || lbl.includes('load')) &&
+               !EXCLUDE_RE.test(lbl);
+      };
+
       const findIn = (searchDoc) => {
-        try {
-          return [...searchDoc.querySelectorAll(SELS)].find(el => {
-            const label = (el.getAttribute('aria-label') || el.textContent || '').trim();
-            return MORE_RE.test(label) && !EXCLUDE_RE.test(label);
-          });
-        } catch (_) { return null; }
+        try { return [...searchDoc.querySelectorAll(SELS)].find(isMoreBtn); }
+        catch (_) { return null; }
       };
 
       let el = findIn(doc);
-      // Fallback: top document (place-panel button in top frame, cards in iframe)
       if (!el && doc !== document) {
-        try { el = findIn(document); } catch (_) { /* cross-origin guard */ }
+        try { el = findIn(document); } catch (_) { /* cross-origin */ }
       }
 
-      if (!el) return false;
-      el.click();
-      realClick(el);
+      if (!el) {
+        console.log('[SCRAPER-DEBUG] clickMoreReviews: no matching button found in DOM');
+        return false;
+      }
+
+      console.log('[SCRAPER-DEBUG] clickMoreReviews: firing on →', el.tagName,
+        JSON.stringify(labelOf(el).slice(0, 80)));
+
+      // Full synthetic event chain — pointerdown first so jsaction picks it up
+      const opts = { bubbles: true, cancelable: true, composed: true };
+      el.dispatchEvent(new PointerEvent('pointerdown', opts));
+      el.dispatchEvent(new MouseEvent('mousedown',    opts));
+      el.dispatchEvent(new MouseEvent('mouseup',      opts));
+      el.dispatchEvent(new MouseEvent('click',        opts));
+      el.click(); // belt-and-suspenders native click after synthetic chain
       return true;
     } catch (e) {
       console.warn('[GBP] clickMoreReviews:', e);

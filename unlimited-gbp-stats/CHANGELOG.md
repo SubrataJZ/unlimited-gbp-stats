@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.8] - 2026-06-27
+- **Rewrote scroll loop and "More reviews" clicker for Search modal resilience.**
+  - **Scroll:** replaced overflow-container detection with `lastCard.scrollIntoView({ behavior:'smooth', block:'end' })` — lets the browser handle ancestor selection, bypassing Google's nested div traps. Falls back to `doc.defaultView.scrollTo()` when no cards are visible.
+  - **"More reviews" click:** switched from start-anchored regex to broad contains-match (`label includes "review" AND ("more"|"all"|"load")`); dispatches full `pointerdown → mousedown → mouseup → click` synthetic event chain with `composed:true` so Google's jsaction framework registers it, followed by a native `.click()` fallback.
+  - **Timing:** randomized delay 1500–2500ms per step; extra 1000ms budget after "More reviews" click plus spinner wait.
+  - **Logging:** `[SCRAPER-DEBUG]` lines on every scroll step, stall, and click attempt for DevTools diagnosis.
+
 ## [1.12.7] - 2026-06-27
 - **Fixed: review scraping now breaks past the 100-review lazy-load cap.** The scroll loop now re-resolves the review document on every step (clicking "More reviews" can remount the iframe, invalidating the old reference). Also added a third scroll trigger — `doc.defaultView.scrollTo()` — to drive lazy-loading in the Search modal iframe window directly. Added console logging (`[GBP] scroll stall N/6`) so stalls are visible in DevTools.
 - **Fixed: "X reviews stored locally" now shows the total count in local storage**, not just how many were new in the current session. Previously showed 9 (new this session) even when hundreds were already stored.
