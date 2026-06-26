@@ -1659,44 +1659,63 @@
   // Returns true if an element was found and fired, false otherwise. Never throws.
   function clickMoreReviews(doc) {
     try {
-      // BROAD: label contains both "review" and ("more" or "all" or "load")
-      // EXCLUDE: owner-panel promote / reply / write / share buttons
       const EXCLUDE_RE = /get more reviews|reply to reviews|write a review|share/i;
-      const SELS = 'button, a, [role="button"], [jsaction], span[role], div[role="button"]';
 
-      const labelOf = (el) => (el.getAttribute('aria-label') || el.textContent || '').trim();
-      const isMoreBtn = (el) => {
-        const lbl = labelOf(el).toLowerCase();
-        return lbl.includes('review') &&
-               (lbl.includes('more') || lbl.includes('all') || lbl.includes('load')) &&
-               !EXCLUDE_RE.test(lbl);
+      // Walk ALL elements — the "More Reviews" text is often inside an
+      // aria-hidden span (e.g. jsname="V67aGc") nested inside the real button.
+      // We match on text content of any element, then climb to the nearest
+      // interactive ancestor to fire the click there.
+      const findMoreSpan = (searchDoc) => {
+        try {
+          return [...searchDoc.querySelectorAll('*')].find(el => {
+            // Only look at leaf-ish nodes to avoid matching ancestor containers
+            if (el.children.length > 3) return false;
+            const txt = (el.textContent || '').trim().toLowerCase();
+            return txt.includes('review') &&
+                   (txt.includes('more') || txt.includes('all') || txt.includes('load')) &&
+                   !EXCLUDE_RE.test(txt);
+          });
+        } catch (_) { return null; }
       };
 
-      const findIn = (searchDoc) => {
-        try { return [...searchDoc.querySelectorAll(SELS)].find(isMoreBtn); }
-        catch (_) { return null; }
+      // Walk up from the matched span to find the real clickable ancestor
+      const findClickTarget = (el) => {
+        if (!el) return null;
+        let node = el;
+        while (node && node !== document.body) {
+          const tag = node.tagName?.toLowerCase();
+          if (tag === 'button' || tag === 'a') return node;
+          const role = node.getAttribute('role');
+          if (role === 'button' || role === 'link') return node;
+          if (node.getAttribute('jsaction')) return node;
+          node = node.parentElement;
+        }
+        return el; // fallback: click the span itself
       };
 
-      let el = findIn(doc);
-      if (!el && doc !== document) {
-        try { el = findIn(document); } catch (_) { /* cross-origin */ }
+      let span = findMoreSpan(doc);
+      if (!span && doc !== document) {
+        try { span = findMoreSpan(document); } catch (_) {}
       }
 
-      if (!el) {
-        console.log('[SCRAPER-DEBUG] clickMoreReviews: no matching button found in DOM');
+      if (!span) {
+        console.log('[SCRAPER-DEBUG] clickMoreReviews: no matching element found in DOM');
         return false;
       }
 
-      console.log('[SCRAPER-DEBUG] clickMoreReviews: firing on →', el.tagName,
-        JSON.stringify(labelOf(el).slice(0, 80)));
+      const target = findClickTarget(span);
+      console.log('[SCRAPER-DEBUG] clickMoreReviews: span text=',
+        JSON.stringify((span.textContent || '').trim().slice(0, 80)),
+        '→ clicking', target.tagName,
+        target.getAttribute('jsaction')?.slice(0, 60) || target.className?.slice(0, 40));
 
-      // Full synthetic event chain — pointerdown first so jsaction picks it up
+      // Full synthetic event chain so Google's jsaction framework registers it
       const opts = { bubbles: true, cancelable: true, composed: true };
-      el.dispatchEvent(new PointerEvent('pointerdown', opts));
-      el.dispatchEvent(new MouseEvent('mousedown',    opts));
-      el.dispatchEvent(new MouseEvent('mouseup',      opts));
-      el.dispatchEvent(new MouseEvent('click',        opts));
-      el.click(); // belt-and-suspenders native click after synthetic chain
+      target.dispatchEvent(new PointerEvent('pointerdown', opts));
+      target.dispatchEvent(new MouseEvent('mousedown',     opts));
+      target.dispatchEvent(new MouseEvent('mouseup',       opts));
+      target.dispatchEvent(new MouseEvent('click',         opts));
+      target.click(); // native .click() as final fallback
       return true;
     } catch (e) {
       console.warn('[GBP] clickMoreReviews:', e);

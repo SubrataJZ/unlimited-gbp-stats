@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.9] - 2026-06-27
+- **Fixed: "More reviews" button now reliably found in the Search modal.** The button's visible text lives inside an `aria-hidden` span (`jsname="V67aGc"`) with no `role` attribute, so all previous interactive-element selectors missed it entirely. The clicker now walks ALL elements to match on raw text content, then climbs the DOM to the nearest `button`/`a`/`[jsaction]` ancestor to fire the click there.
+
 ## [1.12.8] - 2026-06-27
 - **Rewrote scroll loop and "More reviews" clicker for Search modal resilience.**
   - **Scroll:** replaced overflow-container detection with `lastCard.scrollIntoView({ behavior:'smooth', block:'end' })` — lets the browser handle ancestor selection, bypassing Google's nested div traps. Falls back to `doc.defaultView.scrollTo()` when no cards are visible.
