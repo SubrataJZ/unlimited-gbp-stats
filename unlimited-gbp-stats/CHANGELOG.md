@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.6] - 2026-06-27
+- **Fixed: review scraping now captures the full list on the Search "all reviews" modal.** When clicking "View all Google reviews" from the Search knowledge panel, the scraper was stopping after ~9 reviews despite thousands being available. Root cause: Google's Search modal loads reviews in slow network batches, and the previous 1s post-scroll sleep + 3-stall threshold caused the loop to declare completion before the next batch arrived. Fix: added a `waitForSpinner()` helper that pauses the loop until Google's loading indicator disappears (`.qjESne`, `.oBAxrc`, `[role=progressbar]`, `.YbNNNb`); increased post-scroll sleep to 1.5s; raised the no-growth threshold to 6 consecutive stalls; extended the "More reviews" post-click wait to 2.5s + spinner check.
+
 ## [1.12.5] - 2026-06-21
 - **Fixed: fetching reviews no longer triggers the "Get more reviews" promote dialog.** On the owner reviews panel, the pagination-button matcher had been broadened in 1.12.3 and was wrongly matching the **"Get more reviews"** button (it contains the substring "more reviews"). The match is now anchored to the start of the label, and promote/reply/share/write controls are explicitly excluded, so only a genuine "More reviews (N)" pagination link is ever clicked.
 

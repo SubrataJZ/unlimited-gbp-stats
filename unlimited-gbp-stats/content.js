@@ -941,12 +941,31 @@
   }
 
   // ── Individual review cards (scrolls the reviews list to lazy-load more) ─────
-  // maxScrolls=60: each scroll loads ~10 reviews; "More reviews" pagination clicks
+  // maxScrolls=80: each scroll loads ~10 reviews; "More reviews" pagination clicks
   // load the next batch (~100 reviews each) when scrolling alone stalls.
   // Covers up to maxReviews=1500 reviews before stopping (safety cap for businesses
-  // with thousands of reviews). The 2-consecutive-no-growth break exits early for
-  // small sets so the full 60-iteration budget is rarely spent.
-  // Trade-off: up to ~90s for very large sets vs. ~8s for ~80 reviews.
+  // with thousands of reviews). The no-growth streak exits early for small sets.
+  // Trade-off: up to ~120s for very large sets vs. ~8s for ~80 reviews.
+
+  // Wait until Google's loading spinner disappears (or timeout). Prevents the stall
+  // detector from triggering mid-fetch — the main cause of premature termination on
+  // the Search "all reviews" modal where each batch takes longer to load.
+  async function waitForSpinner(doc, timeoutMs = 5000) {
+    const SPINNER_SEL = [
+      '.qjESne',               // Maps / Search modal spinner
+      '.oBAxrc',               // alternate Maps spinner
+      '[role="progressbar"]',
+      '[aria-label="Loading"]',
+      '[aria-label="Loading..."]',
+      '.YbNNNb',
+    ].join(', ');
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try { if (!doc.querySelector(SPINNER_SEL)) return; } catch (e) { return; }
+      await sleep(250);
+    }
+  }
+
   async function extractIndividualReviews(maxScrolls = 80, maxReviews = 1500) {
     const doc = resolveReviewDoc();
     const now = new Date();
@@ -983,22 +1002,31 @@
         if (visible.length) {
           try { visible[visible.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ }
         }
-        await sleep(1000);
+        await sleep(1500);
 
         harvest();
         let size = collected.size;
 
         if (size === lastSize) {
-          // Stalled — try the "More reviews" pagination button, then re-harvest
-          const clicked = clickMoreReviews(doc);
-          if (clicked) {
-            await sleep(1200);
-            harvest();
-            size = collected.size;
+          // Stalled — wait for any in-flight network fetch to settle before deciding
+          await waitForSpinner(doc, 5000);
+          harvest();
+          size = collected.size;
+
+          if (size === lastSize) {
+            // Still stalled after spinner gone — try the "More reviews" button
+            const clicked = clickMoreReviews(doc);
+            if (clicked) {
+              await sleep(2500);
+              await waitForSpinner(doc, 5000);
+              harvest();
+              size = collected.size;
+            }
           }
+
           if (size === lastSize) {
             noGrowthStreak++;
-            if (noGrowthStreak >= 3) break; // three consecutive no-growth → done
+            if (noGrowthStreak >= 6) break; // six consecutive no-growth → truly done
           } else {
             noGrowthStreak = 0;
           }
