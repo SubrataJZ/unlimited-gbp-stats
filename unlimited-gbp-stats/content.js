@@ -1596,10 +1596,20 @@
       card.querySelector('.d4r55, .PskQHd, [class*="title"]')?.textContent?.trim() ||
       card.getAttribute('aria-label') || '';
 
-    const ratingEl = card.querySelector('[aria-label*="star" i], [role="img"][aria-label]');
+    // Rating: class-based first, then walk ALL descendants for any star aria-label.
+    // The Search modal uses different classes than Maps so the generic walk is essential.
+    const ratingEl =
+      card.querySelector('[aria-label*="star" i], [role="img"][aria-label]') ||
+      [...card.querySelectorAll('[aria-label]')].find(el => parseStarLabel(el.getAttribute('aria-label')) > 0);
     const rating = parseStarLabel(ratingEl?.getAttribute('aria-label') || '');
 
-    const text = card.querySelector('.wiI7pd, .Fv38Af, .MyEned, [class*="reviewText"]')?.textContent?.trim() || '';
+    // Text: known class names first, then the longest non-empty leaf-text span/p in the card.
+    const text =
+      card.querySelector('.wiI7pd, .Fv38Af, .MyEned, [class*="reviewText"], [class*="review-text"]')?.textContent?.trim() ||
+      [...card.querySelectorAll('span, p')]
+        .filter(el => el.children.length === 0 && el.textContent.trim().length > 20)
+        .sort((a, b) => b.textContent.length - a.textContent.length)[0]
+        ?.textContent?.trim() || '';
 
     const dateRaw = card.querySelector('.rsqaWe, .KEfuhb, .dehysf, [class*="date"]')?.textContent?.trim() || '';
     const reviewedAtISO = parseRelativeReviewDate(dateRaw, now);
@@ -1616,6 +1626,8 @@
       /response from the owner/i.test(card.textContent)
     );
 
+    // Keep the card if it has a rating OR any text content — the Search modal may
+    // render cards with rating but no visible text (photo-only reviews etc.)
     if (!rating && !text) return null;
     const externalId = card.getAttribute('data-review-id') || hashReview(author, dateRaw, text);
 
@@ -1667,14 +1679,20 @@
       // interactive ancestor to fire the click there.
       const findMoreSpan = (searchDoc) => {
         try {
-          return [...searchDoc.querySelectorAll('*')].find(el => {
-            // Only look at leaf-ish nodes to avoid matching ancestor containers
-            if (el.children.length > 3) return false;
-            const txt = (el.textContent || '').trim().toLowerCase();
-            return txt.includes('review') &&
-                   (txt.includes('more') || txt.includes('all') || txt.includes('load')) &&
-                   !EXCLUDE_RE.test(txt);
-          });
+          // Primary: Google's stable jsname for the "More Reviews" pagination span
+          // (confirmed via DOM inspection: <span jsname="V67aGc">More Reviews</span>)
+          const byJsname = searchDoc.querySelector('[jsname="V67aGc"]');
+          if (byJsname && /review/i.test(byJsname.textContent)) return byJsname;
+
+          // Fallback: strict regex anchored to "more reviews" — avoids matching the
+          // sort dropdown which also contains the word "reviews"
+          const STRICT_RE = /^more reviews/i;
+          return [...searchDoc.querySelectorAll('button, a, [role="button"], span, div')]
+            .find(el => {
+              if (el.children.length > 2) return false; // skip container elements
+              const txt = (el.textContent || '').trim();
+              return STRICT_RE.test(txt) && !EXCLUDE_RE.test(txt);
+            });
         } catch (_) { return null; }
       };
 

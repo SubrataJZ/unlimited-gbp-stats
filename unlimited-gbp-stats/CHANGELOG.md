@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.13.0] - 2026-06-27
+- **Fixed: review cards now extract data on the Search modal (was always returning 0).** The rating and text selectors were Maps-specific CSS classes that don't exist in the Search modal DOM. Added generic fallbacks: rating now walks all card descendants for any `aria-label` containing "star"; text falls back to the longest leaf `span`/`p` in the card (>20 chars) when no known class matches.
+- **Fixed: "More reviews" button now correctly identified.** The broad text-match was matching the sort dropdown ("Most relevant…") instead of the pagination button. Primary selector is now `[jsname="V67aGc"]` (the confirmed span for this button), with a strict `^more reviews` regex fallback.
+
 ## [1.12.9] - 2026-06-27
 - **Fixed: "More reviews" button now reliably found in the Search modal.** The button's visible text lives inside an `aria-hidden` span (`jsname="V67aGc"`) with no `role` attribute, so all previous interactive-element selectors missed it entirely. The clicker now walks ALL elements to match on raw text content, then climbs the DOM to the nearest `button`/`a`/`[jsaction]` ancestor to fire the click there.
 
