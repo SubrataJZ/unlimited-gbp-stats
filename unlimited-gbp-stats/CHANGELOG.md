@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.7] - 2026-06-27
+- **Fixed: review scraping now breaks past the 100-review lazy-load cap.** The scroll loop now re-resolves the review document on every step (clicking "More reviews" can remount the iframe, invalidating the old reference). Also added a third scroll trigger — `doc.defaultView.scrollTo()` — to drive lazy-loading in the Search modal iframe window directly. Added console logging (`[GBP] scroll stall N/6`) so stalls are visible in DevTools.
+- **Fixed: "X reviews stored locally" now shows the total count in local storage**, not just how many were new in the current session. Previously showed 9 (new this session) even when hundreds were already stored.
+
 ## [1.12.6] - 2026-06-27
 - **Fixed: review scraping now captures the full list on the Search "all reviews" modal.** When clicking "View all Google reviews" from the Search knowledge panel, the scraper was stopping after ~9 reviews despite thousands being available. Root cause: Google's Search modal loads reviews in slow network batches, and the previous 1s post-scroll sleep + 3-stall threshold caused the loop to declare completion before the next batch arrived. Fix: added a `waitForSpinner()` helper that pauses the loop until Google's loading indicator disappears (`.qjESne`, `.oBAxrc`, `[role=progressbar]`, `.YbNNNb`); increased post-scroll sleep to 1.5s; raised the no-growth threshold to 6 consecutive stalls; extended the "More reviews" post-click wait to 2.5s + spinner check.
 

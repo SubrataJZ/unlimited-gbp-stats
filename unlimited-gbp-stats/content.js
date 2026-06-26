@@ -967,7 +967,6 @@
   }
 
   async function extractIndividualReviews(maxScrolls = 80, maxReviews = 1500) {
-    const doc = resolveReviewDoc();
     const now = new Date();
 
     // Accumulator keyed by externalId. We harvest on EVERY scroll step (not just
@@ -975,14 +974,19 @@
     // recycled out of the DOM as you scroll, so a single final pass would only
     // capture the last visible window. Banking incrementally is recycle-proof.
     const collected = new Map();
-    const harvest = () => {
-      for (const card of getReviewCards(doc)) {
+
+    // Re-resolve the review document on every harvest — clicking "More reviews"
+    // can remount the iframe content, invalidating the original doc reference.
+    const harvestNow = () => {
+      const d = resolveReviewDoc();
+      for (const card of getReviewCards(d)) {
         const rev = extractReviewFromCard(card, now);
         if (rev && !collected.has(rev.externalId)) collected.set(rev.externalId, rev);
       }
+      return d;
     };
 
-    harvest(); // bank whatever is rendered before we start scrolling
+    let doc = harvestNow(); // bank whatever is rendered before we start scrolling
 
     let cards = getReviewCards(doc);
     if (cards.length) {
@@ -994,38 +998,43 @@
         // Safety cap — stop before runaway on huge review sets
         if (collected.size >= maxReviews) break;
 
-        // Drive lazy-load two ways: scroll the container we found AND bring the
-        // last card into view. scrollIntoView works even when we picked the wrong
-        // scroll container (the most common failure on Maps' rotating DOM).
+        // Drive lazy-load three ways:
+        // 1. Scroll the detected container element
+        // 2. Scroll the iframe window itself (catches Search modal iframe)
+        // 3. scrollIntoView on the last visible card
         try { scroller.scrollTop = scroller.scrollHeight; } catch (e) { /* ignore */ }
+        try { doc.defaultView?.scrollTo(0, doc.body.scrollHeight); } catch (e) { /* ignore */ }
         const visible = getReviewCards(doc);
         if (visible.length) {
           try { visible[visible.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ }
         }
         await sleep(1500);
 
-        harvest();
+        doc = harvestNow();
         let size = collected.size;
 
         if (size === lastSize) {
           // Stalled — wait for any in-flight network fetch to settle before deciding
           await waitForSpinner(doc, 5000);
-          harvest();
+          doc = harvestNow();
           size = collected.size;
 
           if (size === lastSize) {
-            // Still stalled after spinner gone — try the "More reviews" button
+            // Still stalled — try the "More reviews" pagination button
             const clicked = clickMoreReviews(doc);
             if (clicked) {
               await sleep(2500);
+              // Re-resolve doc after click — "More reviews" can swap the iframe
+              doc = resolveReviewDoc();
               await waitForSpinner(doc, 5000);
-              harvest();
+              doc = harvestNow();
               size = collected.size;
             }
           }
 
           if (size === lastSize) {
             noGrowthStreak++;
+            console.log(`[GBP] scroll stall ${noGrowthStreak}/6, collected=${collected.size}`);
             if (noGrowthStreak >= 6) break; // six consecutive no-growth → truly done
           } else {
             noGrowthStreak = 0;
@@ -1044,7 +1053,7 @@
       }
     }
 
-    harvest(); // final sweep for anything loaded after the last step
+    harvestNow(); // final sweep for anything loaded after the last step
     return [...collected.values()];
   }
 
@@ -1254,8 +1263,8 @@
           const s = result.saved || {};
           setResult('', `
             <div style="font-size:13px;font-weight:700;color:#81c995;margin-bottom:4px">✅ Reviews captured!</div>
-            <div style="font-size:12px;color:#e0e0e0">${s.totalReviews != null ? `<strong>${s.totalReviews}</strong> total reviews` : ''}${s.avgRating != null ? ` · ★ ${s.avgRating}` : ''}</div>
-            <div style="font-size:11px;color:#aaa;margin-top:2px">${s.reviewsSaved || 0} individual review(s) saved</div>
+            <div style="font-size:12px;color:#e0e0e0">${s.totalReviews != null ? `<strong>${s.totalReviews}</strong> on Google` : ''}${s.avgRating != null ? ` · ★ ${s.avgRating}` : ''}</div>
+            <div style="font-size:11px;color:#aaa;margin-top:2px"><strong>${s.reviewsSaved || 0}</strong> reviews stored locally</div>
           `);
         } else {
           setResult('', `<span style="color:#fdd663">⚠ ${result.reason}</span>`);

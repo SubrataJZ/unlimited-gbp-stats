@@ -741,7 +741,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(() => snapshot ? GBPStorage.saveReviewSnapshot(businessId, snapshot) : null)
       .then(() => (Array.isArray(reviews) && reviews.length)
         ? GBPStorage.saveReviews(businessId, reviews) : 0)
-      .then((reviewsSaved) => {
+      .then(() => GBPStorage.getReviews(businessId))
+      .then((allReviews) => {
         // Push to the Postgres backend (fire-and-forget; never fail local save)
         syncReviewToBackend(business, snapshot, reviews, msg.isOwn !== false).catch(() => {});
         sendResponse({
@@ -749,7 +750,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           saved: {
             totalReviews: snapshot?.totalReviews ?? null,
             avgRating:    snapshot?.avgRating ?? null,
-            reviewsSaved: reviewsSaved || 0,
+            reviewsSaved: allReviews.length,
           },
         });
       })
