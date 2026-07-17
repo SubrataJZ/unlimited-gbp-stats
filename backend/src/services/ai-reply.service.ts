@@ -41,6 +41,8 @@ interface GenerateReplyInput {
   reviewText?: string;
   rating?: number;
   trackedBusinessId?: string;
+  /** Optional per-request OpenRouter model override (e.g. a free model). */
+  model?: string;
 }
 
 interface GenerateReplyResult {
@@ -100,6 +102,47 @@ export async function assertUserCanAccessBusiness(
     // Use a generic message to avoid leaking existence of the resource
     throw new AuthorizationError(
       'You do not have permission to access this business'
+    );
+  }
+
+  return business;
+}
+
+/**
+ * Like assertUserCanAccessBusiness, but additionally rejects read-only Owner
+ * members. Reply generation (and anything else that writes AI-authored
+ * content) is a write action and must be gated to AGENCY_ADMIN / AGENCY_MEMBER.
+ *
+ * @throws NotFoundError if the business does not exist
+ * @throws AuthorizationError if the caller is not a member, or is OWNER_READONLY
+ */
+export async function assertUserCanWriteBusiness(
+  userId: string,
+  trackedBusinessId: string
+): Promise<{ id: string; orgId: string; name: string }> {
+  const business = await prisma.trackedBusiness.findUnique({
+    where: { id: trackedBusinessId },
+    select: { id: true, orgId: true, name: true },
+  });
+
+  if (!business) {
+    throw new NotFoundError('Business not found');
+  }
+
+  const membership = await prisma.membership.findUnique({
+    where: { userId_orgId: { userId, orgId: business.orgId } },
+    select: { role: true },
+  });
+
+  if (!membership) {
+    throw new AuthorizationError(
+      'You do not have permission to access this business'
+    );
+  }
+
+  if (membership.role === 'OWNER_READONLY') {
+    throw new AuthorizationError(
+      'This action requires an Agency/Pro role. Read-only Owner accounts cannot generate or edit AI replies.'
     );
   }
 
@@ -209,7 +252,7 @@ export async function enforceCostCap(userId: string): Promise<void> {
 export async function generateReply(
   input: GenerateReplyInput
 ): Promise<GenerateReplyResult> {
-  const { userId, scrapedReviewId, reviewText, rating, trackedBusinessId } = input;
+  const { userId, scrapedReviewId, reviewText, rating, trackedBusinessId, model } = input;
 
   // 1. Enforce cost cap before doing any work
   await enforceCostCap(userId);
@@ -250,8 +293,8 @@ export async function generateReply(
       throw new NotFoundError('Review not found');
     }
 
-    // Multi-tenant gate
-    await assertUserCanAccessBusiness(userId, review.trackedBusinessId);
+    // Multi-tenant gate — reply generation is a write action (Owner is read-only)
+    await assertUserCanWriteBusiness(userId, review.trackedBusinessId);
 
     finalRating = review.rating;
     finalReviewText = review.text ?? '';
@@ -283,7 +326,7 @@ export async function generateReply(
     finalBusinessName = 'the business';
 
     if (trackedBusinessId) {
-      const biz = await assertUserCanAccessBusiness(userId, trackedBusinessId);
+      const biz = await assertUserCanWriteBusiness(userId, trackedBusinessId);
       finalBusinessName = biz.name;
       resolvedTrackedBusinessId = trackedBusinessId;
 
@@ -308,7 +351,7 @@ export async function generateReply(
   logger.info(
     `Generating AI reply for user=${userId} business="${finalBusinessName}" rating=${finalRating}`
   );
-  const completion = await generateChatCompletion({ system, user });
+  const completion = await generateChatCompletion({ system, user, model });
 
   // 4. Record AiUsage
   await prisma.aiUsage.create({
@@ -388,8 +431,8 @@ export async function updateReply(input: UpdateReplyInput) {
     throw new NotFoundError('Review reply not found');
   }
 
-  // Multi-tenant gate
-  await assertUserCanAccessBusiness(userId, reply.scrapedReview.trackedBusinessId);
+  // Multi-tenant gate — editing/publishing a reply is a write action
+  await assertUserCanWriteBusiness(userId, reply.scrapedReview.trackedBusinessId);
 
   // Validate status if provided
   if (status !== undefined) {
@@ -409,6 +452,94 @@ export async function updateReply(input: UpdateReplyInput) {
   });
 
   return updated;
+}
+
+// ─── Bulk draft generation ────────────────────────────────────────────────────
+
+/** Matches the extension's per-run cap (content.js MAX_AUTO_INSERT_PER_RUN). */
+export const MAX_BULK_BATCH_SIZE = 50;
+
+interface BulkReplyInput {
+  userId: string;
+  scrapedReviewIds: string[];
+  model?: string;
+}
+
+interface BulkReplyResultItem {
+  scrapedReviewId: string;
+  externalReviewId?: string | null;
+  draftText?: string;
+  reviewReplyId?: string;
+  error?: string;
+}
+
+interface BulkReplyResult {
+  results: BulkReplyResultItem[];
+  stoppedForBudget: boolean;
+}
+
+/**
+ * Generate AI draft replies for up to MAX_BULK_BATCH_SIZE scraped reviews in
+ * one pass. Reuses the single-review generateReply() path for each item
+ * (which internally re-checks the monthly cost cap before every LLM call),
+ * so a cap breach mid-batch stops the loop early with a partial result set
+ * rather than throwing away work already done.
+ */
+export async function generateRepliesBulk(
+  input: BulkReplyInput
+): Promise<BulkReplyResult> {
+  const { userId, scrapedReviewIds, model } = input;
+
+  if (!Array.isArray(scrapedReviewIds) || scrapedReviewIds.length === 0) {
+    throw new ValidationError('scrapedReviewIds must be a non-empty array');
+  }
+  if (scrapedReviewIds.length > MAX_BULK_BATCH_SIZE) {
+    throw new ValidationError(
+      `Too many reviews in one batch (got ${scrapedReviewIds.length}, max ${MAX_BULK_BATCH_SIZE})`
+    );
+  }
+  if (scrapedReviewIds.some((id) => typeof id !== 'string' || id.trim() === '')) {
+    throw new ValidationError('scrapedReviewIds must all be non-empty strings');
+  }
+
+  // Fail fast if the cap is already exhausted before doing any work.
+  await enforceCostCap(userId);
+
+  // Look up externalReviewId (the Google data-review-id) up front so the
+  // extension can match drafts back to DOM cards without another round trip.
+  const reviewRows = await prisma.scrapedReview.findMany({
+    where: { id: { in: scrapedReviewIds } },
+    select: { id: true, externalReviewId: true },
+  });
+  const externalIdById = new Map(reviewRows.map((r) => [r.id, r.externalReviewId]));
+
+  const results: BulkReplyResultItem[] = [];
+  let stoppedForBudget = false;
+
+  for (const scrapedReviewId of scrapedReviewIds) {
+    try {
+      const single = await generateReply({ userId, scrapedReviewId, model });
+      results.push({
+        scrapedReviewId,
+        externalReviewId: externalIdById.get(scrapedReviewId) ?? null,
+        draftText: single.draftText,
+        reviewReplyId: single.reviewReplyId,
+      });
+    } catch (err) {
+      if (err instanceof RateLimitError) {
+        stoppedForBudget = true;
+        break;
+      }
+      const message = err instanceof Error ? err.message : 'Failed to generate reply';
+      results.push({
+        scrapedReviewId,
+        externalReviewId: externalIdById.get(scrapedReviewId) ?? null,
+        error: message,
+      });
+    }
+  }
+
+  return { results, stoppedForBudget };
 }
 
 // ─── Monthly usage summary ────────────────────────────────────────────────────
@@ -456,8 +587,8 @@ export async function setBusinessContext(input: {
 }) {
   const { userId, trackedBusinessId, tone, services, ownerName, signature } = input;
 
-  // Multi-tenant gate
-  await assertUserCanAccessBusiness(userId, trackedBusinessId);
+  // Multi-tenant gate — setting business context feeds prompt construction (write)
+  await assertUserCanWriteBusiness(userId, trackedBusinessId);
 
   const context = await prisma.businessContext.upsert({
     where: { trackedBusinessId },
@@ -477,4 +608,57 @@ export async function setBusinessContext(input: {
   });
 
   return context;
+}
+
+// ─── List reviews (for the extension's bulk-draft flow) ──────────────────────
+
+export interface ReviewListItem {
+  id: string;
+  externalReviewId: string;
+  authorName: string | null;
+  rating: number;
+  text: string | null;
+  ownerResponded: boolean;
+  reply: {
+    status: string;
+    draftText: string;
+    finalText: string | null;
+  } | null;
+}
+
+/**
+ * List scraped reviews for a tracked business, optionally filtered to only
+ * those Google has not marked as owner-responded. Read-only — any member
+ * (including OWNER_READONLY) may call this.
+ */
+export async function listReviewsForBusiness(input: {
+  userId: string;
+  trackedBusinessId: string;
+  onlyUnreplied?: boolean;
+}): Promise<ReviewListItem[]> {
+  const { userId, trackedBusinessId, onlyUnreplied } = input;
+
+  // Read-only gate — this just lists data, it does not generate/write anything.
+  await assertUserCanAccessBusiness(userId, trackedBusinessId);
+
+  const reviews = await prisma.scrapedReview.findMany({
+    where: {
+      trackedBusinessId,
+      ...(onlyUnreplied ? { ownerResponded: false } : {}),
+    },
+    select: {
+      id: true,
+      externalReviewId: true,
+      authorName: true,
+      rating: true,
+      text: true,
+      ownerResponded: true,
+      reply: {
+        select: { status: true, draftText: true, finalText: true },
+      },
+    },
+    orderBy: { scrapedAt: 'desc' },
+  });
+
+  return reviews;
 }

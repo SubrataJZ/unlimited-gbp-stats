@@ -16,7 +16,7 @@ export async function createApiKey(
   expiresInDays?: number
 ): Promise<string> {
   const rawKey = generateRawApiKey();
-  const keyHash = bcrypt.hashSync(rawKey, BCRYPT_ROUNDS);
+  const keyHash = await bcrypt.hash(rawKey, BCRYPT_ROUNDS);
   const prefix = rawKey.substring(0, 10); // "zx_" + 7 chars for display
 
   const expiresAt = expiresInDays
@@ -44,7 +44,7 @@ export async function validateApiKey(rawKey: string): Promise<string | null> {
   for (const candidate of candidates) {
     if (candidate.expiresAt && candidate.expiresAt < new Date()) continue;
 
-    const match = bcrypt.compareSync(rawKey, candidate.keyHash);
+    const match = await bcrypt.compare(rawKey, candidate.keyHash);
     if (match) {
       await prisma.apiKey.update({
         where: { id: candidate.id },

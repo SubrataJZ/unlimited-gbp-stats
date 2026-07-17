@@ -11,9 +11,12 @@ import { ValidationError, AuthenticationError } from '../utils/errors';
 import logger from '../utils/logger';
 import {
   generateReply as svcGenerateReply,
+  generateRepliesBulk as svcGenerateRepliesBulk,
+  listReviewsForBusiness,
   updateReply as svcUpdateReply,
   getMonthlyUsage,
   setBusinessContext,
+  MAX_BULK_BATCH_SIZE,
 } from '../services/ai-reply.service';
 
 // ─── POST /api/ai/reply ───────────────────────────────────────────────────────
@@ -53,6 +56,11 @@ export const generateReply = asyncHandler(async (req: Request, res: Response) =>
       ? body.trackedBusinessId.trim()
       : undefined;
 
+  const model =
+    typeof body.model === 'string' && body.model.trim() !== ''
+      ? body.model.trim()
+      : undefined;
+
   // Require either scrapedReviewId OR (reviewText + rating)
   if (!scrapedReviewId && (!reviewText || rating === undefined)) {
     throw new ValidationError(
@@ -77,6 +85,7 @@ export const generateReply = asyncHandler(async (req: Request, res: Response) =>
     reviewText,
     rating,
     trackedBusinessId,
+    model,
   });
 
   res.status(200).json({
@@ -201,4 +210,102 @@ export const setContext = asyncHandler(async (req: Request, res: Response) => {
   });
 
   res.status(200).json({ ok: true, context });
+});
+
+// ─── POST /api/ai/reply/bulk ──────────────────────────────────────────────────
+
+/**
+ * Generate AI draft replies for a batch of scraped reviews in one call.
+ * Powers the extension's "Auto-draft replies" assisted-mode flow — the
+ * extension still inserts each draft into its own reply box and a human
+ * clicks Google's native Post button; this endpoint only drafts text.
+ *
+ * Body: { scrapedReviewIds: string[] (1–50), trackedBusinessId: string, model?: string }
+ *
+ * Response 200: { ok: true, results: [...], stoppedForBudget: boolean }
+ */
+export const generateRepliesBulk = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError('Authentication required');
+  }
+
+  const body = req.body as Record<string, unknown>;
+
+  if (!Array.isArray(body.scrapedReviewIds) || body.scrapedReviewIds.length === 0) {
+    throw new ValidationError('"scrapedReviewIds" must be a non-empty array');
+  }
+
+  if (body.scrapedReviewIds.length > MAX_BULK_BATCH_SIZE) {
+    throw new ValidationError(
+      `"scrapedReviewIds" cannot contain more than ${MAX_BULK_BATCH_SIZE} entries`
+    );
+  }
+
+  const scrapedReviewIds = body.scrapedReviewIds.map((id, i) => {
+    if (typeof id !== 'string' || id.trim() === '') {
+      throw new ValidationError(`"scrapedReviewIds[${i}]" must be a non-empty string`);
+    }
+    return id.trim();
+  });
+
+  if (
+    !body.trackedBusinessId ||
+    typeof body.trackedBusinessId !== 'string' ||
+    body.trackedBusinessId.trim() === ''
+  ) {
+    throw new ValidationError('"trackedBusinessId" is required and must be a non-empty string');
+  }
+
+  const model =
+    typeof body.model === 'string' && body.model.trim() !== '' ? body.model.trim() : undefined;
+
+  logger.info(
+    `AI bulk reply requested by user ${req.user.id}: business=${body.trackedBusinessId} count=${scrapedReviewIds.length}`
+  );
+
+  const result = await svcGenerateRepliesBulk({
+    userId: req.user.id,
+    scrapedReviewIds,
+    model,
+  });
+
+  res.status(200).json({
+    ok: true,
+    results: result.results,
+    stoppedForBudget: result.stoppedForBudget,
+  });
+});
+
+// ─── GET /api/ai/reviews ──────────────────────────────────────────────────────
+
+/**
+ * List scraped reviews for a tracked business, optionally filtered to only
+ * those not yet answered by the owner on Google. Read-only — available to
+ * every role including Owner (read-only tier).
+ *
+ * Query: ?trackedBusinessId=...&onlyUnreplied=true
+ *
+ * Response 200: { ok: true, reviews: [...] }
+ */
+export const listReviews = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError('Authentication required');
+  }
+
+  const trackedBusinessId =
+    typeof req.query.trackedBusinessId === 'string' ? req.query.trackedBusinessId.trim() : '';
+
+  if (!trackedBusinessId) {
+    throw new ValidationError('"trackedBusinessId" query parameter is required');
+  }
+
+  const onlyUnreplied = req.query.onlyUnreplied === 'true' || req.query.onlyUnreplied === '1';
+
+  const reviews = await listReviewsForBusiness({
+    userId: req.user.id,
+    trackedBusinessId,
+    onlyUnreplied,
+  });
+
+  res.status(200).json({ ok: true, reviews });
 });

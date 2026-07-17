@@ -225,6 +225,62 @@ const GBPStorage = (() => {
     return promisifyRequest(index.getAll(businessId));
   }
 
+  // ── Alias migration ──
+  // One business can be discovered under two numeric ids: the GBP local id
+  // (performance iframe /local/business/<id>, Search #mpd=~<id>) and the
+  // canonical Google CID (place links, data-fid). The backend reconciles these
+  // by name+address, but this LOCAL db does not — leaving performance under one
+  // business row and reviews under another, so the dashboard shows only one
+  // kind of data at a time. When a scrape knows both ids it passes the local id
+  // as aliasId and this moves every record to the canonical id.
+  async function migrateBusinessData(fromId, toId) {
+    if (!fromId || !toId || fromId === toId) return { moved: 0 };
+    let moved = 0;
+
+    // Metrics: id embeds businessId_metricType_YYYY-MM — recompute under toId.
+    // Never clobber an existing canonical record; alias data is the stale copy.
+    {
+      const { store } = await tx('metrics', 'readwrite');
+      const rows = await promisifyRequest(store.index('businessId').getAll(fromId));
+      for (const r of rows) {
+        const newId = makeMetricId(toId, r.metricType, r.year, r.month);
+        const existing = await promisifyRequest(store.get(newId));
+        if (!existing) { await promisifyRequest(store.put({ ...r, id: newId, businessId: toId })); moved++; }
+        await promisifyRequest(store.delete(r.id));
+      }
+    }
+    {
+      const { store } = await tx('reviewSnapshots', 'readwrite');
+      const rows = await promisifyRequest(store.index('businessId').getAll(fromId));
+      for (const r of rows) {
+        const newId = `${toId}_${r.capturedOn}`;
+        const existing = await promisifyRequest(store.get(newId));
+        if (!existing) { await promisifyRequest(store.put({ ...r, id: newId, businessId: toId })); moved++; }
+        await promisifyRequest(store.delete(r.id));
+      }
+    }
+    {
+      const { store } = await tx('reviews', 'readwrite');
+      const rows = await promisifyRequest(store.index('businessId').getAll(fromId));
+      for (const r of rows) {
+        const newId = `${toId}_${r.externalId}`;
+        const existing = await promisifyRequest(store.get(newId));
+        if (!existing) { await promisifyRequest(store.put({ ...r, id: newId, businessId: toId })); moved++; }
+        await promisifyRequest(store.delete(r.id));
+      }
+    }
+
+    // Business row: keep the canonical one, absorb the alias.
+    const fromBiz = await getBusiness(fromId);
+    if (fromBiz) {
+      const toBiz = await getBusiness(toId);
+      if (!toBiz) await saveBusiness({ ...fromBiz, id: toId });
+      await deleteBusiness(fromId);
+    }
+    if (moved) console.log(`[GBPStorage] migrated ${moved} records: ${fromId} → ${toId}`);
+    return { moved };
+  }
+
   // ── Export / Import for backup ──
 
   async function exportAll() {
@@ -289,6 +345,7 @@ const GBPStorage = (() => {
     getReviewSnapshots,
     saveReviews,
     getReviews,
+    migrateBusinessData,
     exportAll,
     importAll,
     getStats,

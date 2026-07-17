@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Unlimited Google Business Stats",
-  "version": "1.13.0",
+  "version": "1.16.0",
   "description": "Track Google Business Profile performance beyond Google's 6-month limit. Store unlimited historical data, compare any months, manage multiple businesses. Developed & powered by ZixAI.",
   "oauth2": {
     "client_id": "512083455568-3caijv22kvq0g5n2i1oajg3bmergclpb.apps.googleusercontent.com",

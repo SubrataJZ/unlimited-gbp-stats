@@ -69,6 +69,11 @@
   }
 
   function extractBusinessId() {
+    // Canonical CID supplied by the main frame (iframe mode). Takes priority so
+    // performance saves land under the SAME business id as review scrapes —
+    // otherwise metrics live under the local id and reviews under the CID,
+    // splitting one business into two dashboard rows.
+    if (_parentBusinessCid) return _parentBusinessCid;
     // Pattern: /local/business/12314840327329864086/
     const localMatch = window.location.href.match(/\/local\/business\/(\d{10,})/);
     if (localMatch) return localMatch[1];
@@ -81,6 +86,11 @@
     if (mpdMatch) {
       const domCid = findCidInDom();
       return domCid || mpdMatch[1];
+    }
+    // Google Search public reviews modal: #lrd=0x<coord>:0x<CIDhex>,1,,,,
+    const lrdMatch = window.location.hash.match(/^#lrd=0x[0-9a-f]+:0x([0-9a-f]+)/i);
+    if (lrdMatch) {
+      try { return BigInt('0x' + lrdMatch[1]).toString(); } catch(e) { /* fall through */ }
     }
     // Maps place-detail URLs: cid= param or feature-id (!1s0x<hex>:0x<CIDhex>)
     // Return the decimal CID to match this function's numeric-id contract
@@ -103,6 +113,17 @@
 
   // Business name passed from the main frame via postMessage (most reliable source)
   let _parentBusinessName = null;
+  // Canonical CID passed from the main frame (which can see place links/data-fid)
+  let _parentBusinessCid = null;
+
+  // The GBP local id visible in THIS frame's URL — used as a migration alias so
+  // the background can fold records saved under the local id into the CID row.
+  function extractAliasLocalId() {
+    const m = window.location.href.match(/\/local\/business\/(\d{10,})/) ||
+              window.location.href.match(/\/l\/(\d{10,})/) ||
+              window.location.href.match(/#mpd=~?(\d{10,})/);
+    return m ? m[1] : null;
+  }
 
   /**
    * Extract the business name from the current page.
@@ -541,7 +562,7 @@
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({
         action: 'saveMetricData',
-        business: { id: d.businessId, name: d.businessName },
+        business: { id: d.businessId, name: d.businessName, aliasId: extractAliasLocalId() },
         metric: {
           businessId: d.businessId,
           metricType: d.metricType,
@@ -722,9 +743,13 @@
     const businessId = extractBusinessId();
     if (!businessId) { report.errors.push('Could not detect business ID'); return report; }
 
-    // Ask background for the latest stored month for this business
+    // Ask background for the latest stored month for this business. Pass the
+    // local-id alias so records saved under it are folded into the canonical
+    // id BEFORE the query — otherwise "latest" looks empty and we re-fetch all.
     const latest = await new Promise(resolve =>
-      chrome.runtime.sendMessage({ action: 'getLatestMonth', businessId }, r => resolve(r?.latest || null))
+      chrome.runtime.sendMessage(
+        { action: 'getLatestMonth', businessId, aliasId: extractAliasLocalId() },
+        r => resolve(r?.latest || null))
     );
 
     // Get all available months from the date picker
@@ -807,7 +832,12 @@
   // Parse the leading star count from an aria-label like "5 stars" / "Rated 4.0".
   function parseStarLabel(label) {
     if (!label) return 0;
-    const m = label.match(/([1-5](?:\.\d)?)\s*star/i) || label.match(/rated\s+([1-5](?:\.\d)?)/i);
+    // "N out of 5" MUST be tried first: on the merchant panel the label is
+    // "3 out of 5 stars", and the bare /N\s*star/ pattern would match the
+    // "5 star" substring of "of 5 stars" — reporting every rating as 5.
+    const m = label.match(/([1-5](?:\.\d)?)\s*(?:out of|\/)\s*5/i) ||
+              label.match(/([1-5](?:\.\d)?)\s*star/i) ||
+              label.match(/rated\s+([1-5](?:\.\d)?)/i);
     return m ? Math.round(parseFloat(m[1])) : 0;
   }
 
@@ -1003,7 +1033,12 @@
         console.log(`[SCRAPER-DEBUG] step ${s}: scrollIntoView on last card`,
           lastCard.getAttribute('data-review-id') || lastCard.className.slice(0, 40));
         try {
-          lastCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          const panelEl = findScrollableAncestor(lastCard);
+          if (panelEl) {
+            panelEl.scrollTop = panelEl.scrollHeight;
+          } else {
+            lastCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          }
         } catch (e) { /* cross-origin guard */ }
       } else {
         // No cards visible — try scrolling the doc window directly as fallback
@@ -1065,6 +1100,16 @@
     const businessName = extractBusinessName();
     if (!businessId) return { success: false, reason: 'Could not detect business ID on this page.' };
 
+    // Only navigate to the Reviews panel when no cards are already visible.
+    // On #lrd= Search modal and Maps reviews tab, cards are already rendered.
+    // On the Maps Overview tab, we need to click into Reviews to see all cards.
+    const initialDoc = resolveReviewDoc();
+    if (!getReviewCards(initialDoc).length) {
+      progressCb?.('Opening Reviews panel…', 0, 1);
+      await openReviewsPanel();
+      await sleep(1500);
+    }
+
     const reviewDoc = resolveReviewDoc();
 
     progressCb?.('Reading review summary…', 0, 1);
@@ -1087,7 +1132,7 @@
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({
         action: 'saveReviewData',
-        business: { id: businessId, name: businessName },
+        business: { id: businessId, name: businessName, aliasId: extractAliasLocalId() },
         snapshot,
         reviews,
       }, (response) => {
@@ -1109,6 +1154,8 @@
 
       // Store business name supplied by the main frame — used by extractBusinessName()
       if (e.data.businessName) _parentBusinessName = e.data.businessName;
+      // Canonical CID recovered by the main frame — used by extractBusinessId()
+      if (e.data.businessCid) _parentBusinessCid = e.data.businessCid;
 
       const send = (type, payload) =>
         window.parent.postMessage({ _tag: EXT_TAG, type, ...payload }, '*');
@@ -1157,10 +1204,12 @@
   function sendToIframe(action, extra = {}) {
     const iframe = getPerformanceIframe();
     if (!iframe) return false;
-    // Always pass the business name extracted from the main-frame DOM.
-    // The main frame has much richer access (full page) than the iframe.
+    // Always pass the business name AND canonical CID extracted from the
+    // main-frame DOM. The main frame has much richer access (full page,
+    // place links, data-fid) than the iframe.
     const businessName = extractBusinessName();
-    iframe.contentWindow.postMessage({ _tag: EXT_TAG, action, businessName, ...extra }, '*');
+    const businessCid = findCidInDom();
+    iframe.contentWindow.postMessage({ _tag: EXT_TAG, action, businessName, businessCid, ...extra }, '*');
     return true;
   }
 
@@ -1183,6 +1232,7 @@
           <button id="gbp-fetch-tab">Fetch All Months (Tab)</button>
           <button id="gbp-fetch-all">⭐ Fetch Everything</button>
           <button id="gbp-fetch-reviews">⭐ Fetch Reviews</button>
+          <button id="gbp-auto-draft-replies" style="display:none">🤖 Auto-draft replies</button>
         </div>
         <div id="gbp-progress" style="display:none;margin-top:8px">
           <div class="gbp-progress-bar"><div class="gbp-progress-fill" id="gbp-progress-fill"></div></div>
@@ -1280,6 +1330,48 @@
       }
     };
 
+    // Auto-draft AI replies — only meaningful on the owner's own merchant
+    // reviews page (business.google.com), where cards have a real reply box.
+    // This ONLY opens each card's reply editor and fills it with a draft — it
+    // never clicks Post. See the "ASSISTED REVIEW REPLY" module above.
+    document.getElementById('gbp-auto-draft-replies').onclick = async () => {
+      showProgress(true);
+      setResult('', '');
+      disableButtons(true);
+      try {
+        const result = await autoDraftAllReplies((msg) => {
+          const text = document.getElementById('gbp-progress-text');
+          if (text) text.textContent = msg;
+          showAiReplyToast(msg);
+        });
+        if (result.success) {
+          const summary = `Inserted ${result.inserted || 0}/${result.total || 0} drafts. ` +
+            (result.needsManual ? `${result.needsManual} need a manual reply. ` : '') +
+            'Review each and click Post.';
+          setResult('', `<div style="font-size:12px;color:#e0e0e0">${result.message || summary}</div>`);
+          showAiReplyToast(summary);
+          if (result.stoppedForBudget) {
+            chrome.runtime.sendMessage({ action: 'aiUsage' }, (usage) => {
+              const u = usage?.usage;
+              if (u) {
+                showAiReplyToast(`Monthly AI budget reached ($${u.costUsd?.toFixed?.(2) ?? '?'} / $${u.capUsd}). Remaining drafts need a manual reply.`);
+              }
+            });
+          }
+          setTimeout(removeAiReplyToast, 8000);
+        } else {
+          setResult('', `<span style="color:#fdd663">⚠ ${result.reason}</span>`);
+          removeAiReplyToast();
+        }
+      } catch (e) {
+        setResult('', `<span style="color:#fdd663">⚠ ${e.message}</span>`);
+        removeAiReplyToast();
+      } finally {
+        showProgress(false);
+        disableButtons(false);
+      }
+    };
+
     // Open dashboard
     document.getElementById('gbp-open-dashboard').onclick = () => {
       chrome.runtime.sendMessage({ action: 'openDashboard' });
@@ -1287,9 +1379,19 @@
 
     // Check iframe availability and update info label
     checkIframeAndUpdateInfo();
+    updateAutoDraftButtonVisibility();
+  }
+
+  // Show the "Auto-draft replies" button only on business.google.com with
+  // review cards actually present (the owner's own merchant reviews surface).
+  function updateAutoDraftButtonVisibility() {
+    const btn = document.getElementById('gbp-auto-draft-replies');
+    if (!btn) return;
+    btn.style.display = isOwnerRepliesSurface() ? '' : 'none';
   }
 
   function checkIframeAndUpdateInfo() {
+    updateAutoDraftButtonVisibility();
     const infoEl = document.getElementById('gbp-info');
     if (!infoEl) return;
     const iframe = getPerformanceIframe();
@@ -1312,7 +1414,7 @@
   }
 
   function disableButtons(v) {
-    ['gbp-update-latest','gbp-save-current','gbp-fetch-tab','gbp-fetch-all','gbp-fetch-reviews'].forEach(id => {
+    ['gbp-update-latest','gbp-save-current','gbp-fetch-tab','gbp-fetch-all','gbp-fetch-reviews','gbp-auto-draft-replies'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = v;
     });
@@ -1583,7 +1685,19 @@
   function getReviewCards(doc) {
     const byId = [...doc.querySelectorAll('[data-review-id]')]
       .filter(el => !el.parentElement?.closest('[data-review-id]'));
-    if (byId.length) return byId;
+    if (byId.length) {
+      // GBP merchant panel (#mpd …/customers/reviews): data-review-id sits on an
+      // EMPTY action-bar div inside the card; the real card is the enclosing
+      // <article>. Climb only when the id element itself carries no content, so
+      // Maps/#lrd cards (where the id element IS the card) pass through untouched.
+      const seen = new Set();
+      const cards = [];
+      for (const el of byId) {
+        const card = el.textContent.trim().length < 20 ? (el.closest('article') || el) : el;
+        if (!seen.has(card)) { seen.add(card); cards.push(card); }
+      }
+      return cards;
+    }
     return [...doc.querySelectorAll('.jftiEf, article.VaHEVc')];
   }
 
@@ -1601,15 +1715,44 @@
     const ratingEl =
       card.querySelector('[aria-label*="star" i], [role="img"][aria-label]') ||
       [...card.querySelectorAll('[aria-label]')].find(el => parseStarLabel(el.getAttribute('aria-label')) > 0);
-    const rating = parseStarLabel(ratingEl?.getAttribute('aria-label') || '');
+    let rating = parseStarLabel(ratingEl?.getAttribute('aria-label') || '');
 
-    // Text: known class names first, then the longest non-empty leaf-text span/p in the card.
-    const text =
-      card.querySelector('.wiI7pd, .Fv38Af, .MyEned, [class*="reviewText"], [class*="review-text"]')?.textContent?.trim() ||
-      [...card.querySelectorAll('span, p')]
-        .filter(el => el.children.length === 0 && el.textContent.trim().length > 20)
-        .sort((a, b) => b.textContent.length - a.textContent.length)[0]
-        ?.textContent?.trim() || '';
+    // Merchant panel (#mpd): stars are icon-font ligatures with NO aria-label —
+    // every card renders 5 <i class="google-symbols">star</i>, and the filled
+    // ones carry .lMAmUc (unfilled: .VOmEhb). Count the filled icons.
+    if (!rating) {
+      const starIcons = [...card.querySelectorAll('i.google-symbols')]
+        .filter(i => i.textContent.trim() === 'star');
+      if (starIcons.length) {
+        rating = Math.min(5, starIcons.filter(i => i.classList.contains('lMAmUc')).length);
+      }
+    }
+
+    // Text: the review body is a DIRECT text node of its container on both the
+    // merchant panel (jsname PBWx0c = expanded, lvvS4b = collapsed) and Maps
+    // (.wiI7pd) — sibling ELEMENTS hold junk we must not absorb ("View full
+    // review" links, "Food: 5/5" sub-ratings, dish recommendations). Prefer
+    // direct text nodes; fall back to full textContent, then the longest
+    // non-empty leaf-text span/p in the card.
+    const directText = (el) => el
+      ? [...el.childNodes].filter(n => n.nodeType === Node.TEXT_NODE)
+          .map(n => n.textContent).join(' ').trim()
+      : '';
+    const classTextEl = card.querySelector('.wiI7pd, .Fv38Af, .MyEned, [class*="reviewText"], [class*="review-text"]');
+    const jsnameTextEl = card.querySelector('div[jsname="PBWx0c"], div[jsname="lvvS4b"]');
+    let text = directText(jsnameTextEl) || directText(classTextEl);
+    if (!text && !jsnameTextEl) {
+      // Not the merchant panel — allow the broader fallbacks. On the merchant
+      // panel an empty direct-text body means a photo/dish-only review; the
+      // container textContent there is pure junk ("View full review", dishes).
+      text =
+        classTextEl?.textContent?.trim() ||
+        [...card.querySelectorAll('span, p')]
+          .filter(el => el.children.length === 0 && el.textContent.trim().length > 20)
+          .sort((a, b) => b.textContent.length - a.textContent.length)[0]
+          ?.textContent?.trim() || '';
+    }
+    text = text.replace(/view full review/gi, ' ').replace(/\s+/g, ' ').trim();
 
     const dateRaw = card.querySelector('.rsqaWe, .KEfuhb, .dehysf, [class*="date"]')?.textContent?.trim() || '';
     const reviewedAtISO = parseRelativeReviewDate(dateRaw, now);
@@ -1629,7 +1772,12 @@
     // Keep the card if it has a rating OR any text content — the Search modal may
     // render cards with rating but no visible text (photo-only reviews etc.)
     if (!rating && !text) return null;
-    const externalId = card.getAttribute('data-review-id') || hashReview(author, dateRaw, text);
+    // Merchant panel: the card is the <article>, and data-review-id lives on the
+    // action-bar div inside it — check both before falling back to the hash.
+    const externalId =
+      card.getAttribute('data-review-id') ||
+      card.querySelector('[data-review-id]')?.getAttribute('data-review-id') ||
+      hashReview(author, dateRaw, text);
 
     return {
       externalId,
@@ -1671,7 +1819,10 @@
   // Returns true if an element was found and fired, false otherwise. Never throws.
   function clickMoreReviews(doc) {
     try {
-      const EXCLUDE_RE = /get more reviews|reply to reviews|write a review|share/i;
+      // Anything that is NOT the pagination "More reviews" button.
+      // Critically includes reply/respond — on the GBP owner panel every review
+      // has a "Reply" button and Google uses [jsname="V67aGc"] for various spans.
+      const EXCLUDE_RE = /get more reviews|reply to reviews?|write a review|share|^reply$|respond/i;
 
       // Walk ALL elements — the "More Reviews" text is often inside an
       // aria-hidden span (e.g. jsname="V67aGc") nested inside the real button.
@@ -1679,19 +1830,22 @@
       // interactive ancestor to fire the click there.
       const findMoreSpan = (searchDoc) => {
         try {
-          // Primary: Google's stable jsname for the "More Reviews" pagination span
-          // (confirmed via DOM inspection: <span jsname="V67aGc">More Reviews</span>)
-          const byJsname = searchDoc.querySelector('[jsname="V67aGc"]');
-          if (byJsname && /review/i.test(byJsname.textContent)) return byJsname;
+          // Primary: all [jsname="V67aGc"] spans — Google uses this jsname for the
+          // "More Reviews" pagination button text. Pick the first one whose trimmed
+          // text is exactly "more reviews" AND that is visible (has a layout box).
+          // Multiple copies can exist in the DOM (hidden duplicates for breakpoints).
+          const byJsname = [...searchDoc.querySelectorAll('[jsname="V67aGc"]')]
+            .find(el => /^more reviews$/i.test(el.textContent.trim()) && el.offsetParent !== null);
+          if (byJsname) return byJsname;
 
           // Fallback: strict regex anchored to "more reviews" — avoids matching the
-          // sort dropdown which also contains the word "reviews"
-          const STRICT_RE = /^more reviews/i;
+          // sort dropdown and reply buttons which also contain the word "reviews"
+          const STRICT_RE = /^more reviews$/i;
           return [...searchDoc.querySelectorAll('button, a, [role="button"], span, div')]
             .find(el => {
               if (el.children.length > 2) return false; // skip container elements
               const txt = (el.textContent || '').trim();
-              return STRICT_RE.test(txt) && !EXCLUDE_RE.test(txt);
+              return STRICT_RE.test(txt) && !EXCLUDE_RE.test(txt) && el.offsetParent !== null;
             });
         } catch (_) { return null; }
       };
@@ -1722,6 +1876,16 @@
       }
 
       const target = findClickTarget(span);
+
+      // Final safety check: never click a reply/respond/write element.
+      // This prevents accidentally opening the "Reply to review" composer on the
+      // GBP owner panel where reply buttons share the same jsname as pagination spans.
+      const targetText = (target.textContent || target.getAttribute('aria-label') || '').trim();
+      if (EXCLUDE_RE.test(targetText)) {
+        console.log('[SCRAPER-DEBUG] clickMoreReviews: target rejected by EXCLUDE_RE:', JSON.stringify(targetText.slice(0, 60)));
+        return false;
+      }
+
       console.log('[SCRAPER-DEBUG] clickMoreReviews: span text=',
         JSON.stringify((span.textContent || '').trim().slice(0, 80)),
         '→ clicking', target.tagName,
@@ -1769,6 +1933,274 @@
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  //  ASSISTED REVIEW REPLY (Module D) — DOM automation
+  //
+  //  SAFETY MODEL: this code OPENS the reply editor and FILLS the textarea
+  //  only. It NEVER clicks Google's Post/Send/Reply-submit button. A human
+  //  must click Post themselves — that click is the entire safety boundary
+  //  ("assisted", not "auto-post"). Do not add a submit click here, even
+  //  behind a flag.
+  //
+  //  Only activates on business.google.com (the owner's own merchant reviews
+  //  surface), where cards carry a real [data-review-id] and a genuine reply
+  //  affordance exists. Never runs on Maps/Search public modals — competitor
+  //  reviews have no reply box there.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── Config — tune these if Google changes its DOM (see selector comments below) ─
+  const AI_REPLY_CONFIG = {
+    MAX_AUTO_INSERT_PER_RUN: 50,     // mirrors backend MAX_BULK_BATCH_SIZE
+    DELAY_MIN_MS: 600,               // randomized human-like delay between cards
+    DELAY_MAX_MS: 1200,
+    // Text that opens the reply editor (NOT the submit button).
+    REPLY_OPEN_TEXT_RE: /^(reply|respond)$/i,
+    // Text that SUBMITS the reply — used only to AVOID clicking it, never to click it.
+    SUBMIT_TEXT_RE: /^(post|send|reply)$/i,
+  };
+
+  function isOwnerRepliesSurface() {
+    return window.location.hostname.includes('business.google.com') &&
+           getReviewCards(resolveReviewDoc()).length > 0;
+  }
+
+  // ── Native-setter value insertion (React-controlled inputs ignore plain .value=) ─
+  function setNativeValue(el, value) {
+    try {
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') {
+        const proto = tag === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (setter) setter.call(el, value); else el.value = value;
+      } else {
+        // contenteditable
+        el.textContent = value;
+      }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (e) {
+      console.warn('[GBP AI-Reply] setNativeValue failed:', e);
+    }
+  }
+
+  // ── Find the "Reply"/"Respond" control within a review card ─────────────────
+  // NEEDS LIVE VERIFICATION: the exact Google DOM for the merchant reply button
+  // was not accessible in the build environment (no logged-in merchant
+  // session). Multiple fallbacks are provided, mirroring the resilience
+  // pattern used by clickMoreReviews() above. Never matches submit/post text.
+  function findReplyOpenButton(card) {
+    const EXCLUDE_RE = AI_REPLY_CONFIG.SUBMIT_TEXT_RE;
+    const isVisible = (el) => !!el && el.offsetParent !== null;
+
+    // 1. aria-label containing "reply" (excluding anything that also reads as submit-only)
+    const byAria = [...card.querySelectorAll('[aria-label*="reply" i], [aria-label*="respond" i]')]
+      .find(isVisible);
+    if (byAria) return byAria;
+
+    // 2. Any button/[role=button] whose trimmed text is exactly "Reply"/"Respond"
+    const byRole = [...card.querySelectorAll('button, [role="button"]')]
+      .find(el => AI_REPLY_CONFIG.REPLY_OPEN_TEXT_RE.test((el.textContent || '').trim()) && isVisible(el));
+    if (byRole) return byRole;
+
+    // 3. Text-walk fallback (mirrors clickMoreReviews' span→clickable-ancestor walk):
+    //    find any element whose own text reads "Reply"/"Respond", then climb to
+    //    the nearest clickable ancestor.
+    const span = [...card.querySelectorAll('span, div')]
+      .find(el => el.children.length <= 1 &&
+                  AI_REPLY_CONFIG.REPLY_OPEN_TEXT_RE.test((el.textContent || '').trim()) &&
+                  isVisible(el));
+    if (span) {
+      let node = span;
+      while (node && node !== card) {
+        const tag = node.tagName?.toLowerCase();
+        const role = node.getAttribute?.('role');
+        if (tag === 'button' || tag === 'a' || role === 'button' || node.getAttribute?.('jsaction')) {
+          return node;
+        }
+        node = node.parentElement;
+      }
+      return span;
+    }
+
+    return null;
+  }
+
+  // ── Find the reply textarea/contenteditable AFTER the editor has been opened ─
+  function findReplyTextarea(card) {
+    const candidates = [
+      ...card.querySelectorAll('textarea'),
+      ...card.querySelectorAll('[contenteditable="true"]'),
+      ...card.querySelectorAll('[role="textbox"]'),
+      ...card.querySelectorAll('input[type="text"]'),
+    ];
+    return candidates.find(el => {
+      if (el.offsetParent === null) return false; // not visible
+      const current = el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' ? el.value : el.textContent;
+      return !current || current.trim() === '';
+    }) || null;
+  }
+
+  // ── Open the reply editor for a card. Returns true if the editor appears to be open. ─
+  // This clicks Google's "Reply"/"Respond" affordance — the OPEN action, never submit.
+  async function openReplyBox(card) {
+    if (findReplyTextarea(card)) return true; // already open
+    const btn = findReplyOpenButton(card);
+    if (!btn) return false;
+
+    // Safety check: never invoke this on anything matching the submit-text pattern.
+    const btnText = (btn.textContent || btn.getAttribute('aria-label') || '').trim();
+    if (AI_REPLY_CONFIG.SUBMIT_TEXT_RE.test(btnText) && !AI_REPLY_CONFIG.REPLY_OPEN_TEXT_RE.test(btnText)) {
+      console.warn('[GBP AI-Reply] Refusing ambiguous control that may be a submit button:', btnText);
+      return false;
+    }
+
+    realClick(btn);
+    btn.click();
+    await sleep(700);
+    return !!findReplyTextarea(card);
+  }
+
+  // ── Insert the AI draft text into the (now open) reply box. Never submits. ──
+  function insertReplyText(card, text) {
+    const box = findReplyTextarea(card);
+    if (!box) return false;
+    setNativeValue(box, text);
+    box.blur();
+    return true;
+  }
+
+  // ── Small visual badge on a card after a draft is inserted ──────────────────
+  function markCardDrafted(card, ok) {
+    if (card.querySelector('.gbp-ai-badge')) return;
+    const badge = document.createElement('div');
+    badge.className = 'gbp-ai-badge';
+    badge.style.cssText = 'margin-top:6px;padding:4px 8px;border-radius:6px;font-size:11px;font-weight:600;' +
+      (ok
+        ? 'background:#1e3a2a;color:#81c995;'
+        : 'background:#3a2e1e;color:#fdd663;');
+    badge.textContent = ok ? '✅ AI draft inserted — review & Post' : '⚠ Needs manual reply (not found)';
+    card.appendChild(badge);
+  }
+
+  // ── Top progress toast ───────────────────────────────────────────────────────
+  function showAiReplyToast(message) {
+    let toast = document.getElementById('gbp-ai-reply-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'gbp-ai-reply-toast';
+      toast.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);' +
+        'background:#1a1a2e;color:#e0e0e0;padding:10px 18px;border-radius:8px;font-size:13px;' +
+        'z-index:2147483647;box-shadow:0 4px 16px rgba(0,0,0,0.4);max-width:80vw;text-align:center;';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+  }
+
+  function removeAiReplyToast() {
+    document.getElementById('gbp-ai-reply-toast')?.remove();
+  }
+
+  // ── Main flow: auto-draft AI replies into every un-replied review on this page ─
+  async function autoDraftAllReplies(progressCb) {
+    if (!isOwnerRepliesSurface()) {
+      return { success: false, reason: 'Auto-draft only works on your business.google.com reviews page.' };
+    }
+
+    const businessId = extractBusinessId();
+    if (!businessId) return { success: false, reason: 'Could not detect business ID on this page.' };
+
+    // 1. Make sure ALL reviews are loaded + synced to the backend first, so the
+    //    backend's un-replied list reflects what's currently on the page.
+    progressCb?.('Loading all reviews…');
+    const collectResult = await collectReviews().catch((e) => ({ success: false, reason: e.message }));
+    if (!collectResult.success) {
+      return { success: false, reason: collectResult.reason || 'Could not load reviews on this page.' };
+    }
+
+    // 2. Ask the backend which reviews are un-replied for this business.
+    progressCb?.('Checking for un-replied reviews…');
+    const listResp = await new Promise((resolve) =>
+      chrome.runtime.sendMessage({ action: 'aiListUnrepliedReviews', businessId }, resolve)
+    );
+    if (!listResp?.ok) {
+      return { success: false, reason: listResp?.error || 'Could not reach the backend.' };
+    }
+    const unrepliedReviews = (listResp.reviews || []).filter(r => !r.ownerResponded);
+    if (!unrepliedReviews.length) {
+      return { success: true, inserted: 0, needsManual: 0, message: 'No un-replied reviews found.' };
+    }
+
+    // 3. Only keep reviews that have a matching card actually in the DOM.
+    const doc = resolveReviewDoc();
+    const cards = getReviewCards(doc);
+    const cardByExternalId = new Map();
+    for (const card of cards) {
+      const id = card.getAttribute('data-review-id') || card.querySelector('[data-review-id]')?.getAttribute('data-review-id');
+      if (id) cardByExternalId.set(id, card);
+    }
+    const matched = unrepliedReviews
+      .filter(r => cardByExternalId.has(r.externalReviewId))
+      .slice(0, AI_REPLY_CONFIG.MAX_AUTO_INSERT_PER_RUN);
+
+    if (!matched.length) {
+      return { success: true, inserted: 0, needsManual: 0, message: 'No matching un-replied review cards on this page.' };
+    }
+
+    // 4. Bulk-draft all of them in one backend call.
+    progressCb?.(`Drafting ${matched.length} replies…`);
+    const bulkResp = await new Promise((resolve) =>
+      chrome.runtime.sendMessage({
+        action: 'aiBulkDraft',
+        businessId,
+        scrapedReviewIds: matched.map(r => r.id),
+      }, resolve)
+    );
+    if (!bulkResp?.ok) {
+      return { success: false, reason: bulkResp?.error || 'Draft generation failed.' };
+    }
+
+    const draftByExternalId = new Map();
+    for (const r of bulkResp.results || []) {
+      if (r.draftText && r.externalReviewId) draftByExternalId.set(r.externalReviewId, r.draftText);
+    }
+
+    // 5. Insert each draft into its card, one at a time, with a human-like delay.
+    //    DO NOT click Post/Send here — see the safety-model comment at the top
+    //    of this module.
+    let inserted = 0;
+    let needsManual = 0;
+    for (const review of matched) {
+      const card = cardByExternalId.get(review.externalReviewId);
+      const draftText = draftByExternalId.get(review.externalReviewId);
+      if (!card || !draftText) { needsManual++; continue; }
+
+      progressCb?.(`Inserting draft ${inserted + needsManual + 1}/${matched.length}…`);
+      try {
+        const opened = await openReplyBox(card);
+        if (!opened) { markCardDrafted(card, false); needsManual++; continue; }
+        const ok = insertReplyText(card, draftText);
+        markCardDrafted(card, ok);
+        if (ok) inserted++; else needsManual++;
+      } catch (e) {
+        console.warn('[GBP AI-Reply] insert failed for', review.externalReviewId, e);
+        markCardDrafted(card, false);
+        needsManual++;
+      }
+
+      const delay = AI_REPLY_CONFIG.DELAY_MIN_MS +
+        Math.random() * (AI_REPLY_CONFIG.DELAY_MAX_MS - AI_REPLY_CONFIG.DELAY_MIN_MS);
+      await sleep(delay);
+    }
+
+    return {
+      success: true,
+      inserted,
+      needsManual,
+      stoppedForBudget: !!bulkResp.stoppedForBudget,
+      total: matched.length,
+    };
+  }
+
   // ── Init: inject panel when performance page is detected ──────────────────
   function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
 
@@ -1785,8 +2217,8 @@
   function isReviewablePage() {
     if (!extractBusinessId()) return false;
     const href = window.location.href;
-    // Explicit reviews URL patterns (Search "all reviews" panel, GBP customers tab)
-    if (/#mpd=/.test(href) || /\/customers\/reviews/.test(href)) return true;
+    // Explicit reviews URL patterns (Search "all reviews" panel, GBP customers tab, public lrd modal)
+    if (/#mpd=/.test(href) || /\/customers\/reviews/.test(href) || /#lrd=/.test(href)) return true;
     return /\breviews?\b/i.test(document.body?.innerText || '') &&
            (href.includes('/maps/') ||
             href.includes('business.google.com') ||

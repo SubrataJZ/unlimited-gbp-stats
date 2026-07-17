@@ -304,6 +304,110 @@ async function pullReviewsFromServer(businessId) {
   }
 }
 
+// ── AI Review Reply Copilot (Module D) ────────────────────────────────────────
+//
+// Uses the same zx_ ingest key as syncReviewToBackend/pullReviewsFromServer
+// above (getBackendKey()) — the /api/ai/* routes accept it via
+// validateJWTOrApiKey on the backend, since the extension never holds a
+// short-lived backend JWT (see backend/src/middlewares/auth.middleware.ts).
+
+/**
+ * Resolve the numeric Google business id (as seen by content.js /
+ * extractBusinessId()) to our backend's TrackedBusiness cuid, by matching
+ * googlePlaceId in the same GET /api/ingest/intel payload the extension
+ * already uses to pull review data.
+ */
+async function resolveTrackedBusinessId(businessId) {
+  const key = await getBackendKey();
+  if (!key) return null;
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/ingest/intel`, {
+      headers: { 'Authorization': `Bearer ${key}`, 'x-extension-id': chrome.runtime.id },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const match = (data.businesses || []).find(b => b.googlePlaceId === String(businessId));
+    return match?.id || null;
+  } catch (err) {
+    console.warn('[GBP BG] resolveTrackedBusinessId failed:', err.message);
+    return null;
+  }
+}
+
+/**
+ * List un-replied (or all) scraped reviews for a business, for the extension's
+ * "Auto-draft replies" flow. Maps the numeric GBP business id to our
+ * trackedBusinessId first.
+ */
+async function aiListUnrepliedReviews(businessId) {
+  const key = await getBackendKey();
+  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable AI replies' };
+
+  const trackedBusinessId = await resolveTrackedBusinessId(businessId);
+  if (!trackedBusinessId) return { ok: false, error: 'This business has not been synced to the backend yet. Fetch reviews first.' };
+
+  try {
+    const resp = await fetch(
+      `${BACKEND_URL}/api/ai/reviews?trackedBusinessId=${encodeURIComponent(trackedBusinessId)}&onlyUnreplied=true`,
+      { headers: { 'Authorization': `Bearer ${key}` } }
+    );
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText);
+      return { ok: false, error: `HTTP ${resp.status}: ${text}` };
+    }
+    const data = await resp.json();
+    return { ok: true, reviews: data.reviews || [], trackedBusinessId };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Generate AI draft replies for a batch of scraped review ids.
+ */
+async function aiBulkDraft(businessId, scrapedReviewIds, model) {
+  const key = await getBackendKey();
+  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable AI replies' };
+
+  const trackedBusinessId = await resolveTrackedBusinessId(businessId);
+  if (!trackedBusinessId) return { ok: false, error: 'This business has not been synced to the backend yet.' };
+
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/ai/reply/bulk`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+      body: JSON.stringify({ scrapedReviewIds, trackedBusinessId, ...(model ? { model } : {}) }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText);
+      return { ok: false, error: `HTTP ${resp.status}: ${text}` };
+    }
+    const data = await resp.json();
+    return { ok: true, results: data.results || [], stoppedForBudget: !!data.stoppedForBudget };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/** Return the calling user's monthly AI usage/cost-cap summary. */
+async function aiUsage() {
+  const key = await getBackendKey();
+  if (!key) return { ok: false, error: 'Backend not connected' };
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/ai/usage`, {
+      headers: { 'Authorization': `Bearer ${key}` },
+    });
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
+    const data = await resp.json();
+    return { ok: true, usage: data.usage };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 /**
  * Pull all data for a business from the server and merge into local IndexedDB.
  * Only requests records newer than the last successful pull (using ?since=).
@@ -660,7 +764,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const m = msg.metric;
 
     GBPStorage.open()
-      .then(() => GBPStorage.saveBusiness(msg.business))
+      // Fold any records stored under the GBP local id into the canonical CID
+      // row — one business must not split into metrics-only + reviews-only rows.
+      .then(() => GBPStorage.migrateBusinessData(msg.business?.aliasId, msg.business?.id))
+      .then(() => GBPStorage.saveBusiness({ id: msg.business.id, name: msg.business.name }))
       .then(() => GBPStorage.saveMetric(
         m.businessId, m.metricType,
         m.year, m.month,
@@ -737,7 +844,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const businessId = business?.id;
 
     GBPStorage.open()
-      .then(() => business ? GBPStorage.saveBusiness(business) : null)
+      // Fold local-id records into the canonical CID row (see saveMetricData)
+      .then(() => GBPStorage.migrateBusinessData(business?.aliasId, businessId))
+      .then(() => business ? GBPStorage.saveBusiness({ id: business.id, name: business.name }) : null)
       .then(() => snapshot ? GBPStorage.saveReviewSnapshot(businessId, snapshot) : null)
       .then(() => (Array.isArray(reviews) && reviews.length)
         ? GBPStorage.saveReviews(businessId, reviews) : 0)
@@ -846,6 +955,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // ── Get latest collected month for a specific business ─────────────────────
   if (msg.action === 'getLatestMonth') {
     GBPStorage.open()
+      // Migrate BEFORE querying, or months stored under the local id look
+      // missing and the scraper re-fetches everything from scratch.
+      .then(() => GBPStorage.migrateBusinessData(msg.aliasId, msg.businessId))
       .then(() => GBPStorage.getOldestAndNewest(msg.businessId))
       .then(range => sendResponse({ latest: range?.newest || null }))
       .catch(() => sendResponse({ latest: null }));
@@ -879,6 +991,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(() => GBPStorage.importAll(msg.data))
       .then(() => sendResponse({ success: true }))
       .catch(e => sendResponse({ success: false, reason: e.message }));
+    return true;
+  }
+
+  // ── AI Reply Copilot: list un-replied reviews for a business ──────────────
+  if (msg.action === 'aiListUnrepliedReviews') {
+    aiListUnrepliedReviews(msg.businessId)
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // ── AI Reply Copilot: bulk-draft replies for un-replied reviews ───────────
+  if (msg.action === 'aiBulkDraft') {
+    aiBulkDraft(msg.businessId, msg.scrapedReviewIds || [], msg.model)
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // ── AI Reply Copilot: monthly usage / cost-cap summary ────────────────────
+  if (msg.action === 'aiUsage') {
+    aiUsage()
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
   }
 });

@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.16.0] - 2026-07-17
+- **New: "Auto-draft AI replies" (assisted mode, Agency/Pro only).** On the owner's own merchant reviews page (business.google.com), a new "🤖 Auto-draft replies" button loads every un-replied review, generates a neutral, professional AI draft for each via the backend's OpenRouter-powered reply copilot, and inserts the draft text directly into that review's native reply box. The human still clicks Google's own "Post" button for every review — this tool never submits on your behalf, by design. Small-business (Owner) accounts do not see this button; the backend also rejects the underlying draft-generation endpoints for read-only Owner accounts.
+- **New backend endpoints:** `POST /api/ai/reply/bulk` (draft up to 50 reviews in one call, with a partial result + budget-stop if the monthly AI cost cap is hit mid-batch) and `GET /api/ai/reviews` (list a business's reviews, optionally filtered to un-replied only).
+
+## [1.15.1] - 2026-07-13
+- **New: hover tooltips on "Reviews per period" bars/dots** showing the exact review count and avg rating per period (native SVG `<title>`).
+- **New: dynamic right-axis rating scale.** Instead of a fixed 0–5 quarter scale that flattens the avg-rating line near the top, the axis now zooms into the actual rating range and labels it in "nice" 0.1/0.2/0.5/1 steps (e.g. 4.0 / 4.2 / 4.4 / 4.6 / 4.8 / 5.0).
+- **New: "5★ reviews to next tier" stat card** — computes how many additional 5★ reviews would push the average rating up to the next 0.1 tier (e.g. 4.1 → 4.2), using the exact star histogram when available so it isn't thrown off by Google's own rounding of the displayed average.
+- **Fixed: 1★ reviews were hard to distinguish from 5★ from a glance** — filled (★) and empty (☆) stars now render in distinct colors (gold vs. muted gray) instead of the same gold for both.
+
+## [1.15.0] - 2026-07-12
+- **New: "All reviews" list with sorting.** The dashboard's "Recent reviews" section (capped at 50) is now "All reviews": sortable by newest, oldest, highest rating, or lowest rating (date sorting uses the actual review date via `GBPDate.resolveReviewDate`, falling back to capture time). Renders 50 at a time with "Show 100 more" / "Show all" pagination and a "showing X of Y" counter.
+- **New: "Reviews per period" chart is pannable.** Dense histories no longer squeeze into one frame — the chart shows a readable window per granularity (60 days / 52 weeks / 24 months / 20 years) with "◀ Older / Newer ▶" buttons that pan half a window per click and a range label (e.g. "Jan 2024 — Dec 2025 (13–36 of 44)"). Controls hide when everything fits; pan position resets on granularity or business change.
+
+## [1.14.4] - 2026-07-06
+- **Fixed: performance and reviews no longer split into two separate dashboard businesses.** Performance saves (from the `/local/business/<id>` iframe) were keyed by the GBP **local id** while review scrapes on the `#mpd` panel were keyed by the canonical **CID** (per 1.14.x identity unification) — one business became two rows, each showing only one kind of data. The main frame now passes the DOM-recovered CID to the performance iframe (`businessCid`, like `businessName`), so metric saves use the same canonical id; every save/query also carries the local id as `aliasId`, and a new `GBPStorage.migrateBusinessData()` folds all metrics/snapshots/reviews stored under the alias into the canonical row (never clobbering existing records) and deletes the duplicate business.
+
+## [1.14.3] - 2026-07-06
+- **Fixed: review scraping on the merchant "Reviews" panel (`#mpd=…/customers/reviews`) captured 0 reviews.** Three root causes: (1) the outermost `[data-review-id]` element there is an empty action-bar div — `getReviewCards()` now climbs to the enclosing `<article>` when the id element has no content; (2) `parseStarLabel()` matched the "5 star" substring of "3 **out of 5 star**s", reporting every rating as 5★ — "N out of 5" is now tried first, with a filled-star icon count (`i.google-symbols.lMAmUc`) as fallback; (3) review text lives in direct text nodes of `div[jsname="PBWx0c"/"lvvS4b"]` — direct-text extraction added, with junk ("View full review", dish recommendations) excluded.
+
 ## [1.13.0] - 2026-06-27
 - **Fixed: review cards now extract data on the Search modal (was always returning 0).** The rating and text selectors were Maps-specific CSS classes that don't exist in the Search modal DOM. Added generic fallbacks: rating now walks all card descendants for any `aria-label` containing "star"; text falls back to the longest leaf `span`/`p` in the card (>20 chars) when no known class matches.
 - **Fixed: "More reviews" button now correctly identified.** The broad text-match was matching the sort dropdown ("Most relevant…") instead of the pagination button. Primary selector is now `[jsname="V67aGc"]` (the confirmed span for this button), with a strict `^more reviews` regex fallback.

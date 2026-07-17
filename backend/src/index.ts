@@ -1,4 +1,5 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -109,8 +110,14 @@ const ingestLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
   max: 50, // Allow 50 ingestion requests per minute per API key
   keyGenerator: (req: Request) => {
-    // Rate limit by API key instead of IP for ingestion
-    return req.headers.authorization || req.ip || 'unknown';
+    // Rate limit per API key only when the header is key-shaped; everything
+    // else buckets by IP. Hashing bounds entry size, and the shape check stops
+    // attackers rotating junk Authorization values to get fresh buckets.
+    const auth = req.headers.authorization || '';
+    const isKeyShaped = /^Bearer zx_[0-9a-f]{64}$/.test(auth);
+    return isKeyShaped
+      ? crypto.createHash('sha256').update(auth).digest('hex')
+      : req.ip || 'unknown';
   },
   message: 'Too many ingestion requests, please slow down.',
 });
