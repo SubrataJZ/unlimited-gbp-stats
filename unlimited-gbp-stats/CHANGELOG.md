@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.16.1] - 2026-07-17
+- **Fixed: assisted AI-reply drafts weren't reaching Google's reply box.** The card element carrying Google's review id doesn't contain the Reply button/textarea on `business.google.com/reviews` — the real card is its parent. Live-verified against a real merchant session and fixed the DOM matching accordingly; also hardened the "never click Post" safety guard with an explicit check against Google's verified submit-button identifier.
+
 ## [1.16.0] - 2026-07-17
 - **New: "Auto-draft AI replies" (assisted mode, Agency/Pro only).** On the owner's own merchant reviews page (business.google.com), a new "🤖 Auto-draft replies" button loads every un-replied review, generates a neutral, professional AI draft for each via the backend's OpenRouter-powered reply copilot, and inserts the draft text directly into that review's native reply box. The human still clicks Google's own "Post" button for every review — this tool never submits on your behalf, by design. Small-business (Owner) accounts do not see this button; the backend also rejects the underlying draft-generation endpoints for read-only Owner accounts.
 - **New backend endpoints:** `POST /api/ai/reply/bulk` (draft up to 50 reviews in one call, with a partial result + budget-stop if the monthly AI cost cap is hit mid-batch) and `GET /api/ai/reviews` (list a business's reviews, optionally filtered to un-replied only).

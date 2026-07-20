@@ -1957,6 +1957,13 @@
     REPLY_OPEN_TEXT_RE: /^(reply|respond)$/i,
     // Text that SUBMITS the reply — used only to AVOID clicking it, never to click it.
     SUBMIT_TEXT_RE: /^(post|send|reply)$/i,
+    // Verified live 2026-07-17 on business.google.com/reviews (Chrome, logged-in
+    // merchant session). Google's jsname attributes are stable JS-binding names
+    // that survive CSS-class obfuscation, so they're the primary match; text/aria
+    // fallbacks below stay as a safety net if Google changes them.
+    REPLY_OPEN_JSNAME: 'rhPddf',   // the "Reply" control that OPENS the editor
+    TEXTAREA_JSNAME: 'YPqjbf',     // the reply <textarea>
+    SUBMIT_JSNAME: 'hrGhad',       // "Post reply" — NEVER click this, safety-guard only
   };
 
   function isOwnerRepliesSurface() {
@@ -1983,14 +1990,41 @@
     }
   }
 
+  // ── Resolve the actual reply-scope root for a card ───────────────────────────
+  // Verified live 2026-07-17: on business.google.com/reviews, the element
+  // carrying [data-review-id] is a tight per-review div (Google class "zfaYcf")
+  // that does NOT contain the Reply button or textarea — its PARENT does. Climb
+  // from the given card until we find an ancestor that (a) contains exactly one
+  // data-review-id, so we never grab the whole reviews list, and (b) contains a
+  // Reply control (by jsname or short "reply"/"respond" text).
+  function resolveReplyScopeRoot(card) {
+    let node = card, hops = 0;
+    while (node && hops < 6) {
+      const oneId = node.querySelectorAll('[data-review-id]').length === 1;
+      const hasReplyJsname = !!node.querySelector(`button[jsname="${AI_REPLY_CONFIG.REPLY_OPEN_JSNAME}"]`);
+      const hasReplyText = [...node.querySelectorAll('button')].some(b => {
+        const t = (b.textContent || '').trim();
+        return /reply|respond/i.test(t) && t.length < 15;
+      });
+      if (oneId && (hasReplyJsname || hasReplyText)) return node;
+      node = node.parentElement;
+      hops++;
+    }
+    return card; // best-effort fallback — unchanged behavior if climb fails
+  }
+
   // ── Find the "Reply"/"Respond" control within a review card ─────────────────
-  // NEEDS LIVE VERIFICATION: the exact Google DOM for the merchant reply button
-  // was not accessible in the build environment (no logged-in merchant
-  // session). Multiple fallbacks are provided, mirroring the resilience
-  // pattern used by clickMoreReviews() above. Never matches submit/post text.
+  // Primary selector verified live 2026-07-17 (see AI_REPLY_CONFIG.REPLY_OPEN_JSNAME).
+  // Text/aria fallbacks kept in case Google changes the jsname later. Note the
+  // real control's own textContent is "replyReply" (icon ligature + label
+  // concatenated) — it does NOT match an exact "Reply" text match, which is why
+  // jsname must be tried first.
   function findReplyOpenButton(card) {
-    const EXCLUDE_RE = AI_REPLY_CONFIG.SUBMIT_TEXT_RE;
     const isVisible = (el) => !!el && el.offsetParent !== null;
+
+    // 0. Verified jsname (primary — most stable across Google's CSS obfuscation)
+    const byJsname = card.querySelector(`button[jsname="${AI_REPLY_CONFIG.REPLY_OPEN_JSNAME}"]`);
+    if (byJsname && isVisible(byJsname)) return byJsname;
 
     // 1. aria-label containing "reply" (excluding anything that also reads as submit-only)
     const byAria = [...card.querySelectorAll('[aria-label*="reply" i], [aria-label*="respond" i]')]
@@ -2026,7 +2060,11 @@
   }
 
   // ── Find the reply textarea/contenteditable AFTER the editor has been opened ─
+  // Primary selector verified live 2026-07-17 (AI_REPLY_CONFIG.TEXTAREA_JSNAME).
   function findReplyTextarea(card) {
+    const byJsname = card.querySelector(`textarea[jsname="${AI_REPLY_CONFIG.TEXTAREA_JSNAME}"]`);
+    if (byJsname && byJsname.offsetParent !== null) return byJsname;
+
     const candidates = [
       ...card.querySelectorAll('textarea'),
       ...card.querySelectorAll('[contenteditable="true"]'),
@@ -2042,10 +2080,19 @@
 
   // ── Open the reply editor for a card. Returns true if the editor appears to be open. ─
   // This clicks Google's "Reply"/"Respond" affordance — the OPEN action, never submit.
-  async function openReplyBox(card) {
+  // `rawCard` may be the tight data-review-id element; resolveReplyScopeRoot climbs
+  // to the actual ancestor containing the Reply control (verified live — see above).
+  async function openReplyBox(rawCard) {
+    const card = resolveReplyScopeRoot(rawCard);
     if (findReplyTextarea(card)) return true; // already open
     const btn = findReplyOpenButton(card);
     if (!btn) return false;
+
+    // Hard safety guard: refuse to click the verified submit-button jsname, no matter what.
+    if (btn.getAttribute('jsname') === AI_REPLY_CONFIG.SUBMIT_JSNAME) {
+      console.warn('[GBP AI-Reply] Refusing to click verified submit-button jsname');
+      return false;
+    }
 
     // Safety check: never invoke this on anything matching the submit-text pattern.
     const btnText = (btn.textContent || btn.getAttribute('aria-label') || '').trim();
@@ -2061,7 +2108,8 @@
   }
 
   // ── Insert the AI draft text into the (now open) reply box. Never submits. ──
-  function insertReplyText(card, text) {
+  function insertReplyText(rawCard, text) {
+    const card = resolveReplyScopeRoot(rawCard);
     const box = findReplyTextarea(card);
     if (!box) return false;
     setNativeValue(box, text);
