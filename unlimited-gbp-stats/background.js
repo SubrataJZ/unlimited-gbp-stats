@@ -14,7 +14,7 @@
  * local save — local storage is always the source of truth.
  */
 
-importScripts('storage.js');
+importScripts('storage.js', 'metrics-payload.js');
 
 // Pre-warm the DB connection on startup
 GBPStorage.open().catch(e => console.error('[GBP BG] Storage init error:', e));
@@ -300,6 +300,125 @@ async function pullReviewsFromServer(businessId) {
     }
     return { success: true, snapshots: snaps, reviews: revs };
   } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ── Metrics dual-write to Postgres backend (A5) ────────────────────────────────
+//
+// Best-effort push of local metric records to POST /api/ingest/metrics,
+// ALONGSIDE the existing SQLite sync (syncMetricToServer / pushAllToServer)
+// above — this never replaces it. Uses GBPMetricsPayload.buildMetricsPayload
+// (unlimited-gbp-stats/metrics-payload.js, loaded via importScripts at the
+// top of this file) to build the request body, the same zx_ ingest key as
+// syncReviewToBackend, and the same fire-and-forget / never-throw contract.
+
+/**
+ * Kill switch: gate every Postgres metrics push on a chrome.storage.local
+ * flag, default ON when unset. Extension updates propagate slowly and
+ * cannot be hot-fixed — if this push misbehaves in the field, flipping one
+ * storage key beats shipping an emergency release.
+ * @returns {Promise<boolean>}
+ */
+async function metricsBackendSyncEnabled() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['gbpBackendMetricsSync'], r => resolve(r.gbpBackendMetricsSync !== false));
+  });
+}
+
+/**
+ * Push a business's metric records to the Postgres backend's
+ * /api/ingest/metrics. Never throws — local storage stays source of truth,
+ * and the existing SQLite sync stays the primary path.
+ *
+ * @param {{id:*, name?:string}} business
+ * @param {Array} metrics  Local metric records (see storage.js saveMetric).
+ * @returns {Promise<{ok:boolean, summary?:object, error?:string}>}
+ */
+async function syncMetricsToBackend(business, metrics) {
+  const enabled = await metricsBackendSyncEnabled();
+  if (!enabled) return { ok: false, error: 'disabled' };
+
+  const key = await getBackendKey();
+  if (!key) return { ok: false, error: 'Backend not connected' };
+
+  if (!Array.isArray(metrics) || !metrics.length) return { ok: false, error: 'Nothing to sync' };
+
+  // Chunk at 500 metrics per request — A3's cap is 1000/business; leave headroom.
+  const CHUNK_SIZE = 500;
+  let lastSummary;
+  try {
+    for (let i = 0; i < metrics.length; i += CHUNK_SIZE) {
+      const chunk = metrics.slice(i, i + CHUNK_SIZE);
+      const payload = GBPMetricsPayload.buildMetricsPayload(business, chunk);
+      const b = payload.businesses[0];
+      if (!b.metrics.length) continue; // whole chunk was unsupported metricTypes
+
+      const resp = await fetch(`${BACKEND_URL}/api/ingest/metrics`, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${key}`,
+          'x-extension-id': chrome.runtime.id,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => resp.statusText);
+        console.warn(`[GBP BG] Metrics backend sync HTTP ${resp.status}:`, text);
+        return { ok: false, error: `HTTP ${resp.status}` };
+      }
+
+      const data = await resp.json();
+      lastSummary = data.summary;
+    }
+    console.log('[GBP BG] Metrics synced to backend:', lastSummary);
+    return { ok: true, summary: lastSummary };
+  } catch (err) {
+    console.warn('[GBP BG] Metrics backend sync failed (offline?):', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Push ALL local metrics to the Postgres backend, grouped by business.
+ * Mirrors pushAllToServer() above but targets /api/ingest/metrics. Manual
+ * trigger only (message handler 'pushAllMetricsToBackend') — intentionally
+ * NOT wired into autoSync() yet; an untested bulk push should not fire
+ * automatically on first install.
+ *
+ * @returns {Promise<{success:boolean, businesses?:number, error?:string}>}
+ */
+async function pushAllMetricsToBackend() {
+  const enabled = await metricsBackendSyncEnabled();
+  if (!enabled) return { success: false, error: 'disabled' };
+
+  const key = await getBackendKey();
+  if (!key) return { success: false, error: 'Backend not connected' };
+
+  try {
+    const exportData = await GBPStorage.exportAll();
+    const businesses = exportData.businesses || [];
+    const allMetrics = exportData.metrics   || [];
+
+    let pushedBusinesses = 0;
+    for (const biz of businesses) {
+      const bizMetrics = allMetrics.filter(m => m.businessId === biz.id);
+      if (!bizMetrics.length) continue;
+
+      const result = await syncMetricsToBackend(biz, bizMetrics);
+      if (result.ok) {
+        pushedBusinesses++;
+        console.log(`[GBP BG] pushAllMetricsToBackend: ${biz.name || biz.id} synced`);
+      } else {
+        console.warn(`[GBP BG] pushAllMetricsToBackend: ${biz.name || biz.id} failed:`, result.error);
+      }
+    }
+
+    return { success: true, businesses: pushedBusinesses };
+  } catch (err) {
+    console.warn('[GBP BG] pushAllMetricsToBackend failed:', err.message);
     return { success: false, error: err.message };
   }
 }
@@ -803,6 +922,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 derivedFrom: { year: m.year, month: m.month, yoyPercent: m.yoyPercent },
                 collectedAt: Date.now(),
               }).catch(() => {});
+
+              // Also push the derived record to the Postgres backend
+              // (fire-and-forget, gated by the kill switch — see
+              // syncMetricsToBackend; never fails the local save).
+              syncMetricsToBackend(msg.business, [{
+                businessId: m.businessId,
+                metricType: m.metricType,
+                year:       prevYear,
+                month:      m.month,
+                total:      prevTotal,
+                daily:      [],
+                yoyPercent: null,
+                derived:    true,
+                collectedAt: Date.now(),
+              }]).catch(() => {});
             }
           }
         }
@@ -826,6 +960,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           msg.business?.name || m.businessId,
           metricForServer
         ).catch(() => {});   // never fail the local save because of server issues
+
+        // ── Also push the real record to the Postgres backend ────────────
+        // Fire-and-forget, gated by the kill switch — see
+        // syncMetricsToBackend. Never fails the local save or the SQLite
+        // sync above.
+        syncMetricsToBackend(msg.business, [metricForServer]).catch(() => {});
       })
       .then(() => sendResponse({
         success: true,
@@ -908,6 +1048,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'pushAllToServer') {
     GBPStorage.open()
       .then(() => pushAllToServer())
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  // ── Push ALL local metrics to the Postgres backend (manual trigger only —
+  //    see pushAllMetricsToBackend(); not wired into autoSync yet) ──────────
+  if (msg.action === 'pushAllMetricsToBackend') {
+    GBPStorage.open()
+      .then(() => pushAllMetricsToBackend())
       .then(result => sendResponse(result))
       .catch(e => sendResponse({ success: false, error: e.message }));
     return true;

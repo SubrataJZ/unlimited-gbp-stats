@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.0] - 2026-07-25
+- **Added: performance metrics are now also sent to the Postgres backend, alongside the existing sync server.** This is a dual-write — the existing sync path is unchanged and remains the source of truth, and the new push is best-effort: if it fails, nothing else is affected and your local data is untouched. It is the first step in moving metrics off the legacy sync server so history, reports and year-over-year comparisons can live in one place with reviews.
+- Can be turned off without an update by setting `gbpBackendMetricsSync` to `false` in extension storage.
+- Requires a backend that exposes `POST /api/ingest/metrics`; against an older backend the push simply fails silently and the extension carries on as before.
+
 ## [1.16.2] - 2026-07-25
 - **Fixed: the collector panel failed to appear at all after the extension was reloaded or updated with a Google tab still open.** The panel's footer read the version via `chrome.runtime.getManifest()` from inside a template literal, and `chrome.runtime` becomes undefined once the extension context is invalidated. Because the throw happened while the HTML string was being built — before the panel was added to the page — one cosmetic version label took down the entire panel and every button on it, with the only clue being a `getManifest` error in the console. Version lookup is now guarded and fails to an empty label; the panel always renders.
 
