@@ -61,3 +61,14 @@ prisma/.env
 Thumbs.db
 .AppleDouble
 .LSOverride
+
+# ─── Agent tooling scratch (NOT product code) ───────────────────────────
+# These land in the working tree from local AI-agent tooling and are unrelated
+# to this product. `main` auto-deploys, so a stray `git add -A` that swept them
+# in would push ~8MB of foreign code straight to production.
+.claude-flow/
+claude-flow.config.json
+.swarm/
+data/memory/
+claude-usage/
+claude-usage-monitor/
