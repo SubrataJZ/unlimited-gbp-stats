@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.16.2] - 2026-07-25
+- **Fixed: the collector panel failed to appear at all after the extension was reloaded or updated with a Google tab still open.** The panel's footer read the version via `chrome.runtime.getManifest()` from inside a template literal, and `chrome.runtime` becomes undefined once the extension context is invalidated. Because the throw happened while the HTML string was being built — before the panel was added to the page — one cosmetic version label took down the entire panel and every button on it, with the only clue being a `getManifest` error in the console. Version lookup is now guarded and fails to an empty label; the panel always renders.
+
 ## [1.16.1] - 2026-07-17
 - **Fixed: assisted AI-reply drafts weren't reaching Google's reply box.** The card element carrying Google's review id doesn't contain the Reply button/textarea on `business.google.com/reviews` — the real card is its parent. Live-verified against a real merchant session and fixed the DOM matching accordingly; also hardened the "never click Post" safety guard with an explicit check against Google's verified submit-button identifier.
 
