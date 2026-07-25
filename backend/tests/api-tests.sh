@@ -104,15 +104,15 @@ test_health_check() {
 
 test_ingest_without_auth() {
   print_header "Test 2: Ingest Without Authentication (Should Fail)"
-  print_test "POST /api/ingest (no auth header)"
+  print_test "POST /api/ingest/metrics (no auth header)"
 
-  response=$(curl -s -X POST "$API_URL/api/ingest" \
+  response=$(curl -s -X POST "$API_URL/api/ingest/metrics" \
     -H "Content-Type: application/json" \
-    -d '{"metrics":[]}')
+    -d '{"businesses":[]}')
 
-  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest" \
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest/metrics" \
     -H "Content-Type: application/json" \
-    -d '{"metrics":[]}')
+    -d '{"businesses":[]}')
 
   if [ "$status" = "401" ]; then
     print_success "Correctly rejected request without API key (401 Unauthorized)"
@@ -124,17 +124,17 @@ test_ingest_without_auth() {
 
 test_ingest_with_invalid_key() {
   print_header "Test 3: Ingest With Invalid API Key (Should Fail)"
-  print_test "POST /api/ingest (invalid API key)"
+  print_test "POST /api/ingest/metrics (invalid API key)"
 
-  response=$(curl -s -X POST "$API_URL/api/ingest" \
+  response=$(curl -s -X POST "$API_URL/api/ingest/metrics" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer invalid-key-12345" \
-    -d '{"metrics":[]}')
+    -d '{"businesses":[]}')
 
-  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest" \
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest/metrics" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer invalid-key-12345" \
-    -d '{"metrics":[]}')
+    -d '{"businesses":[]}')
 
   if [ "$status" = "401" ]; then
     print_success "Correctly rejected request with invalid API key (401 Unauthorized)"
@@ -144,250 +144,62 @@ test_ingest_with_invalid_key() {
   fi
 }
 
-test_ingest_empty_metrics() {
-  print_header "Test 4: Ingest Empty Metrics Array (Should Fail)"
-  print_test "POST /api/ingest (empty metrics array)"
-
-  response=$(curl -s -X POST "$API_URL/api/ingest" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d '{"metrics":[]}')
-
-  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d '{"metrics":[]}')
-
-  if [ "$status" = "400" ]; then
-    print_success "Correctly rejected empty metrics array (400 Bad Request)"
-    print_info "Response: $response"
-  else
-    print_error "Should have rejected with 400, got $status"
-  fi
-}
-
-test_ingest_single_metric() {
-  print_header "Test 5: Ingest Single Valid Metric (Should Succeed)"
-  print_test "POST /api/ingest (valid metric)"
-
-  # Generate today's date
-  today=$(date +%Y-%m-%d)
-
-  payload=$(cat <<EOF
-{
-  "metrics": [
-    {
-      "googleLocationId": "9876543210",
-      "date": "$today",
-      "metricType": "views",
-      "value": 150
-    }
-  ]
-}
-EOF
-)
-
-  response=$(curl -s -X POST "$API_URL/api/ingest" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d "$payload")
-
-  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d "$payload")
-
-  if [ "$status" = "200" ]; then
-    print_success "Successfully ingested metric (200 OK)"
-    print_info "Response: $response"
-  else
-    print_error "Failed to ingest metric, got status $status"
-    print_info "Response: $response"
-  fi
-}
-
-test_ingest_multiple_metrics() {
-  print_header "Test 6: Ingest Multiple Metrics (Should Succeed)"
-  print_test "POST /api/ingest (batch of 5 metrics)"
+test_metrics_rejects_static_key() {
+  print_header "Test 4: Metrics Ingest Rejects Legacy Static Key (Tenancy Guard)"
+  print_test "POST /api/ingest/metrics (legacy static EXTENSION_INGESTION_KEY, valid payload)"
 
   today=$(date +%Y-%m-%d)
-  # Use a fixed date instead of relative date for cross-platform compatibility
-  yesterday="2026-05-01"
+  year=$(date +%Y)
+  # 10# forces base-10 so a zero-padded month ("07") does not become invalid
+  # JSON — a bare 07 is a JSON syntax error, not the number seven.
+  month=$((10#$(date +%m)))
 
+  # This payload must stay VALID against the /api/ingest/metrics validator.
+  # The point of the test is that a 401 proves auth rejected the shared key
+  # BEFORE the body was even looked at. An invalid payload would muddy that:
+  # a 400 could then mean either "bad body" or "guard moved", and the test
+  # would no longer isolate the tenancy property it exists to protect.
+  # Field names are deliberately the NEW ones (name/googlePlaceId/total) —
+  # the old controller's googleLocationId/value vocabulary was deleted in A4.
   payload=$(cat <<EOF
 {
-  "metrics": [
+  "businesses": [
     {
-      "googleLocationId": "9876543210",
-      "date": "$today",
-      "metricType": "views",
-      "value": 200
-    },
-    {
-      "googleLocationId": "9876543210",
-      "date": "$today",
-      "metricType": "actions",
-      "value": 45
-    },
-    {
-      "googleLocationId": "9876543210",
-      "date": "$today",
-      "metricType": "phone_calls",
-      "value": 12
-    },
-    {
-      "googleLocationId": "9876543211",
-      "date": "$yesterday",
-      "metricType": "views",
-      "value": 180
-    },
-    {
-      "googleLocationId": "9876543211",
-      "date": "$yesterday",
-      "metricType": "website_clicks",
-      "value": 25
+      "name": "CI Tenancy Guard Fixture",
+      "googlePlaceId": "9876543210",
+      "metrics": [
+        {
+          "metricType": "overview",
+          "year": $year,
+          "month": $month,
+          "total": 150,
+          "collectedAt": "${today}T00:00:00.000Z"
+        }
+      ]
     }
   ]
 }
 EOF
 )
 
-  response=$(curl -s -X POST "$API_URL/api/ingest" \
+  response=$(curl -s -X POST "$API_URL/api/ingest/metrics" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $EXTENSION_KEY" \
     -H "X-Extension-ID: $EXTENSION_ID" \
     -d "$payload")
 
-  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest" \
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest/metrics" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $EXTENSION_KEY" \
     -H "X-Extension-ID: $EXTENSION_ID" \
     -d "$payload")
 
-  if [ "$status" = "200" ]; then
-    print_success "Successfully ingested 5 metrics (200 OK)"
+  if [ "$status" = "401" ]; then
+    print_success "Correctly rejected the shared static key (no user identity) with 401"
     print_info "Response: $response"
   else
-    print_error "Failed to ingest metrics, got status $status"
-  fi
-}
-
-test_ingest_idempotency() {
-  print_header "Test 7: Test Idempotency (Same Metric Twice - Should Update)"
-  print_test "POST /api/ingest (same metric pushed twice)"
-
-  today=$(date +%Y-%m-%d)
-
-  payload=$(cat <<EOF
-{
-  "metrics": [
-    {
-      "googleLocationId": "9876543212",
-      "date": "$today",
-      "metricType": "views",
-      "value": 100
-    }
-  ]
-}
-EOF
-)
-
-  # Push first time
-  response1=$(curl -s -X POST "$API_URL/api/ingest" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d "$payload")
-
-  print_info "First push response: $response1"
-
-  # Update the payload with a different value
-  payload2=$(cat <<EOF
-{
-  "metrics": [
-    {
-      "googleLocationId": "9876543212",
-      "date": "$today",
-      "metricType": "views",
-      "value": 200
-    }
-  ]
-}
-EOF
-)
-
-  # Push second time with updated value
-  response2=$(curl -s -X POST "$API_URL/api/ingest" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d "$payload2")
-
-  if echo "$response2" | grep -q '"successful":1'; then
-    print_success "Idempotent upsert working correctly"
-    print_info "Second push response: $response2"
-  else
-    print_error "Idempotent upsert may have failed"
-    print_info "Response: $response2"
-  fi
-}
-
-test_ingest_invalid_metric_type() {
-  print_header "Test 8: Ingest With Invalid Metric Type (Should Fail)"
-  print_test "POST /api/ingest (invalid metric type)"
-
-  today=$(date +%Y-%m-%d)
-
-  payload=$(cat <<EOF
-{
-  "metrics": [
-    {
-      "googleLocationId": "9876543210",
-      "date": "$today",
-      "metricType": "invalid_metric",
-      "value": 150
-    }
-  ]
-}
-EOF
-)
-
-  response=$(curl -s -X POST "$API_URL/api/ingest" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d "$payload")
-
-  if echo "$response" | grep -q '"failed":1'; then
-    print_success "Correctly rejected invalid metric type"
+    print_error "Should have rejected with 401, got $status (static key must never ingest metrics)"
     print_info "Response: $response"
-  else
-    print_error "Should have rejected invalid metric type"
-    print_info "Response: $response"
-  fi
-}
-
-test_ingest_status() {
-  print_header "Test 9: Get Ingestion Status"
-  print_test "GET /api/ingest/status"
-
-  response=$(curl -s "$API_URL/api/ingest/status" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID")
-
-  status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/ingest/status" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID")
-
-  if [ "$status" = "200" ]; then
-    print_success "Successfully retrieved ingestion status (200 OK)"
-    print_info "Response: $response"
-  else
-    print_error "Failed to get ingestion status, got status $status"
   fi
 }
 
@@ -442,12 +254,7 @@ main() {
   test_health_check || true
   test_ingest_without_auth || true
   test_ingest_with_invalid_key || true
-  test_ingest_empty_metrics || true
-  test_ingest_single_metric || true
-  test_ingest_multiple_metrics || true
-  test_ingest_idempotency || true
-  test_ingest_invalid_metric_type || true
-  test_ingest_status || true
+  test_metrics_rejects_static_key || true
   test_locations_endpoint || true
 
   print_header "Test Results Summary"
