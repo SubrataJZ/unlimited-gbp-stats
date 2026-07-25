@@ -21,17 +21,9 @@ declare global {
 /**
  * Middleware: Validate Extension API Key (database-backed, bcrypt-hashed)
  *
- * Accepts two formats:
- *   1. Dynamic per-user key:  "zx_<64-hex-chars>"  — looked up via DB
- *   2. Legacy static key:     EXTENSION_INGESTION_KEY env var  — fallback during migration
- *
- * NOTE (2026-07): a prior in-progress change on this branch removed path 2 as a
- * deliberate hardening step (shared secret, no user identity) but that removal
- * broke backend/tests/api-tests.sh + docker-compose.yml's CI fixture, which
- * both still rely on the static EXTENSION_INGESTION_KEY. Restored here so this
- * commit (the AI assisted-reply feature) doesn't ship an unrelated, only
- * partially-migrated CI regression. The legacy-removal + CI-fixture update
- * should land together as its own deliberate change.
+ * Accepts a dynamic per-user key: "zx_<64-hex-chars>" — looked up via DB.
+ * The legacy static shared-secret fallback (no user identity) has been
+ * removed; every request now resolves to a real req.user.
  */
 export const validateExtensionKey = async (
   req: Request,
@@ -68,14 +60,6 @@ export const validateExtensionKey = async (
       req.apiKey = submittedKey.substring(0, 10) + '...'; // Never log full key
       req.extensionId = (req.headers['x-extension-id'] as string) || 'unknown';
       logger.debug(`Dynamic key authenticated for user ${userId}`);
-      return next();
-    }
-
-    // Path 2: legacy static key — fallback during transition period
-    const staticKey = process.env.EXTENSION_INGESTION_KEY;
-    if (staticKey && submittedKey === staticKey) {
-      req.extensionId = (req.headers['x-extension-id'] as string) || 'legacy';
-      logger.debug('Legacy static key authenticated');
       return next();
     }
 

@@ -20,7 +20,6 @@ NC='\033[0m' # No Color
 
 # Configuration
 API_URL="http://localhost:3001"
-EXTENSION_KEY="test-extension-key-12345"
 EXTENSION_ID="test-extension-id-chrome"
 
 # Test counters
@@ -144,64 +143,15 @@ test_ingest_with_invalid_key() {
   fi
 }
 
-test_metrics_rejects_static_key() {
-  print_header "Test 4: Metrics Ingest Rejects Legacy Static Key (Tenancy Guard)"
-  print_test "POST /api/ingest/metrics (legacy static EXTENSION_INGESTION_KEY, valid payload)"
-
-  today=$(date +%Y-%m-%d)
-  year=$(date +%Y)
-  # 10# forces base-10 so a zero-padded month ("07") does not become invalid
-  # JSON — a bare 07 is a JSON syntax error, not the number seven.
-  month=$((10#$(date +%m)))
-
-  # This payload must stay VALID against the /api/ingest/metrics validator.
-  # The point of the test is that a 401 proves auth rejected the shared key
-  # BEFORE the body was even looked at. An invalid payload would muddy that:
-  # a 400 could then mean either "bad body" or "guard moved", and the test
-  # would no longer isolate the tenancy property it exists to protect.
-  # Field names are deliberately the NEW ones (name/googlePlaceId/total) —
-  # the old controller's googleLocationId/value vocabulary was deleted in A4.
-  payload=$(cat <<EOF
-{
-  "businesses": [
-    {
-      "name": "CI Tenancy Guard Fixture",
-      "googlePlaceId": "9876543210",
-      "metrics": [
-        {
-          "metricType": "overview",
-          "year": $year,
-          "month": $month,
-          "total": 150,
-          "collectedAt": "${today}T00:00:00.000Z"
-        }
-      ]
-    }
-  ]
-}
-EOF
-)
-
-  response=$(curl -s -X POST "$API_URL/api/ingest/metrics" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d "$payload")
-
-  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest/metrics" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $EXTENSION_KEY" \
-    -H "X-Extension-ID: $EXTENSION_ID" \
-    -d "$payload")
-
-  if [ "$status" = "401" ]; then
-    print_success "Correctly rejected the shared static key (no user identity) with 401"
-    print_info "Response: $response"
-  else
-    print_error "Should have rejected with 401, got $status (static key must never ingest metrics)"
-    print_info "Response: $response"
-  fi
-}
+# NOTE: a prior "Test 4: Metrics Ingest Rejects Legacy Static Key (Tenancy
+# Guard)" test (test_metrics_rejects_static_key) lived here. It sent a
+# hardcoded shared-secret bearer token and asserted 401. Once the legacy
+# EXTENSION_INGESTION_KEY static-key auth path was removed from
+# auth.middleware.ts, that token became just an arbitrary wrong credential —
+# functionally identical to test_ingest_with_invalid_key below (both assert
+# "an unrecognized bearer token gets 401"). Deleted as redundant rather than
+# renamed, since keeping two tests asserting the same thing under different
+# names invites confusion about what property each is meant to isolate.
 
 test_locations_endpoint() {
   print_header "Test 10: Get Locations Endpoint"
@@ -244,7 +194,6 @@ main() {
   echo -e "${BLUE}╚════════════════════════════════════════════════════╝${NC}"
   echo ""
   print_info "API URL: $API_URL"
-  print_info "Extension Key: $EXTENSION_KEY"
   print_info "Extension ID: $EXTENSION_ID"
 
   check_dependencies
@@ -254,7 +203,6 @@ main() {
   test_health_check || true
   test_ingest_without_auth || true
   test_ingest_with_invalid_key || true
-  test_metrics_rejects_static_key || true
   test_locations_endpoint || true
 
   print_header "Test Results Summary"

@@ -37,7 +37,6 @@ services:
       DATABASE_URL: postgresql://${DB_USER:-gbp_dev}:${DB_PASSWORD:-dev_password_change_me}@postgres:5432/${DB_NAME:-gbp_database}
 
       # Chrome Extension Security
-      EXTENSION_INGESTION_KEY: ${EXTENSION_INGESTION_KEY:-test-extension-key-12345}
       EXTENSION_ID: ${EXTENSION_ID:-test-extension-id-chrome}
 
       # Google OAuth 2.0
