@@ -1213,11 +1213,31 @@
     return true;
   }
 
+  // ── Extension version, safely ───────────────────────────────────────────
+  // `chrome.runtime` is undefined once the extension context is invalidated —
+  // i.e. the extension was reloaded or updated while this page stayed open —
+  // and in some restricted frames. Reading .getManifest() there throws.
+  //
+  // That mattered far more than a missing version number: the call sat inside
+  // injectPanel's template literal, so the throw happened during string
+  // evaluation, BEFORE document.body.appendChild(panel). One cosmetic label
+  // took the whole panel down and the user lost every button.
+  function getExtensionVersion() {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.getManifest) return null;
+      return chrome.runtime.getManifest().version || null;
+    } catch (_) {
+      return null; // context invalidated between the guard and the call
+    }
+  }
+
   // ── Inject floating panel ───────────────────────────────────────────────
   function injectPanel() {
     if (document.getElementById('gbp-stats-panel')) return;
     const panel = document.createElement('div');
     panel.id = 'gbp-stats-panel';
+    const ver = getExtensionVersion();
+    const verLabel = ver ? `v${ver} &nbsp;&middot;&nbsp; ` : '';
     panel.innerHTML = `
       <div class="gbp-stats-header">
         <svg width="18" height="18" viewBox="0 0 128 128"><rect width="128" height="128" rx="16" fill="#1a1a2e"/><polyline points="20,90 40,70 55,80 75,40 95,55 110,30" fill="none" stroke="#8ab4f8" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1230,7 +1250,7 @@
           <button id="gbp-update-latest">🔄 Update Latest Data</button>
           <button id="gbp-save-current">Save Current View</button>
           <button id="gbp-fetch-tab">Fetch All Months (Tab)</button>
-          <button id="gbp-fetch-all">⭐ Fetch Everything</button>
+          <button id="gbp-fetch-all">⭐ Fetch All Performance</button>
           <button id="gbp-fetch-reviews">⭐ Fetch Reviews</button>
           <button id="gbp-auto-draft-replies" style="display:none">🤖 Auto-draft replies</button>
         </div>
@@ -1243,7 +1263,7 @@
           <button id="gbp-open-dashboard">Open Dashboard</button>
         </div>
         <div style="text-align:center;padding:4px 0 2px;font-size:9px;color:#fff;letter-spacing:0.3px">
-          v${chrome.runtime.getManifest().version} &nbsp;&middot;&nbsp; <span style="background:linear-gradient(90deg,#8ab4f8,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:700">ZixAI</span>
+          ${verLabel}<span style="background:linear-gradient(90deg,#8ab4f8,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:700">ZixAI</span>
         </div>
       </div>
     `;

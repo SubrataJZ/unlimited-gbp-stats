@@ -3,7 +3,7 @@ import { asyncHandler } from '../middlewares/error.middleware';
 import { auditEvents } from '../middlewares/audit.middleware';
 import { ValidationError, AuthenticationError } from '../utils/errors';
 import logger from '../utils/logger';
-import { resolveOrgId, resolveMembership, ingestIntel as runIngestIntel, getIntelForOrg, IncomingBusiness, IncomingSnapshot, IncomingReview } from '../services/intel.service';
+import { resolveOrgId, resolveMembership, ingestIntel as runIngestIntel, getIntelForOrg, getSyncBundleForOrg, IncomingBusiness, IncomingSnapshot, IncomingReview } from '../services/intel.service';
 import { getAuditForBusiness } from '../services/audit.service';
 import { renderAuditReportHtml } from '../services/audit.report';
 import { prisma } from '../index';
@@ -26,6 +26,35 @@ function parseDateUTCMidnight(value: unknown): Date {
 function todayUTC(): Date {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+/**
+ * Parse the optional `?since=` query param. Accepts an ISO-8601 date string
+ * or an epoch-milliseconds integer (as a string, per the query-string
+ * contract). Returns undefined when absent. Throws ValidationError when
+ * present but unparseable.
+ */
+function parseSince(value: unknown): Date | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') {
+    throw new ValidationError('"since" must be a string (ISO-8601 date or epoch milliseconds)');
+  }
+
+  // Epoch milliseconds — an integer string
+  if (/^\d+$/.test(value)) {
+    const ms = Number(value);
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) {
+      throw new ValidationError('"since" is not a valid epoch-milliseconds timestamp');
+    }
+    return d;
+  }
+
+  const d = new Date(value);
+  if (isNaN(d.getTime())) {
+    throw new ValidationError('"since" is not a valid ISO-8601 date string');
+  }
+  return d;
 }
 
 // ── Validation ─────────────────────────────────────────────────────────────────
@@ -319,6 +348,42 @@ export const getIntel = asyncHandler(async (req: Request, res: Response) => {
   const businesses = await getIntelForOrg(orgId);
 
   res.status(200).json({ ok: true, businesses });
+});
+
+/**
+ * GET /api/ingest/sync
+ *
+ * Returns the authenticated user's tracked businesses with FULL metrics
+ * history plus review snapshots/reviews in a single response — the combined
+ * read the dashboard needs so performance and reviews never fall out of
+ * sync with each other. Optional `?since=` (ISO-8601 or epoch-ms) limits
+ * each child collection to rows touched at or after that time; businesses
+ * are always included (even with empty arrays) so the client learns about
+ * new ones. Requires a per-user API key (zx_...).
+ *
+ * @route  GET /api/ingest/sync
+ * @access Private — per-user extension key (zx_...) only
+ */
+export const getSyncBundle = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError(
+      'Sync bundle read requires a per-user API key (zx_...)'
+    );
+  }
+
+  const since = parseSince(req.query.since);
+
+  // Stamp the cursor BEFORE reading, not after. A row committed while these
+  // queries are running would otherwise fall in the gap: it is absent from
+  // this response, yet older than a syncedAt taken afterwards, so the next
+  // incremental sync would skip it forever. Stamping first can only cause a
+  // harmless re-fetch, and every client-side merge is idempotent.
+  const syncedAt = new Date().toISOString();
+
+  const orgId = await resolveOrgId(req.user.id);
+  const businesses = await getSyncBundleForOrg(orgId, since);
+
+  res.status(200).json({ ok: true, businesses, syncedAt });
 });
 
 /**

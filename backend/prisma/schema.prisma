@@ -243,6 +243,7 @@ model TrackedBusiness {
   org            Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
   snapshots      ProfileSnapshot[]
   scrapedReviews ScrapedReview[]
+  metricMonths   MetricMonth[]
   context        BusinessContext?
 
   @@unique([orgId, googlePlaceId])
@@ -266,6 +267,62 @@ model ProfileSnapshot {
   @@unique([trackedBusinessId, capturedOn])
   @@index([trackedBusinessId])
   @@map("profile_snapshots")
+}
+
+/// Monthly GBP performance metrics scraped by the extension.
+///
+/// Deliberately month-grained, unlike the older daily `Metric` model: the
+/// extension's unit of collection is one month of one metric type, carrying a
+/// `daily` array plus a YoY percentage and two nested breakdowns that have no
+/// place in a flat (date, value) row. Forcing that shape into `Metric` is what
+/// left the metrics pipeline stranded on the legacy SQLite server.
+///
+/// Tenancy scopes through TrackedBusiness -> Organization, matching
+/// ProfileSnapshot and ScrapedReview. There is no denormalized orgId, so
+/// org-scoping cannot drift out of sync with the parent row.
+model MetricMonth {
+  id                String @id @default(cuid())
+  trackedBusinessId String @map("tracked_business_id")
+
+  /// Extension vocabulary: overview | calls | chat_clicks | bookings |
+  /// directions | website_clicks. Validated at the ingest boundary, not here.
+  metricType String @map("metric_type")
+  year       Int
+  month      Int
+
+  total Int
+
+  /// One entry per day of the month, in day order. Absent for derived rows.
+  daily Json?
+
+  /// Year-over-year change as reported by Google, e.g. -12.5 for -12.5%.
+  yoyPercent Float? @map("yoy_percent")
+
+  /// { searchMobile, searchDesktop, mapsMobile, mapsDesktop }
+  breakdown Json?
+
+  /// [{ term, count }]
+  searchTerms Json? @map("search_terms")
+
+  /// True when back-computed from a later month's YoY percentage rather than
+  /// scraped directly. A derived row must never overwrite a scraped one.
+  isDerived Boolean @default(false) @map("is_derived")
+
+  /// Provenance, e.g. "extension" | "sqlite-backfill".
+  source String @default("extension")
+
+  /// When the extension captured this, as opposed to when we stored it.
+  collectedAt DateTime? @map("collected_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  trackedBusiness TrackedBusiness @relation(fields: [trackedBusinessId], references: [id], onDelete: Cascade)
+
+  @@unique([trackedBusinessId, metricType, year, month])
+  @@index([trackedBusinessId])
+  @@index([year, month])
+  @@map("metric_months")
 }
 
 model ScrapedReview {

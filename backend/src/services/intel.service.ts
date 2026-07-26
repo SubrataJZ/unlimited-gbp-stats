@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../index';
 import logger from '../utils/logger';
 
@@ -139,6 +140,118 @@ export async function getIntelForOrg(orgId: string) {
   }));
 }
 
+/**
+ * Read back all tracked businesses for an org, each with its FULL metrics
+ * history plus the same snapshot/review shape as getIntelForOrg. Powers the
+ * extension's combined sync (performance + reviews in one round trip).
+ *
+ * When `since` is provided, each child table is filtered to rows touched at
+ * or after `since` (using whichever timestamp column that model actually
+ * has: MetricMonth.updatedAt, ProfileSnapshot.capturedOn, ScrapedReview.
+ * scrapedAt). Businesses are always returned — even with empty child arrays
+ * — so the client learns about businesses it doesn't know about yet.
+ *
+ * ProfileSnapshot.capturedOn is a DATE (@db.Date → UTC midnight), not a
+ * timestamp, so it is compared against `since` floored to UTC midnight.
+ * Comparing it to a mid-day `since` would drop the SAME day's snapshot on
+ * every re-sync after the first — the row's capturedOn (00:00Z) sorts before
+ * an afternoon cursor. Over-fetching one day is the correct trade here:
+ * snapshots are one row per business per day and the client upsert is
+ * idempotent, whereas a missed snapshot silently blanks the Reviews view.
+ *
+ * Mirrors getIntelForOrg's approach: query child tables directly rather than
+ * via relation includes, then group in JS.
+ */
+export async function getSyncBundleForOrg(orgId: string, since?: Date) {
+  const businesses = await prisma.trackedBusiness.findMany({
+    where: { orgId },
+    select: {
+      id: true,
+      name: true,
+      googlePlaceId: true,
+      address: true,
+      logoUrl: true,
+      isOwn: true,
+    },
+  });
+
+  if (businesses.length === 0) return [];
+
+  const ids = businesses.map((b) => b.id);
+
+  // See the doc comment: capturedOn is a DATE, so the cursor must be floored
+  // to UTC midnight or today's snapshot is excluded from every re-sync.
+  const sinceDay = since
+    ? new Date(Date.UTC(since.getUTCFullYear(), since.getUTCMonth(), since.getUTCDate()))
+    : undefined;
+
+  const [metrics, snapshots, reviews] = await Promise.all([
+    prisma.metricMonth.findMany({
+      where: {
+        trackedBusinessId: { in: ids },
+        ...(since ? { updatedAt: { gte: since } } : {}),
+      },
+      select: {
+        trackedBusinessId: true,
+        metricType: true,
+        year: true,
+        month: true,
+        total: true,
+        daily: true,
+        yoyPercent: true,
+        breakdown: true,
+        searchTerms: true,
+        isDerived: true,
+        source: true,
+        collectedAt: true,
+      },
+    }),
+    prisma.profileSnapshot.findMany({
+      where: {
+        trackedBusinessId: { in: ids },
+        ...(sinceDay ? { capturedOn: { gte: sinceDay } } : {}),
+      },
+      orderBy: { capturedOn: 'asc' },
+      select: {
+        trackedBusinessId: true,
+        capturedOn: true,
+        totalReviews: true,
+        displayRating: true,
+        trueAverage: true,
+        reviewsWithPhotos: true,
+        localGuideReviews: true,
+      },
+    }),
+    prisma.scrapedReview.findMany({
+      where: {
+        trackedBusinessId: { in: ids },
+        ...(since ? { scrapedAt: { gte: since } } : {}),
+      },
+      orderBy: { reviewedAt: 'desc' },
+      take: 1000,
+      select: {
+        trackedBusinessId: true,
+        externalReviewId: true,
+        rating: true,
+        text: true,
+        authorName: true,
+        isLocalGuide: true,
+        hasPhoto: true,
+        ownerResponded: true,
+        reviewedAt: true,
+      },
+    }),
+  ]);
+
+  // Group children under each business
+  return businesses.map((b) => ({
+    ...b,
+    metrics: metrics.filter((m) => m.trackedBusinessId === b.id),
+    snapshots: snapshots.filter((s) => s.trackedBusinessId === b.id),
+    reviews: reviews.filter((r) => r.trackedBusinessId === b.id),
+  }));
+}
+
 // ── Types mirroring the validated request payload ─────────────────────────────
 
 export interface IncomingSnapshot {
@@ -175,6 +288,173 @@ export interface IncomingBusiness {
   reviews?: IncomingReview[];
 }
 
+/**
+ * Resolve (or auto-create/reconcile) a TrackedBusiness row for an incoming
+ * business payload, within the caller's transaction.
+ *
+ * Reconciliation order: googlePlaceId exact match → name+address fuzzy match
+ * → create new. Mirrors the logic previously inlined in `ingestIntel`'s
+ * "Resolve / upsert TrackedBusiness" block — moved here verbatim so it can be
+ * reused by the metrics ingest path (metrics-intel.service.ts).
+ */
+export async function resolveTrackedBusiness(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  biz: {
+    name: string;
+    googlePlaceId?: string;
+    address?: string;
+    searchUrl?: string;
+    logoUrl?: string;
+    isOwn?: boolean;
+  }
+): Promise<{ trackedBusinessId: string; isNew: boolean }> {
+  let trackedBusinessId: string;
+  let bizIsNew: boolean;
+
+  if (biz.googlePlaceId) {
+    // Compound unique [orgId, googlePlaceId] exists in schema.
+    // The generated Prisma client (from an older migration snapshot) does
+    // not expose this compound key in WhereUniqueInput, so we use
+    // findFirst (scoped to orgId + googlePlaceId) then create-or-update.
+    const existing = await tx.trackedBusiness.findFirst({
+      where: { orgId, googlePlaceId: biz.googlePlaceId },
+      select: { id: true },
+    });
+
+    bizIsNew = !existing;
+
+    if (existing) {
+      await tx.trackedBusiness.update({
+        where: { id: existing.id },
+        data: {
+          name: biz.name,
+          address: biz.address ?? undefined,
+          searchUrl: biz.searchUrl ?? undefined,
+          logoUrl: biz.logoUrl ?? undefined,
+          isOwn: biz.isOwn ?? false,
+        },
+      });
+      trackedBusinessId = existing.id;
+      logger.info('[reconcile] matched by googlePlaceId', {
+        orgId,
+        googlePlaceId: biz.googlePlaceId,
+        trackedBusinessId: existing.id,
+      });
+    } else {
+      // Phase C: name+address reconciliation before creating a new row.
+      // Catches cases where the same business was previously stored under a
+      // different id (slug vs CID vs local-id).
+      let reconciled: { id: string; googlePlaceId: string | null } | null = null;
+
+      if (biz.name) {
+        const candidates = await tx.trackedBusiness.findMany({
+          where: { orgId },
+          select: { id: true, googlePlaceId: true, name: true, address: true },
+        });
+
+        const incomingName = normalizeForMatch(biz.name);
+        const incomingAddr = biz.address ? normalizeForMatch(biz.address) : null;
+
+        for (const c of candidates) {
+          if (normalizeForMatch(c.name) !== incomingName) continue;
+          // If both have an address, require it to match too
+          if (incomingAddr && c.address && normalizeForMatch(c.address) !== incomingAddr) continue;
+          reconciled = { id: c.id, googlePlaceId: c.googlePlaceId };
+          break;
+        }
+      }
+
+      if (reconciled) {
+        // Found a matching row — update it instead of creating a duplicate.
+        bizIsNew = false;
+        trackedBusinessId = reconciled.id;
+
+        // Backfill googlePlaceId only if the existing value is absent or a slug
+        const existingGpid = reconciled.googlePlaceId;
+        const shouldBackfill =
+          !existingGpid || existingGpid.startsWith('gbpx-');
+
+        logger.info('[reconcile] attached by name+address', {
+          orgId,
+          incomingName: biz.name,
+          incomingGpid: biz.googlePlaceId,
+          matchedId: reconciled.id,
+          priorGpid: existingGpid,
+          backfilled: shouldBackfill,
+        });
+
+        await tx.trackedBusiness.update({
+          where: { id: reconciled.id },
+          data: {
+            name: biz.name,
+            address: biz.address ?? undefined,
+            searchUrl: biz.searchUrl ?? undefined,
+            logoUrl: biz.logoUrl ?? undefined,
+            isOwn: biz.isOwn ?? false,
+            ...(shouldBackfill ? { googlePlaceId: biz.googlePlaceId } : {}),
+          },
+        });
+      } else {
+        const created = await tx.trackedBusiness.create({
+          data: {
+            orgId,
+            googlePlaceId: biz.googlePlaceId,
+            name: biz.name,
+            address: biz.address,
+            searchUrl: biz.searchUrl,
+            logoUrl: biz.logoUrl,
+            isOwn: biz.isOwn ?? false,
+          },
+          select: { id: true },
+        });
+        trackedBusinessId = created.id;
+        logger.info('[reconcile] created new', {
+          orgId,
+          googlePlaceId: biz.googlePlaceId,
+          name: biz.name,
+        });
+      }
+    }
+  } else {
+    // No googlePlaceId — fall back to name + address lookup
+    const existing = await tx.trackedBusiness.findFirst({
+      where: { orgId, name: biz.name, address: biz.address ?? null },
+      select: { id: true },
+    });
+
+    if (existing) {
+      bizIsNew = false;
+      trackedBusinessId = existing.id;
+
+      await tx.trackedBusiness.update({
+        where: { id: trackedBusinessId },
+        data: {
+          searchUrl: biz.searchUrl ?? undefined,
+          logoUrl: biz.logoUrl ?? undefined,
+          isOwn: biz.isOwn ?? false,
+        },
+      });
+    } else {
+      bizIsNew = true;
+      const created = await tx.trackedBusiness.create({
+        data: {
+          orgId,
+          name: biz.name,
+          address: biz.address,
+          searchUrl: biz.searchUrl,
+          logoUrl: biz.logoUrl,
+          isOwn: biz.isOwn ?? false,
+        },
+        select: { id: true },
+      });
+      trackedBusinessId = created.id;
+    }
+  }
+
+  return { trackedBusinessId, isNew: bizIsNew };
+}
+
 export interface IngestSummary {
   businessesCreated: number;
   businessesUpdated: number;
@@ -206,148 +486,11 @@ export async function ingestIntel(
     await prisma.$transaction(async (tx) => {
       // ── a. Resolve / upsert TrackedBusiness ──────────────────────────────
 
-      let trackedBusinessId: string;
-      let bizIsNew: boolean;
-
-      if (biz.googlePlaceId) {
-        // Compound unique [orgId, googlePlaceId] exists in schema.
-        // The generated Prisma client (from an older migration snapshot) does
-        // not expose this compound key in WhereUniqueInput, so we use
-        // findFirst (scoped to orgId + googlePlaceId) then create-or-update.
-        const existing = await tx.trackedBusiness.findFirst({
-          where: { orgId, googlePlaceId: biz.googlePlaceId },
-          select: { id: true },
-        });
-
-        bizIsNew = !existing;
-
-        if (existing) {
-          await tx.trackedBusiness.update({
-            where: { id: existing.id },
-            data: {
-              name: biz.name,
-              address: biz.address ?? undefined,
-              searchUrl: biz.searchUrl ?? undefined,
-              logoUrl: biz.logoUrl ?? undefined,
-              isOwn: biz.isOwn ?? false,
-            },
-          });
-          trackedBusinessId = existing.id;
-          logger.info('[reconcile] matched by googlePlaceId', {
-            orgId,
-            googlePlaceId: biz.googlePlaceId,
-            trackedBusinessId: existing.id,
-          });
-        } else {
-          // Phase C: name+address reconciliation before creating a new row.
-          // Catches cases where the same business was previously stored under a
-          // different id (slug vs CID vs local-id).
-          let reconciled: { id: string; googlePlaceId: string | null } | null = null;
-
-          if (biz.name) {
-            const candidates = await tx.trackedBusiness.findMany({
-              where: { orgId },
-              select: { id: true, googlePlaceId: true, name: true, address: true },
-            });
-
-            const incomingName = normalizeForMatch(biz.name);
-            const incomingAddr = biz.address ? normalizeForMatch(biz.address) : null;
-
-            for (const c of candidates) {
-              if (normalizeForMatch(c.name) !== incomingName) continue;
-              // If both have an address, require it to match too
-              if (incomingAddr && c.address && normalizeForMatch(c.address) !== incomingAddr) continue;
-              reconciled = { id: c.id, googlePlaceId: c.googlePlaceId };
-              break;
-            }
-          }
-
-          if (reconciled) {
-            // Found a matching row — update it instead of creating a duplicate.
-            bizIsNew = false;
-            trackedBusinessId = reconciled.id;
-
-            // Backfill googlePlaceId only if the existing value is absent or a slug
-            const existingGpid = reconciled.googlePlaceId;
-            const shouldBackfill =
-              !existingGpid || existingGpid.startsWith('gbpx-');
-
-            logger.info('[reconcile] attached by name+address', {
-              orgId,
-              incomingName: biz.name,
-              incomingGpid: biz.googlePlaceId,
-              matchedId: reconciled.id,
-              priorGpid: existingGpid,
-              backfilled: shouldBackfill,
-            });
-
-            await tx.trackedBusiness.update({
-              where: { id: reconciled.id },
-              data: {
-                name: biz.name,
-                address: biz.address ?? undefined,
-                searchUrl: biz.searchUrl ?? undefined,
-                logoUrl: biz.logoUrl ?? undefined,
-                isOwn: biz.isOwn ?? false,
-                ...(shouldBackfill ? { googlePlaceId: biz.googlePlaceId } : {}),
-              },
-            });
-          } else {
-            const created = await tx.trackedBusiness.create({
-              data: {
-                orgId,
-                googlePlaceId: biz.googlePlaceId,
-                name: biz.name,
-                address: biz.address,
-                searchUrl: biz.searchUrl,
-                logoUrl: biz.logoUrl,
-                isOwn: biz.isOwn ?? false,
-              },
-              select: { id: true },
-            });
-            trackedBusinessId = created.id;
-            logger.info('[reconcile] created new', {
-              orgId,
-              googlePlaceId: biz.googlePlaceId,
-              name: biz.name,
-            });
-          }
-        }
-      } else {
-        // No googlePlaceId — fall back to name + address lookup
-        const existing = await tx.trackedBusiness.findFirst({
-          where: { orgId, name: biz.name, address: biz.address ?? null },
-          select: { id: true },
-        });
-
-        if (existing) {
-          bizIsNew = false;
-          trackedBusinessId = existing.id;
-
-          await tx.trackedBusiness.update({
-            where: { id: trackedBusinessId },
-            data: {
-              searchUrl: biz.searchUrl ?? undefined,
-              logoUrl: biz.logoUrl ?? undefined,
-              isOwn: biz.isOwn ?? false,
-            },
-          });
-        } else {
-          bizIsNew = true;
-          const created = await tx.trackedBusiness.create({
-            data: {
-              orgId,
-              name: biz.name,
-              address: biz.address,
-              searchUrl: biz.searchUrl,
-              logoUrl: biz.logoUrl,
-              isOwn: biz.isOwn ?? false,
-            },
-            select: { id: true },
-          });
-          trackedBusinessId = created.id;
-        }
-      }
+      const { trackedBusinessId, isNew: bizIsNew } = await resolveTrackedBusiness(
+        tx,
+        orgId,
+        biz
+      );
 
       if (bizIsNew) {
         summary.businessesCreated++;

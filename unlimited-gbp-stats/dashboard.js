@@ -664,7 +664,39 @@
     generateInsights();
     renderDiscoverySection();
 
-    // Auto-pull from server in background (silent — no toast)
+    // ── Hydration ──
+    // v2: ONE call brings metrics and reviews down together, and both views
+    // render only after it settles. The old code fired two independent pulls
+    // and rendered immediately, so switching to Reviews before the review pull
+    // returned showed "No review data yet" over data that arrived a moment
+    // later — and the late re-render was skipped unless the Reviews tab
+    // happened to be open at callback time.
+    const v2 = await isSyncV2Enabled();
+
+    if (v2) {
+      setReviewsLoading(true);
+      const result = await new Promise(resolve =>
+        chrome.runtime.sendMessage({ action: 'hydrateBusiness', businessId }, resolve)
+      );
+      setReviewsLoading(false);
+
+      // The server may have folded this id into a canonical one. Follow it,
+      // otherwise we keep rendering the now-empty alias row.
+      if (result?.success && result.canonicalId && result.canonicalId !== businessId) {
+        state.businessId = result.canonicalId;
+        await loadBusinesses();
+        document.getElementById('businessSelect').value = result.canonicalId;
+      }
+
+      await loadMetricData();
+      renderCoverageGrid();
+      generateInsights();
+      await loadAndRenderReviews();
+      await refreshSyncIndicator();
+      return;
+    }
+
+    // v1 path — unchanged.
     if (_authUser) {
       doPullFromServer(businessId, true);
       // Pull review data too, then refresh the reviews view if it's open
@@ -675,6 +707,59 @@
 
     // Reset to performance view on business change; preload review data
     loadAndRenderReviews();
+  }
+
+  /** Is the v2 sync path active? Cached per page load. */
+  let _syncV2 = null;
+  async function isSyncV2Enabled() {
+    if (_syncV2 !== null) return _syncV2;
+    const r = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ action: 'getSyncV2' }, resolve)
+    );
+    _syncV2 = !!r?.enabled;
+    return _syncV2;
+  }
+
+  /**
+   * Show "Syncing…" instead of the empty state while a hydrate is in flight.
+   * The empty state claiming "No review data yet" during a pull is what made
+   * this bug look like data loss rather than a slow fetch.
+   */
+  function setReviewsLoading(loading) {
+    const el = document.getElementById('rvEmpty');
+    if (!el) return;
+    if (loading) {
+      el._priorHTML = el._priorHTML || el.innerHTML;
+      el.innerHTML = '<div style="font-weight:700">Syncing…</div>' +
+        '<div style="color:var(--text-muted);font-size:13px;margin-top:4px">Fetching reviews and performance from the server.</div>';
+      el.style.display = '';
+    } else if (el._priorHTML) {
+      el.innerHTML = el._priorHTML;
+    }
+  }
+
+  /**
+   * Reflect real outbox state in the header chip. The chip previously read
+   * "✓ Up to date" unconditionally — including while every push was failing.
+   */
+  async function refreshSyncIndicator() {
+    if (!(await isSyncV2Enabled())) return;
+    const r = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ action: 'getSyncQueueStatus' }, resolve)
+    );
+    const status = r?.status;
+    const el = document.getElementById('syncStatus');
+    if (!el || !status) return;
+    if (status.depth === 0) {
+      el.textContent = '✓ Up to date';
+      el.title = 'All scraped data has been acknowledged by the server.';
+    } else if (status.failing > 0) {
+      el.textContent = `⚠ ${status.depth} pending`;
+      el.title = `${status.failing} upload(s) failing. Last error: ${status.lastError || 'unknown'}`;
+    } else {
+      el.textContent = `↻ ${status.depth} syncing`;
+      el.title = 'Uploads queued and in progress.';
+    }
   }
 
   // ── View switching: Performance / Reviews ──

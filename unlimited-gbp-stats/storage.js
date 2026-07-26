@@ -10,7 +10,7 @@
 
 const GBPStorage = (() => {
   const DB_NAME = 'gbp_unlimited_stats';
-  const DB_VERSION = 2;
+  const DB_VERSION = 3;
   let _db = null;
 
   function open() {
@@ -40,6 +40,18 @@ const GBPStorage = (() => {
         if (!db.objectStoreNames.contains('reviews')) {
           const revStore = db.createObjectStore('reviews', { keyPath: 'id' });
           revStore.createIndex('businessId', 'businessId', { unique: false });
+        }
+        // ── v3: durable sync outbox ──
+        // Every server push is enqueued here FIRST, then drained by a
+        // chrome.alarms worker in background.js. Replaces the old
+        // fire-and-forget `.catch(() => {})` pushes, where a push that failed
+        // because the token had expired or the machine was offline was lost
+        // with no record and no retry — the single largest cause of a business
+        // having data locally that never reached the server.
+        if (!db.objectStoreNames.contains('syncQueue')) {
+          const qStore = db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
+          qStore.createIndex('nextAttemptAt', 'nextAttemptAt', { unique: false });
+          qStore.createIndex('dedupeKey', 'dedupeKey', { unique: false });
         }
       };
       req.onsuccess = (e) => {
@@ -281,6 +293,107 @@ const GBPStorage = (() => {
     return { moved };
   }
 
+  // ── Sync outbox (v3) ──
+  //
+  // Durable queue of pushes that still owe the server data. A job is only
+  // removed once the server has acknowledged it, so closing the browser mid
+  // sync, an expired token, or being offline all end in a retry rather than
+  // silent loss. Backoff is exponential and capped — jobs are never dropped,
+  // because a dropped job means data that exists only in this browser.
+
+  const BASE_BACKOFF_MS = 30 * 1000;   // first retry after 30s
+  const MAX_BACKOFF_MS  = 6 * 60 * 60 * 1000; // never wait longer than 6h
+
+  function backoffFor(attempts) {
+    return Math.min(BASE_BACKOFF_MS * Math.pow(2, attempts), MAX_BACKOFF_MS);
+  }
+
+  /**
+   * Enqueue a push. When a pending job with the same dedupeKey already exists
+   * and has not started failing, its payload is replaced instead of adding a
+   * second job — re-scraping the same month five times must not queue five
+   * identical uploads.
+   * @param {string} kind        'metrics' | 'intel'
+   * @param {string} businessId  Local business id the job belongs to.
+   * @param {string} dedupeKey   Stable key for this logical push.
+   * @param {object} payload     Body handed to the sender in background.js.
+   */
+  async function enqueueSync(kind, businessId, dedupeKey, payload) {
+    const { store } = await tx('syncQueue', 'readwrite');
+    const existing = await promisifyRequest(store.index('dedupeKey').getAll(dedupeKey));
+    const fresh = existing.find(j => j.attempts === 0);
+    if (fresh) {
+      await promisifyRequest(store.put({ ...fresh, payload, queuedAt: Date.now() }));
+      return fresh.id;
+    }
+    return promisifyRequest(store.add({
+      kind,
+      businessId,
+      dedupeKey,
+      payload,
+      attempts: 0,
+      lastError: null,
+      nextAttemptAt: Date.now(),
+      queuedAt: Date.now(),
+    }));
+  }
+
+  /** Jobs whose nextAttemptAt has passed, oldest first. */
+  async function getDueSyncJobs(limit = 25) {
+    const { store } = await tx('syncQueue');
+    const all = await promisifyRequest(store.getAll());
+    return all
+      .filter(j => (j.nextAttemptAt || 0) <= Date.now())
+      .sort((a, b) => (a.queuedAt || 0) - (b.queuedAt || 0))
+      .slice(0, limit);
+  }
+
+  /** Remove an acknowledged job. */
+  async function completeSyncJob(id) {
+    const { store } = await tx('syncQueue', 'readwrite');
+    return promisifyRequest(store.delete(id));
+  }
+
+  /** Record a failure and schedule the next attempt with exponential backoff. */
+  async function failSyncJob(id, error) {
+    const { store } = await tx('syncQueue', 'readwrite');
+    const job = await promisifyRequest(store.get(id));
+    if (!job) return null;
+    const attempts = (job.attempts || 0) + 1;
+    const updated = {
+      ...job,
+      attempts,
+      lastError: String(error || 'unknown').slice(0, 500),
+      nextAttemptAt: Date.now() + backoffFor(attempts),
+    };
+    await promisifyRequest(store.put(updated));
+    return updated;
+  }
+
+  /**
+   * Queue health for the dashboard header. Today the header can read
+   * "✓ Up to date" while every push is 401ing; this is what makes it honest.
+   */
+  async function getSyncQueueStatus() {
+    const { store } = await tx('syncQueue');
+    const all = await promisifyRequest(store.getAll());
+    const failing = all.filter(j => (j.attempts || 0) > 0);
+    return {
+      depth: all.length,
+      failing: failing.length,
+      oldestQueuedAt: all.length ? Math.min(...all.map(j => j.queuedAt || 0)) : null,
+      lastError: failing.length
+        ? failing.sort((a, b) => (b.attempts || 0) - (a.attempts || 0))[0].lastError
+        : null,
+    };
+  }
+
+  /** Drop every queued job. Only for the dashboard's explicit "discard" action. */
+  async function clearSyncQueue() {
+    const { store } = await tx('syncQueue', 'readwrite');
+    return promisifyRequest(store.clear());
+  }
+
   // ── Export / Import for backup ──
 
   async function exportAll() {
@@ -346,6 +459,12 @@ const GBPStorage = (() => {
     saveReviews,
     getReviews,
     migrateBusinessData,
+    enqueueSync,
+    getDueSyncJobs,
+    completeSyncJob,
+    failSyncJob,
+    getSyncQueueStatus,
+    clearSyncQueue,
     exportAll,
     importAll,
     getStats,
