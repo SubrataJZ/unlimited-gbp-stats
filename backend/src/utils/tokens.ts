@@ -2,10 +2,21 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { prisma } from '../index';
 
-const JWT_SECRET = process.env.JWT_SECRET!;
-const REFRESH_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET!;
+const JWT_SECRET = process.env.JWT_SECRET || '';
+const REFRESH_SECRET = process.env.SESSION_SECRET || '';
 
 if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is required');
+if (!REFRESH_SECRET) {
+  throw new Error(
+    'SESSION_SECRET environment variable is required (set a value different from JWT_SECRET)'
+  );
+}
+if (REFRESH_SECRET === JWT_SECRET) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[tokens] SESSION_SECRET equals JWT_SECRET — use distinct secrets so a single leak cannot forge both access and refresh tokens'
+  );
+}
 
 export interface TokenPayload {
   userId: string;

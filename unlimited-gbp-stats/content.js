@@ -1981,22 +1981,42 @@
     // merchant session). Google's jsname attributes are stable JS-binding names
     // that survive CSS-class obfuscation, so they're the primary match; text/aria
     // fallbacks below stay as a safety net if Google changes them.
-    REPLY_OPEN_JSNAME: 'rhPddf',   // the "Reply" control that OPENS the editor
-    TEXTAREA_JSNAME: 'YPqjbf',     // the reply <textarea>
-    SUBMIT_JSNAME: 'hrGhad',       // "Post reply" — NEVER click this, safety-guard only
+    REPLY_OPEN_JSNAME: 'rhPddf',   // the "Reply" control that OPENS the editor (business.google.com)
+    TEXTAREA_JSNAME: 'YPqjbf',     // the reply <textarea> (business.google.com)
+    SUBMIT_JSNAME: 'hrGhad',       // "Post reply" — NEVER click this, safety-guard only (business.google.com)
   };
 
+  // Verified live 2026-07-20: the Google Search "Reviews" merchant panel
+  // (`google.com/search#mpd=…/customers/reviews`) renders its editor inside a
+  // genuinely separate same-origin <iframe> — a different JS realm from the
+  // top document. Its SUBMIT button's own label is literally "Reply" (not
+  // "Post reply" like business.google.com), identical to the OPEN action's
+  // label — so on this surface text alone cannot tell open vs. submit apart.
+  // The discriminator used below: the submit control only exists once the
+  // editor is already open, i.e. once a sibling "Cancel" control exists.
   function isOwnerRepliesSurface() {
-    return window.location.hostname.includes('business.google.com') &&
-           getReviewCards(resolveReviewDoc()).length > 0;
+    const doc = resolveReviewDoc();
+    const cards = getReviewCards(doc);
+    if (!cards.length) return false;
+    // Only true when at least one card actually exposes a Reply/Respond
+    // control — this is what distinguishes an owner-manageable reviews
+    // surface (business.google.com, or the Search "Reviews" panel for a
+    // profile you manage) from a read-only public reviews view (Maps, or
+    // someone else's listing) where no reply affordance exists at all.
+    return cards.some(c => !!findReplyOpenButton(resolveReplyScopeRoot(c)));
   }
 
   // ── Native-setter value insertion (React-controlled inputs ignore plain .value=) ─
+  // Uses the ELEMENT's OWN window, not the top document's — on the Search
+  // "Reviews" panel the textarea lives in a separate iframe realm, so
+  // top-level HTMLTextAreaElement.prototype is a different constructor and
+  // .call() on its setter throws "Illegal invocation" (confirmed live).
   function setNativeValue(el, value) {
     try {
+      const win = el.ownerDocument?.defaultView || window;
       const tag = el.tagName;
       if (tag === 'TEXTAREA' || tag === 'INPUT') {
-        const proto = tag === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const proto = tag === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
         const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
         if (setter) setter.call(el, value); else el.value = value;
       } else {

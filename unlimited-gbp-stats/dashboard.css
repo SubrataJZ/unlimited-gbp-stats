@@ -1473,7 +1473,7 @@ tr:hover td { background: var(--bg-hover); }
 /* ═══ Reviews View ═══ */
 .rv-stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 14px;
   margin-bottom: 22px;
 }
@@ -1501,7 +1501,9 @@ tr:hover td { background: var(--bg-hover); }
 .rv-item { background: var(--bg-card); border-radius: 10px; padding: 14px 16px; }
 .rv-item-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .rv-item-author { font-weight: 600; font-size: 14px; color: var(--text-primary, #e8eaed); }
-.rv-item-stars { color: #fdd663; font-size: 13px; letter-spacing: 1px; }
+.rv-item-stars { font-size: 13px; letter-spacing: 1px; }
+.rv-star-filled { color: #fdd663; }
+.rv-star-empty { color: var(--text-muted); }
 .rv-badge { font-size: 10px; font-weight: 600; color: var(--accent); background: var(--accent-dim); padding: 1px 6px; border-radius: 4px; margin-left: 6px; }
 .rv-item-date { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 .rv-item-text { font-size: 13px; color: var(--text-secondary, #c0c4cc); margin-top: 6px; line-height: 1.5; }
