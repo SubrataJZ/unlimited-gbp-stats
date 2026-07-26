@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.18.0] - 2026-07-26
+- **Fixed: a business would show performance without reviews, or reviews without performance, seemingly at random.** Metrics and reviews were fetched from two different servers on two different credentials, and metrics could only be *read back* from the legacy sync server even though they were also being written to the Postgres backend. Whenever one of those two paths was healthy and the other wasn't, the dashboard rendered half a business. Both now arrive from a single backend call, so "half a business" can no longer happen.
+- **Fixed: "No review data yet" appeared over reviews that had actually loaded.** Selecting a business rendered the views immediately while the review pull was still in flight, and the follow-up refresh was skipped unless the Reviews tab was already open at that moment. Both views now render only after the sync settles, and show "Syncing…" while it runs.
+- **Fixed: data scraped while offline or with an expired sign-in was silently lost.** Uploads are now held in a durable queue and retried automatically with backoff until the server confirms them, instead of being discarded on the first failure. The header indicator reports what is actually pending and why, rather than always claiming "Up to date".
+- **Fixed: one business could be stored under two different ids** (its Google Business Profile id and its Maps id), which is what split performance and reviews apart in the first place. The extension now follows the id the server treats as canonical and merges the duplicate rows automatically.
+- **Changed: every scrape now refreshes that business completely.** Whichever button you press, the extension pulls that business's full server history afterwards — so scraping performance also brings its reviews down, and scraping reviews also brings its performance down. The buttons now only control what is re-read from Google, not what the dashboard is able to show.
+- **Renamed "Fetch Everything" to "Fetch All Performance"** — it fetches every month of performance data and never fetched reviews, despite the name.
+- All of the above is off by default and opt-in via the `gbpSyncV2` extension-storage flag. With it unset, the previous sync behaviour runs unchanged; turning it back off is instant and needs no reinstall. Requires a backend exposing `GET /api/ingest/sync` — against an older backend the new sync fails safely and local data is untouched.
+
 ## [1.17.0] - 2026-07-25
 - **Added: performance metrics are now also sent to the Postgres backend, alongside the existing sync server.** This is a dual-write — the existing sync path is unchanged and remains the source of truth, and the new push is best-effort: if it fails, nothing else is affected and your local data is untouched. It is the first step in moving metrics off the legacy sync server so history, reports and year-over-year comparisons can live in one place with reviews.
 - Can be turned off without an update by setting `gbpBackendMetricsSync` to `false` in extension storage.

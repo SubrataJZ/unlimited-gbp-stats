@@ -140,6 +140,118 @@ export async function getIntelForOrg(orgId: string) {
   }));
 }
 
+/**
+ * Read back all tracked businesses for an org, each with its FULL metrics
+ * history plus the same snapshot/review shape as getIntelForOrg. Powers the
+ * extension's combined sync (performance + reviews in one round trip).
+ *
+ * When `since` is provided, each child table is filtered to rows touched at
+ * or after `since` (using whichever timestamp column that model actually
+ * has: MetricMonth.updatedAt, ProfileSnapshot.capturedOn, ScrapedReview.
+ * scrapedAt). Businesses are always returned — even with empty child arrays
+ * — so the client learns about businesses it doesn't know about yet.
+ *
+ * ProfileSnapshot.capturedOn is a DATE (@db.Date → UTC midnight), not a
+ * timestamp, so it is compared against `since` floored to UTC midnight.
+ * Comparing it to a mid-day `since` would drop the SAME day's snapshot on
+ * every re-sync after the first — the row's capturedOn (00:00Z) sorts before
+ * an afternoon cursor. Over-fetching one day is the correct trade here:
+ * snapshots are one row per business per day and the client upsert is
+ * idempotent, whereas a missed snapshot silently blanks the Reviews view.
+ *
+ * Mirrors getIntelForOrg's approach: query child tables directly rather than
+ * via relation includes, then group in JS.
+ */
+export async function getSyncBundleForOrg(orgId: string, since?: Date) {
+  const businesses = await prisma.trackedBusiness.findMany({
+    where: { orgId },
+    select: {
+      id: true,
+      name: true,
+      googlePlaceId: true,
+      address: true,
+      logoUrl: true,
+      isOwn: true,
+    },
+  });
+
+  if (businesses.length === 0) return [];
+
+  const ids = businesses.map((b) => b.id);
+
+  // See the doc comment: capturedOn is a DATE, so the cursor must be floored
+  // to UTC midnight or today's snapshot is excluded from every re-sync.
+  const sinceDay = since
+    ? new Date(Date.UTC(since.getUTCFullYear(), since.getUTCMonth(), since.getUTCDate()))
+    : undefined;
+
+  const [metrics, snapshots, reviews] = await Promise.all([
+    prisma.metricMonth.findMany({
+      where: {
+        trackedBusinessId: { in: ids },
+        ...(since ? { updatedAt: { gte: since } } : {}),
+      },
+      select: {
+        trackedBusinessId: true,
+        metricType: true,
+        year: true,
+        month: true,
+        total: true,
+        daily: true,
+        yoyPercent: true,
+        breakdown: true,
+        searchTerms: true,
+        isDerived: true,
+        source: true,
+        collectedAt: true,
+      },
+    }),
+    prisma.profileSnapshot.findMany({
+      where: {
+        trackedBusinessId: { in: ids },
+        ...(sinceDay ? { capturedOn: { gte: sinceDay } } : {}),
+      },
+      orderBy: { capturedOn: 'asc' },
+      select: {
+        trackedBusinessId: true,
+        capturedOn: true,
+        totalReviews: true,
+        displayRating: true,
+        trueAverage: true,
+        reviewsWithPhotos: true,
+        localGuideReviews: true,
+      },
+    }),
+    prisma.scrapedReview.findMany({
+      where: {
+        trackedBusinessId: { in: ids },
+        ...(since ? { scrapedAt: { gte: since } } : {}),
+      },
+      orderBy: { reviewedAt: 'desc' },
+      take: 1000,
+      select: {
+        trackedBusinessId: true,
+        externalReviewId: true,
+        rating: true,
+        text: true,
+        authorName: true,
+        isLocalGuide: true,
+        hasPhoto: true,
+        ownerResponded: true,
+        reviewedAt: true,
+      },
+    }),
+  ]);
+
+  // Group children under each business
+  return businesses.map((b) => ({
+    ...b,
+    metrics: metrics.filter((m) => m.trackedBusinessId === b.id),
+    snapshots: snapshots.filter((s) => s.trackedBusinessId === b.id),
+    reviews: reviews.filter((r) => r.trackedBusinessId === b.id),
+  }));
+}
+
 // ── Types mirroring the validated request payload ─────────────────────────────
 
 export interface IncomingSnapshot {

@@ -423,6 +423,248 @@ async function pushAllMetricsToBackend() {
   }
 }
 
+// ── Sync v2: unified hydration + durable outbox ───────────────────────────────
+//
+// WHY THIS EXISTS
+// Before v2, performance metrics and review data travelled on completely
+// separate rails: metrics were pushed to the SQLite server AND to Postgres but
+// could only be READ BACK from SQLite, while reviews lived only in Postgres.
+// Two servers, two credentials, two id spaces. Whenever one rail was healthy
+// and the other was not, the dashboard rendered exactly half a business —
+// performance with no reviews, or reviews with no performance.
+//
+// v2 collapses the read path onto a single endpoint (GET /api/ingest/sync)
+// that returns metrics AND reviews in one response, so "half a business" stops
+// being a representable state: either both arrive or neither does.
+//
+// Everything here is gated on the gbpSyncV2 flag, DEFAULT OFF. With the flag
+// off, every v1 code path above runs exactly as before — this is the rollback,
+// and it does not require reinstalling the extension.
+
+/**
+ * Master kill switch for all v2 sync behaviour. Defaults OFF (opt-in) so an
+ * extension update can never change sync behaviour under a user who did not
+ * ask for it. Mirrors metricsBackendSyncEnabled()'s storage-flag pattern.
+ * @returns {Promise<boolean>}
+ */
+async function syncV2Enabled() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['gbpSyncV2'], r => resolve(r.gbpSyncV2 === true));
+  });
+}
+
+/** Read/write the per-business incremental sync cursor (server `syncedAt`). */
+async function getSyncCursor(businessId) {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['gbpSyncCursor'], r => resolve((r.gbpSyncCursor || {})[businessId] || null));
+  });
+}
+async function setSyncCursor(businessId, syncedAt) {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['gbpSyncCursor'], r => {
+      const cur = r.gbpSyncCursor || {};
+      cur[businessId] = syncedAt;
+      chrome.storage.local.set({ gbpSyncCursor: cur }, resolve);
+    });
+  });
+}
+
+/**
+ * Pull a business's COMPLETE server state — metrics, snapshots and reviews —
+ * and merge it into local IndexedDB in one pass.
+ *
+ * This is the function that answers "whenever performance is scraped, reviews
+ * should come down too": every scrape calls it, so the local store converges
+ * on the server's full picture regardless of which button was pressed or which
+ * Google page the scrape happened on.
+ *
+ * Alias handling: the server reconciles the GBP local id and the Maps CID into
+ * one TrackedBusiness, but the client historically had no way to learn that.
+ * The response's googlePlaceId is the canonical id, so when it differs from the
+ * id we asked about, local records are folded onto it — self-healing the split
+ * rows that cause the half-empty dashboard.
+ *
+ * @param {string}  businessId  Local business id (CID, GBP local id, or slug).
+ * @param {boolean} full        Ignore the incremental cursor and refetch all.
+ * @returns {Promise<{success:boolean, metrics?:number, reviews?:number, snapshots?:number, canonicalId?:string, error?:string}>}
+ */
+async function hydrateBusiness(businessId, full = false) {
+  const key = await getBackendKey();
+  if (!key) return { success: false, error: 'Backend not connected' };
+
+  const since = full ? null : await getSyncCursor(businessId);
+
+  try {
+    const url = `${BACKEND_URL}/api/ingest/sync${since ? `?since=${encodeURIComponent(since)}` : ''}`;
+    const resp = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${key}`, 'x-extension-id': chrome.runtime.id },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText);
+      return { success: false, error: `HTTP ${resp.status}: ${text}`.slice(0, 200) };
+    }
+    const data = await resp.json();
+
+    // Locate the business we asked about. Match on googlePlaceId first, then
+    // fall back to the backend's own cuid, so this works whether the caller
+    // passed a Google id or a TrackedBusiness id.
+    const wanted = String(businessId);
+    const match = (data.businesses || []).find(
+      b => String(b.googlePlaceId) === wanted || String(b.id) === wanted
+    );
+    if (!match) {
+      // Not an error: a business scraped seconds ago may not be on the server
+      // yet (its push is still in the outbox). Cursor is deliberately NOT
+      // advanced, so the next hydrate re-asks for the same window.
+      return { success: true, metrics: 0, reviews: 0, snapshots: 0, notOnServer: true };
+    }
+
+    const canonicalId = String(match.googlePlaceId || businessId);
+
+    // Fold any records held under the id we asked about onto the canonical id.
+    if (canonicalId !== wanted) {
+      await GBPStorage.migrateBusinessData(wanted, canonicalId);
+      console.log(`[GBP BG] hydrate: folded ${wanted} → ${canonicalId} (server canonical)`);
+    }
+
+    await GBPStorage.saveBusiness({ id: canonicalId, name: match.name || canonicalId });
+
+    // ── Metrics ──
+    // Same merge rule as pullFromServer: a real local record is never
+    // overwritten by a derived server one, and a higher local total wins.
+    let metricsMerged = 0;
+    for (const m of match.metrics || []) {
+      const serverIsReal = !m.isDerived;
+      const existing = await GBPStorage.getMetric(canonicalId, m.metricType, m.year, m.month);
+      if (existing) {
+        const localIsReal = !existing.derived;
+        if (localIsReal && !serverIsReal) continue;
+        if (localIsReal && serverIsReal && existing.total >= m.total) continue;
+      }
+      const extra = {};
+      if (m.breakdown)   extra.breakdown   = m.breakdown;
+      if (m.searchTerms) extra.searchTerms = m.searchTerms;
+      await GBPStorage.saveMetric(
+        canonicalId, m.metricType, m.year, m.month,
+        m.total, Array.isArray(m.daily) ? m.daily : [],
+        m.yoyPercent ?? null,
+        { derived: !!m.isDerived, ...extra }
+      );
+      metricsMerged++;
+    }
+
+    // ── Review snapshots ──
+    let snapsMerged = 0;
+    for (const s of match.snapshots || []) {
+      await GBPStorage.saveReviewSnapshot(canonicalId, {
+        capturedOn:   String(s.capturedOn || '').slice(0, 10),
+        totalReviews: s.totalReviews,
+        avgRating:    s.displayRating ?? s.trueAverage ?? null,
+        stars:        {},
+      });
+      snapsMerged++;
+    }
+
+    // ── Individual reviews ──
+    const mapped = (match.reviews || []).map(r => ({
+      externalId:   r.externalReviewId,
+      rating:       r.rating,
+      text:         r.text || '',
+      author:       r.authorName || '',
+      isLocalGuide: !!r.isLocalGuide,
+      hasPhoto:     !!r.hasPhoto,
+      reviewedAt:   r.reviewedAt ? String(r.reviewedAt).slice(0, 10) : '',
+    }));
+    if (mapped.length) await GBPStorage.saveReviews(canonicalId, mapped);
+
+    // Advance the cursor only after everything above committed. A crash
+    // mid-merge therefore replays the window rather than skipping it.
+    if (data.syncedAt) await setSyncCursor(canonicalId, data.syncedAt);
+
+    console.log(`[GBP BG] hydrated ${canonicalId}: ${metricsMerged} metrics, ${snapsMerged} snapshots, ${mapped.length} reviews`);
+    return {
+      success: true,
+      canonicalId,
+      metrics: metricsMerged,
+      snapshots: snapsMerged,
+      reviews: mapped.length,
+    };
+  } catch (err) {
+    console.warn('[GBP BG] hydrateBusiness failed:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Send one outbox job. Returns true only when the server has acknowledged it —
+ * a false return keeps the job queued for a later attempt.
+ * @param {{kind:string, payload:object}} job
+ */
+async function sendSyncJob(job) {
+  if (job.kind === 'metrics') {
+    const r = await syncMetricsToBackend(job.payload.business, job.payload.metrics);
+    if (r.ok) return { ok: true };
+    // 'disabled' and 'Nothing to sync' are terminal, not transient: retrying
+    // cannot change the outcome, so drop rather than retry forever.
+    if (r.error === 'disabled' || r.error === 'Nothing to sync') return { ok: true, dropped: true };
+    return { ok: false, error: r.error };
+  }
+  if (job.kind === 'intel') {
+    const p = job.payload;
+    const r = await syncReviewToBackend(p.business, p.snapshot, p.reviews, p.isOwn !== false);
+    if (r.ok) return { ok: true };
+    if (r.error === 'Nothing to sync') return { ok: true, dropped: true };
+    return { ok: false, error: r.error };
+  }
+  return { ok: true, dropped: true }; // unknown kind — never block the queue
+}
+
+/**
+ * Drain due outbox jobs. Safe to call concurrently with itself (guarded), and
+ * safe to call when offline — failures just reschedule with backoff.
+ */
+let _draining = false;
+async function drainSyncQueue() {
+  if (_draining) return { drained: 0, skipped: true };
+  _draining = true;
+  let drained = 0, failed = 0;
+  try {
+    const jobs = await GBPStorage.getDueSyncJobs(25);
+    for (const job of jobs) {
+      let result;
+      try {
+        result = await sendSyncJob(job);
+      } catch (e) {
+        result = { ok: false, error: e.message };
+      }
+      if (result.ok) {
+        await GBPStorage.completeSyncJob(job.id);
+        drained++;
+      } else {
+        await GBPStorage.failSyncJob(job.id, result.error);
+        failed++;
+      }
+    }
+    if (drained || failed) console.log(`[GBP BG] outbox drained=${drained} failed=${failed}`);
+    return { drained, failed };
+  } finally {
+    _draining = false;
+  }
+}
+
+// Periodic drain. The alarm is the safety net that makes the queue durable
+// across service-worker shutdowns — MV3 tears the worker down aggressively, so
+// an in-memory retry timer would not survive.
+const SYNC_ALARM = 'gbpSyncDrain';
+chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 5 });
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name !== SYNC_ALARM) return;
+  syncV2Enabled().then(on => {
+    if (!on) return;
+    GBPStorage.open().then(() => drainSyncQueue()).catch(() => {});
+  });
+});
+
 // ── AI Review Reply Copilot (Module D) ────────────────────────────────────────
 //
 // Uses the same zx_ ingest key as syncReviewToBackend/pullReviewsFromServer
@@ -962,10 +1204,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ).catch(() => {});   // never fail the local save because of server issues
 
         // ── Also push the real record to the Postgres backend ────────────
-        // Fire-and-forget, gated by the kill switch — see
-        // syncMetricsToBackend. Never fails the local save or the SQLite
-        // sync above.
-        syncMetricsToBackend(msg.business, [metricForServer]).catch(() => {});
+        // v2: enqueue to the durable outbox and immediately hydrate, so this
+        // business ends up with its reviews too — the scrape button chose what
+        // to read off Google, not what the dashboard is allowed to show.
+        // v1 (flag off): unchanged fire-and-forget.
+        syncV2Enabled().then(on => {
+          if (!on) {
+            syncMetricsToBackend(msg.business, [metricForServer]).catch(() => {});
+            return;
+          }
+          const dedupeKey = `metrics:${m.businessId}:${m.metricType}:${m.year}-${m.month}`;
+          GBPStorage.enqueueSync('metrics', m.businessId, dedupeKey, {
+            business: msg.business,
+            metrics:  [metricForServer],
+          })
+            .then(() => drainSyncQueue())
+            .then(() => hydrateBusiness(msg.business?.id || m.businessId))
+            .catch(e => console.warn('[GBP BG] v2 metric sync failed:', e.message));
+        });
       })
       .then(() => sendResponse({
         success: true,
@@ -992,8 +1248,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ? GBPStorage.saveReviews(businessId, reviews) : 0)
       .then(() => GBPStorage.getReviews(businessId))
       .then((allReviews) => {
-        // Push to the Postgres backend (fire-and-forget; never fail local save)
-        syncReviewToBackend(business, snapshot, reviews, msg.isOwn !== false).catch(() => {});
+        // v2: durable outbox + immediate hydrate, so a review scrape also pulls
+        // this business's performance history down. v1: fire-and-forget.
+        syncV2Enabled().then(on => {
+          if (!on) {
+            syncReviewToBackend(business, snapshot, reviews, msg.isOwn !== false).catch(() => {});
+            return;
+          }
+          GBPStorage.enqueueSync('intel', businessId, `intel:${businessId}`, {
+            business, snapshot, reviews, isOwn: msg.isOwn !== false,
+          })
+            .then(() => drainSyncQueue())
+            .then(() => hydrateBusiness(businessId))
+            .catch(e => console.warn('[GBP BG] v2 review sync failed:', e.message));
+        });
         sendResponse({
           success: true,
           saved: {
@@ -1014,6 +1282,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'openReviewTab') {
     if (msg.url) chrome.tabs.create({ url: msg.url, active: false });
     sendResponse({ success: true });
+    return true;
+  }
+
+  // ── v2: pull a business's FULL server state (metrics + reviews together) ──
+  if (msg.action === 'hydrateBusiness') {
+    GBPStorage.open()
+      .then(() => hydrateBusiness(msg.businessId, !!msg.full))
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  // ── v2: outbox depth / last error, for an honest sync indicator ───────────
+  if (msg.action === 'getSyncQueueStatus') {
+    GBPStorage.open()
+      .then(() => GBPStorage.getSyncQueueStatus())
+      .then(status => sendResponse({ success: true, status }))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  // ── v2: force a drain now (dashboard "Retry sync") ───────────────────────
+  if (msg.action === 'drainSyncQueue') {
+    GBPStorage.open()
+      .then(() => drainSyncQueue())
+      .then(result => sendResponse({ success: true, ...result }))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  // ── v2: read/flip the kill switch without a reinstall ────────────────────
+  if (msg.action === 'getSyncV2') {
+    syncV2Enabled().then(enabled => sendResponse({ success: true, enabled }));
+    return true;
+  }
+  if (msg.action === 'setSyncV2') {
+    chrome.storage.local.set({ gbpSyncV2: !!msg.enabled }, () => {
+      console.log(`[GBP BG] Sync v2 ${msg.enabled ? 'ENABLED' : 'DISABLED'}`);
+      sendResponse({ success: true, enabled: !!msg.enabled });
+    });
     return true;
   }
 

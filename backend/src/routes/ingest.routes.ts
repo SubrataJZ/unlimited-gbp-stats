@@ -29,6 +29,20 @@ router.get(
 );
 
 /**
+ * GET /api/ingest/sync
+ * Purpose: Combined read — tracked businesses with FULL metrics history plus
+ *          review snapshots/reviews in one response (avoids performance vs.
+ *          reviews falling out of sync). Optional ?since= (ISO-8601 or
+ *          epoch-ms) for incremental sync.
+ * Auth: Per-user extension API key (zx_...)
+ */
+router.get(
+  '/sync',
+  asyncHandler(validateExtensionKey),
+  asyncHandler(intelController.getSyncBundle)
+);
+
+/**
  * GET /api/ingest/intel/:businessId/audit
  * Purpose: Deep review audit (velocity timeline + neutral authenticity signals)
  * Auth: Per-user extension API key (zx_...) — Agency/Pro role only

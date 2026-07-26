@@ -1250,7 +1250,7 @@
           <button id="gbp-update-latest">🔄 Update Latest Data</button>
           <button id="gbp-save-current">Save Current View</button>
           <button id="gbp-fetch-tab">Fetch All Months (Tab)</button>
-          <button id="gbp-fetch-all">⭐ Fetch Everything</button>
+          <button id="gbp-fetch-all">⭐ Fetch All Performance</button>
           <button id="gbp-fetch-reviews">⭐ Fetch Reviews</button>
           <button id="gbp-auto-draft-replies" style="display:none">🤖 Auto-draft replies</button>
         </div>
