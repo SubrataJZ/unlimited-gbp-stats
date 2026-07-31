@@ -288,6 +288,10 @@
           <div class="rv-num" id="rvCaptured">—</div>
           <div class="rv-lbl">Snapshots captured</div>
         </div>
+        <div class="rv-card">
+          <div class="rv-num" id="rvNextTier">—</div>
+          <div class="rv-lbl" id="rvNextTierLbl">5★ reviews to next tier</div>
+        </div>
       </div>
 
       <!-- Empty state for reviews -->
@@ -399,6 +403,11 @@
           </div>
         </div>
         <div class="chart-container"><svg id="rvCountChart" class="chart-svg" aria-hidden="true"></svg></div>
+        <div id="rvChartNav" style="display:none;align-items:center;justify-content:space-between;gap:8px;margin-top:6px">
+          <button id="rvChartPrev" aria-label="Show older periods" style="padding:4px 10px;font-size:11px;border:1px solid #2a2a3e;border-radius:4px;background:#1a1a2e;color:#8ab4f8;cursor:pointer">&#9664; Older</button>
+          <span id="rvChartRange" style="font-size:11px;color:#888;text-align:center;flex:1"></span>
+          <button id="rvChartNext" aria-label="Show newer periods" style="padding:4px 10px;font-size:11px;border:1px solid #2a2a3e;border-radius:4px;background:#1a1a2e;color:#8ab4f8;cursor:pointer">Newer &#9654;</button>
+        </div>
         <div class="rv-chart-legend" id="rvCountLegend" aria-hidden="true"></div>
       </div>
 
@@ -414,10 +423,23 @@
         <div id="rvStarBars" class="rv-star-bars"></div>
       </div>
 
-      <!-- Recent reviews -->
+      <!-- All reviews -->
       <div class="table-section" id="rvListSection">
-        <h3>Recent reviews</h3>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <h3 style="margin-bottom:0">All reviews <span id="rvListCount" style="font-weight:400;font-size:12px;color:#888"></span></h3>
+          <select id="rvSortSelect" aria-label="Sort reviews"
+            style="padding:4px 8px;font-size:12px;background:#1a1a2e;border:1px solid #2a2a3e;border-radius:4px;color:#e0e0e0;cursor:pointer">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="highest">Highest rating</option>
+            <option value="lowest">Lowest rating</option>
+          </select>
+        </div>
         <div id="rvList" class="rv-list"></div>
+        <div id="rvListMore" style="display:none;text-align:center;margin-top:12px">
+          <button id="rvShowMoreBtn" style="padding:6px 14px;font-size:12px;border:1px solid #2a2a3e;border-radius:4px;background:#1a1a2e;color:#8ab4f8;cursor:pointer">Show 100 more</button>
+          <button id="rvShowAllBtn" style="padding:6px 14px;font-size:12px;border:1px solid #2a2a3e;border-radius:4px;background:#1a1a2e;color:#888;cursor:pointer;margin-left:8px">Show all</button>
+        </div>
       </div>
     </div><!-- /#reviewsView -->
   </main>

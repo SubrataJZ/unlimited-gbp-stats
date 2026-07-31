@@ -29,6 +29,9 @@
     // Reviews view
     reviewRateGranularity: 'month',
     currentReviews: [],
+    rvChartOffset: 0,             // buckets panned back from the newest period
+    reviewSort: 'newest',         // 'newest' | 'oldest' | 'highest' | 'lowest'
+    reviewListLimit: 50,
   };
 
   // ── API Helper Functions ──────────────────────────────────────────────────
@@ -664,6 +667,9 @@
     generateInsights();
     renderDiscoverySection();
 
+    state.rvChartOffset = 0;
+    state.reviewListLimit = 50;
+
     // ── Hydration ──
     // v2: ONE call brings metrics and reviews down together, and both views
     // render only after it settles. The old code fired two independent pulls
@@ -699,13 +705,10 @@
     // v1 path — unchanged.
     if (_authUser) {
       doPullFromServer(businessId, true);
-      // Pull review data too, then refresh the reviews view if it's open
       chrome.runtime.sendMessage({ action: 'pullReviews', businessId }, () => {
         if (state.view === 'reviews') loadAndRenderReviews();
       });
     }
-
-    // Reset to performance view on business change; preload review data
     loadAndRenderReviews();
   }
 
@@ -748,7 +751,7 @@
       chrome.runtime.sendMessage({ action: 'getSyncQueueStatus' }, resolve)
     );
     const status = r?.status;
-    const el = document.getElementById('syncStatus');
+    const el = document.getElementById('syncStatus') || document.getElementById('cloudBtn');
     if (!el || !status) return;
     if (status.depth === 0) {
       el.textContent = '✓ Up to date';
@@ -803,6 +806,17 @@
     // Store reviews for granularity toggle re-renders
     state.currentReviews = reviews || [];
 
+    // "5★ reviews to next tier" — how many additional 5★ reviews would push
+    // the average rating up to the next 0.1 tier (e.g. 4.1 → 4.2)
+    (function () {
+      const tierEl = document.getElementById('rvNextTier');
+      const tierLbl = document.getElementById('rvNextTierLbl');
+      if (!tierEl) return;
+      const tier = computeNextTierMetric(latest);
+      tierEl.textContent = tier ? tier.text : '—';
+      if (tierLbl) tierLbl.textContent = tier ? tier.sub : '5★ reviews to next tier';
+    })();
+
     // "New reviews (period)" = count in the most recent bucket of current granularity
     (function () {
       var buckets = window.GBPDate
@@ -825,6 +839,7 @@
     document.querySelectorAll('.rv-gran-btn').forEach(function (btn) {
       btn.onclick = function () {
         state.reviewRateGranularity = btn.dataset.gran;
+        state.rvChartOffset = 0; // pan back to the newest periods on granularity change
         // Update active styles
         document.querySelectorAll('.rv-gran-btn').forEach(function (b) {
           var isActive = b.dataset.gran === state.reviewRateGranularity;
@@ -858,14 +873,27 @@
       return;
     }
 
-    var buckets = window.GBPDate.bucketReviewsByPeriod(reviews, granularity || 'month');
+    var allBuckets = window.GBPDate.bucketReviewsByPeriod(reviews, granularity || 'month');
 
-    if (!buckets.length) {
+    if (!allBuckets.length) {
       svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" fill="#666" text-anchor="middle" font-size="13">No dated reviews yet — fetch reviews to see your rate</text>';
       var legendEl = document.getElementById('rvCountLegend');
       if (legendEl) legendEl.textContent = '';
+      var navEl0 = document.getElementById('rvChartNav');
+      if (navEl0) navEl0.style.display = 'none';
       return;
     }
+
+    // Window the buckets so dense histories stay readable; ◀/▶ pans through the rest
+    var RV_WINDOW = { day: 60, week: 52, month: 24, year: 20 };
+    var winSize = RV_WINDOW[granularity || 'month'] || 24;
+    var maxOffset = Math.max(0, allBuckets.length - winSize);
+    if (state.rvChartOffset > maxOffset) state.rvChartOffset = maxOffset;
+    if (state.rvChartOffset < 0) state.rvChartOffset = 0;
+    var winEnd = allBuckets.length - state.rvChartOffset;
+    var winStart = Math.max(0, winEnd - winSize);
+    var buckets = allBuckets.slice(winStart, winEnd);
+    updateRvChartNav(allBuckets, winStart, winEnd, winSize);
 
     var counts = buckets.map(function (b) { return b.count; });
     var maxCount = Math.max.apply(null, counts) || 1;
@@ -884,38 +912,71 @@
       gridlines += '<text x="' + (padL - 8) + '" y="' + (gy + 4).toFixed(1) + '" fill="#666" text-anchor="end" font-size="10">' + gv + '</text>';
     }
 
-    // Right axis labels (rating 0–5)
-    var rightAxis = '';
-    for (var rg = 0; rg <= 4; rg++) {
-      var rgy = padT + (rg / 4) * barAreaH;
-      var rgv = (5 - (rg / 4) * 5).toFixed(1);
-      rightAxis += '<text x="' + (W - padR + 8) + '" y="' + (rgy + 4).toFixed(1) + '" fill="#665a00" text-anchor="start" font-size="10">' + rgv + '</text>';
+    // Rating domain: zoom the right axis into the actual rating range (ratings
+    // usually cluster near 4-5, so a fixed 0-5 scale flattens the line to nothing)
+    // and label it in "nice" 0.1/0.2/0.5/1 steps.
+    var ratingVals = [];
+    for (var rv = 0; rv < buckets.length; rv++) {
+      if (buckets[rv].avgRating !== null && buckets[rv].avgRating !== undefined) ratingVals.push(buckets[rv].avgRating);
+    }
+    var hasRatings = ratingVals.length > 0;
+    var domainMin = 0, domainMax = 5, ratingTicks = [];
+
+    if (hasRatings) {
+      var rawMin = Math.min.apply(null, ratingVals);
+      var rawMax = Math.max.apply(null, ratingVals);
+      var pad = Math.max(0.1, (rawMax - rawMin) * 0.15);
+      var loBound = Math.max(0, rawMin - pad);
+      var hiBound = Math.min(5, rawMax + pad);
+
+      var stepCandidates = [0.1, 0.2, 0.25, 0.5, 1];
+      var step = 1;
+      for (var sc = 0; sc < stepCandidates.length; sc++) {
+        if ((hiBound - loBound) / stepCandidates[sc] <= 6) { step = stepCandidates[sc]; break; }
+      }
+
+      domainMin = Math.max(0, Math.round((Math.floor(loBound / step) * step) * 100) / 100);
+      domainMax = Math.min(5, Math.round((Math.ceil(hiBound / step) * step) * 100) / 100);
+      if (domainMax <= domainMin) domainMax = Math.min(5, domainMin + step);
+
+      for (var t = domainMin; t <= domainMax + 1e-9; t += step) {
+        ratingTicks.push(Math.round(t * 10) / 10);
+      }
     }
 
-    // Bars
+    function ratingY(r) { return padT + barAreaH - ((r - domainMin) / (domainMax - domainMin)) * barAreaH; }
+    function ptX(idx) { return padL + idx * gap + gap / 2; }
+
+    // Right axis labels (dynamic rating scale, e.g. 4.0 / 4.2 / 4.4 / ... / 5.0)
+    var rightAxis = '';
+    for (var rg = 0; rg < ratingTicks.length; rg++) {
+      var rgy = ratingY(ratingTicks[rg]);
+      rightAxis += '<text x="' + (W - padR + 8) + '" y="' + (rgy + 4).toFixed(1) + '" fill="#665a00" text-anchor="start" font-size="10">' + ratingTicks[rg].toFixed(1) + '</text>';
+    }
+
+    // Bars (each with a native tooltip showing the exact count on hover)
     var bars = '';
     var labelEvery = Math.ceil(buckets.length / 7);
     var xlabels = '';
+    var escXml = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
 
     for (var i = 0; i < buckets.length; i++) {
       var bx = padL + i * gap + (gap - barW) / 2;
       var bh = (buckets[i].count / maxCount) * barAreaH;
       var by = padT + barAreaH - bh;
-      bars += '<rect x="' + bx.toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + Math.max(1, bh).toFixed(1) + '" fill="#8ab4f8" rx="2"/>';
+      var barTooltip = escXml(buckets[i].label) + ': ' + buckets[i].count + ' review' + (buckets[i].count === 1 ? '' : 's') +
+        (buckets[i].avgRating != null ? ' (avg ' + buckets[i].avgRating.toFixed(1) + '★)' : '');
+      bars += '<rect x="' + bx.toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + Math.max(1, bh).toFixed(1) + '" fill="#8ab4f8" rx="2"><title>' + barTooltip + '</title></rect>';
       if (i % labelEvery === 0 || i === buckets.length - 1) {
         var lx = padL + i * gap + gap / 2;
         xlabels += '<text x="' + lx.toFixed(1) + '" y="' + (H - 12) + '" fill="#888" text-anchor="middle" font-size="9">' + buckets[i].label + '</text>';
       }
     }
 
-    // Avg-rating line overlay (gold, second y-axis 0–5, break on null)
+    // Avg-rating line overlay (gold, second y-axis on the dynamic domain, break on null)
     var ratingLine = '';
     var ratingDots = '';
-    var hasRatings = false;
     var prevPt = null;
-
-    function ratingY(r) { return padT + barAreaH - (r / 5) * barAreaH; }
-    function ptX(idx) { return padL + idx * gap + gap / 2; }
 
     for (var ri = 0; ri < buckets.length; ri++) {
       var ar = buckets[ri].avgRating;
@@ -923,13 +984,13 @@
         prevPt = null; // break the line at gaps
         continue;
       }
-      hasRatings = true;
       var rx = ptX(ri);
       var ry = ratingY(ar);
       if (prevPt !== null) {
         ratingLine += '<line x1="' + prevPt.x.toFixed(1) + '" y1="' + prevPt.y.toFixed(1) + '" x2="' + rx.toFixed(1) + '" y2="' + ry.toFixed(1) + '" stroke="#fdd663" stroke-width="2" stroke-linejoin="round"/>';
       }
-      ratingDots += '<circle cx="' + rx.toFixed(1) + '" cy="' + ry.toFixed(1) + '" r="2.5" fill="#fdd663"/>';
+      var dotTooltip = escXml(buckets[ri].label) + ': avg ' + ar.toFixed(1) + '★ (' + buckets[ri].count + ' review' + (buckets[ri].count === 1 ? '' : 's') + ')';
+      ratingDots += '<circle cx="' + rx.toFixed(1) + '" cy="' + ry.toFixed(1) + '" r="3.5" fill="#fdd663"><title>' + dotTooltip + '</title></circle>';
       prevPt = { x: rx, y: ry };
     }
 
@@ -940,6 +1001,45 @@
     if (legendEl) {
       legendEl.textContent = hasRatings ? 'bars = review count  ·  line = avg rating' : 'bars = review count';
     }
+  }
+
+  // ── Chart pan controls (◀ Older / Newer ▶) for the review-rate chart ──────
+  function updateRvChartNav(allBuckets, winStart, winEnd, winSize) {
+    var nav = document.getElementById('rvChartNav');
+    var prevBtn = document.getElementById('rvChartPrev');
+    var nextBtn = document.getElementById('rvChartNext');
+    var rangeEl = document.getElementById('rvChartRange');
+    if (!nav || !prevBtn || !nextBtn || !rangeEl) return;
+
+    // No panning needed when everything fits in one window
+    if (allBuckets.length <= winSize) {
+      nav.style.display = 'none';
+      return;
+    }
+    nav.style.display = 'flex';
+
+    rangeEl.textContent = allBuckets[winStart].label + ' — ' + allBuckets[winEnd - 1].label +
+      '  (' + (winStart + 1) + '–' + winEnd + ' of ' + allBuckets.length + ')';
+
+    var atOldest = winStart === 0;
+    var atNewest = winEnd === allBuckets.length;
+    prevBtn.disabled = atOldest;
+    nextBtn.disabled = atNewest;
+    prevBtn.style.opacity = atOldest ? '0.35' : '1';
+    nextBtn.style.opacity = atNewest ? '0.35' : '1';
+    prevBtn.style.cursor = atOldest ? 'default' : 'pointer';
+    nextBtn.style.cursor = atNewest ? 'default' : 'pointer';
+
+    // Pan by half a window per click so context carries over
+    var step = Math.max(1, Math.floor(winSize / 2));
+    prevBtn.onclick = function () {
+      state.rvChartOffset += step;
+      renderReviewRateChart(state.currentReviews, state.reviewRateGranularity);
+    };
+    nextBtn.onclick = function () {
+      state.rvChartOffset -= step;
+      renderReviewRateChart(state.currentReviews, state.reviewRateGranularity);
+    };
   }
 
   // ── Review Momentum Panel ──────────────────────────────────────────────────
@@ -1255,6 +1355,42 @@
       ${dots}${xlabels}`;
   }
 
+  // How many additional 5★ reviews are needed to push the average rating up
+  // to the next 0.1 tier (e.g. current 4.13 → tier 4.1 → target 4.2)?
+  // Uses the star histogram for an exact rating sum when available, since
+  // avgRating alone may already be rounded by Google.
+  function computeNextTierMetric(latest) {
+    if (!latest || !latest.totalReviews) return null;
+    let N = latest.totalReviews;
+    let S;
+    const histTotal = latest.stars
+      ? Object.values(latest.stars).reduce((a, b) => a + (b || 0), 0)
+      : 0;
+    if (histTotal > 0) {
+      S = 0;
+      for (let s = 1; s <= 5; s++) S += s * (latest.stars[s] || 0);
+      N = histTotal; // keep S and N consistent with each other
+    } else if (latest.avgRating != null) {
+      S = Math.round(latest.avgRating * N);
+    } else {
+      return null;
+    }
+    if (!N) return null;
+
+    const R = S / N;
+    const currentTier = Math.floor(R * 10 + 1e-9) / 10;
+    const nextTier = Math.round((currentTier + 0.1) * 10) / 10;
+
+    if (nextTier >= 5) {
+      return R >= 5 - 1e-9
+        ? { text: '—', sub: 'Perfect rating reached' }
+        : { text: '∞', sub: 'needs all-5★ from here to reach 5.0' };
+    }
+
+    const x = Math.max(0, Math.ceil((nextTier * N - S) / (5 - nextTier) - 1e-9));
+    return { text: `+${x}`, sub: `5★ reviews → ${nextTier.toFixed(1)}` };
+  }
+
   function renderStarDistribution(latest, reviews) {
     const el = document.getElementById('rvStarBars');
     if (!el) return;
@@ -1284,10 +1420,33 @@
   function renderRecentReviews(reviews) {
     const el = document.getElementById('rvList');
     if (!el) return;
-    if (!reviews || !reviews.length) { el.innerHTML = '<p style="color:#666;font-size:13px">No individual reviews captured yet.</p>'; return; }
-    const sorted = [...reviews].sort((a, b) => (b.syncedAt || b.collectedAt || 0) - (a.syncedAt || a.collectedAt || 0)).slice(0, 50);
-    el.innerHTML = sorted.map(r => {
-      const stars = '★'.repeat(r.rating || 0) + '☆'.repeat(Math.max(0, 5 - (r.rating || 0)));
+    const countEl = document.getElementById('rvListCount');
+    const moreWrap = document.getElementById('rvListMore');
+    if (!reviews || !reviews.length) {
+      el.innerHTML = '<p style="color:#666;font-size:13px">No individual reviews captured yet.</p>';
+      if (countEl) countEl.textContent = '';
+      if (moreWrap) moreWrap.style.display = 'none';
+      return;
+    }
+
+    // Resolve each review to a timestamp once (actual review date, falling back
+    // to when we captured it), then sort per the selected mode.
+    const decorated = reviews.map(r => {
+      const d = window.GBPDate ? window.GBPDate.resolveReviewDate(r) : null;
+      return { r, t: d ? d.getTime() : (r.syncedAt || r.collectedAt || 0) };
+    });
+    switch (state.reviewSort) {
+      case 'oldest':  decorated.sort((a, b) => a.t - b.t); break;
+      case 'highest': decorated.sort((a, b) => ((b.r.rating || 0) - (a.r.rating || 0)) || (b.t - a.t)); break;
+      case 'lowest':  decorated.sort((a, b) => ((a.r.rating || 0) - (b.r.rating || 0)) || (b.t - a.t)); break;
+      default:        decorated.sort((a, b) => b.t - a.t); // newest
+    }
+
+    const shown = decorated.slice(0, state.reviewListLimit);
+    el.innerHTML = shown.map(({ r }) => {
+      const filled = '★'.repeat(r.rating || 0);
+      const empty = '☆'.repeat(Math.max(0, 5 - (r.rating || 0)));
+      const stars = `<span class="rv-star-filled">${filled}</span><span class="rv-star-empty">${empty}</span>`;
       const esc = (t) => (t || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
       return `
         <div class="rv-item">
@@ -1299,6 +1458,45 @@
           ${r.text ? `<div class="rv-item-text">${esc(r.text)}</div>` : ''}
         </div>`;
     }).join('');
+
+    if (countEl) {
+      countEl.textContent = shown.length < decorated.length
+        ? `— showing ${shown.length} of ${decorated.length.toLocaleString()}`
+        : `(${decorated.length.toLocaleString()})`;
+    }
+
+    // Pagination controls
+    if (moreWrap) {
+      const remaining = decorated.length - shown.length;
+      moreWrap.style.display = remaining > 0 ? '' : 'none';
+      const moreBtn = document.getElementById('rvShowMoreBtn');
+      const allBtn = document.getElementById('rvShowAllBtn');
+      if (moreBtn) {
+        moreBtn.textContent = `Show ${Math.min(100, remaining)} more`;
+        moreBtn.onclick = () => {
+          state.reviewListLimit += 100;
+          renderRecentReviews(state.currentReviews);
+        };
+      }
+      if (allBtn) {
+        allBtn.textContent = `Show all ${decorated.length.toLocaleString()}`;
+        allBtn.onclick = () => {
+          state.reviewListLimit = Infinity;
+          renderRecentReviews(state.currentReviews);
+        };
+      }
+    }
+
+    // Sort selector (idempotent re-wiring)
+    const sortSel = document.getElementById('rvSortSelect');
+    if (sortSel) {
+      sortSel.value = state.reviewSort;
+      sortSel.onchange = () => {
+        state.reviewSort = sortSel.value;
+        state.reviewListLimit = 50;
+        renderRecentReviews(state.currentReviews);
+      };
+    }
   }
 
   // ── Metric Data Loading ──
