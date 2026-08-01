@@ -160,7 +160,7 @@ async function connectBackend(googleAccessToken) {
  * (googlePlaceId) so review data lines up with the same business the dashboard
  * already tracks via metrics.
  */
-function buildIntelPayload(business, snapshot, reviews, isOwn = true) {
+function buildIntelPayload(business, snapshot, reviews, isOwn = true, partial = false) {
   const b = {
     name: business?.name || String(business?.id || 'Unknown'),
     googlePlaceId: String(business?.id || ''),
@@ -195,6 +195,15 @@ function buildIntelPayload(business, snapshot, reviews, isOwn = true) {
 
     // Compute snapshot aggregates from scraped reviews and merge into snapshot.
     // Only when reviews were actually scraped (non-empty array).
+    //
+    // Skipped entirely for a partial batch ("Fetch New Reviews"), where the
+    // array is just the handful of reviews the server was missing. Deriving a
+    // true average or a photo/local-guide count from that subset would
+    // overwrite the profile's real aggregates with figures computed from four
+    // reviews. The header-derived snapshot above (Google's own total and
+    // display rating) is still accurate and still sent.
+    if (partial) return { businesses: [b] };
+
     const withPhotos      = reviews.filter(r => r.hasPhoto).length;
     const localGuides     = reviews.filter(r => r.isLocalGuide).length;
     const contributions   = reviews
@@ -227,11 +236,11 @@ function buildIntelPayload(business, snapshot, reviews, isOwn = true) {
  * Push a review snapshot + individual reviews to the Postgres backend's
  * /api/ingest/intel. Never throws — local storage stays source of truth.
  */
-async function syncReviewToBackend(business, snapshot, reviews, isOwn = true) {
+async function syncReviewToBackend(business, snapshot, reviews, isOwn = true, partial = false) {
   const key = await getBackendKey();
   if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable review sync' };
 
-  const payload = buildIntelPayload(business, snapshot, reviews, isOwn);
+  const payload = buildIntelPayload(business, snapshot, reviews, isOwn, partial);
   const b = payload.businesses[0];
   if (!b.snapshot && !(b.reviews && b.reviews.length)) return { ok: false, error: 'Nothing to sync' };
 
@@ -301,6 +310,68 @@ async function pullReviewsFromServer(businessId) {
     return { success: true, snapshots: snaps, reviews: revs };
   } catch (err) {
     return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Return the review ids already stored for a business, so an incremental
+ * scrape ("Fetch New Reviews") knows where to stop.
+ *
+ * The baseline is the SERVER's set whenever the backend is reachable — never a
+ * union with local rows. A review sitting in local IndexedDB may still be
+ * queued in the outbox or may have failed to push; folding it into the "already
+ * have it" set would make the incremental path skip it forever. Local ids are
+ * the fallback only when the backend cannot be reached, where they are the best
+ * available answer to "what have we already captured".
+ *
+ * @param {string} businessId  Canonical id (CID) as seen by the scraper.
+ * @param {string} [aliasId]   GBP local id, when the page exposed both.
+ * @returns {Promise<{success:boolean, ids:string[], source:'server'|'local'|'none', error?:string}>}
+ */
+async function getKnownReviewIds(businessId, aliasId) {
+  const wanted = new Set([businessId, aliasId].filter(Boolean).map(String));
+  if (!wanted.size) return { success: false, ids: [], source: 'none', error: 'No business id' };
+
+  const ids = new Set();
+  const key = await getBackendKey();
+
+  if (key) {
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/ingest/intel`, {
+        headers: { 'Authorization': `Bearer ${key}`, 'x-extension-id': chrome.runtime.id },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        for (const b of data.businesses || []) {
+          if (!wanted.has(String(b.googlePlaceId)) && !wanted.has(String(b.id))) continue;
+          for (const r of b.reviews || []) {
+            if (r.externalReviewId) ids.add(String(r.externalReviewId));
+          }
+        }
+        return { success: true, ids: [...ids], source: 'server' };
+      }
+      console.warn(`[GBP BG] known-review-ids HTTP ${resp.status} — falling back to local`);
+    } catch (err) {
+      console.warn('[GBP BG] known-review-ids fetch failed — falling back to local:', err.message);
+    }
+  }
+
+  // Offline / not connected: local rows are the only baseline available.
+  try {
+    await GBPStorage.open();
+    for (const id of wanted) {
+      for (const r of (await GBPStorage.getReviews(id)) || []) {
+        if (r.externalId) ids.add(String(r.externalId));
+      }
+    }
+    return {
+      success: true,
+      ids: [...ids],
+      source: 'local',
+      error: key ? 'Backend unreachable' : 'Backend not connected',
+    };
+  } catch (err) {
+    return { success: false, ids: [], source: 'none', error: err.message };
   }
 }
 
@@ -611,7 +682,7 @@ async function sendSyncJob(job) {
   }
   if (job.kind === 'intel') {
     const p = job.payload;
-    const r = await syncReviewToBackend(p.business, p.snapshot, p.reviews, p.isOwn !== false);
+    const r = await syncReviewToBackend(p.business, p.snapshot, p.reviews, p.isOwn !== false, !!p.partial);
     if (r.ok) return { ok: true };
     if (r.error === 'Nothing to sync') return { ok: true, dropped: true };
     return { ok: false, error: r.error };
@@ -1238,6 +1309,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'saveReviewData') {
     const { business, snapshot, reviews } = msg;
     const businessId = business?.id;
+    // Partial = an incremental "Fetch New Reviews" batch (a subset of the
+    // profile's reviews), not a full re-scrape.
+    const partial = !!msg.partial;
 
     GBPStorage.open()
       // Fold local-id records into the canonical CID row (see saveMetricData)
@@ -1252,11 +1326,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // this business's performance history down. v1: fire-and-forget.
         syncV2Enabled().then(on => {
           if (!on) {
-            syncReviewToBackend(business, snapshot, reviews, msg.isOwn !== false).catch(() => {});
+            syncReviewToBackend(business, snapshot, reviews, msg.isOwn !== false, partial).catch(() => {});
             return;
           }
-          GBPStorage.enqueueSync('intel', businessId, `intel:${businessId}`, {
-            business, snapshot, reviews, isOwn: msg.isOwn !== false,
+          // Partial batches get their own dedupe key. enqueueSync REPLACES the
+          // payload of an undrained job sharing a key — letting a new-reviews
+          // batch land on that key would silently discard a queued full scrape.
+          const dedupeKey = `intel:${businessId}${partial ? ':partial' : ''}`;
+          GBPStorage.enqueueSync('intel', businessId, dedupeKey, {
+            business, snapshot, reviews, isOwn: msg.isOwn !== false, partial,
           })
             .then(() => drainSyncQueue())
             .then(() => hydrateBusiness(businessId))
@@ -1275,6 +1353,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         console.error('[GBP BG] saveReviewData error:', e);
         sendResponse({ success: false, reason: e.message });
       });
+    return true;
+  }
+
+  // ── Which review ids are already stored (incremental scrape baseline) ─────
+  if (msg.action === 'getKnownReviewIds') {
+    getKnownReviewIds(msg.businessId, msg.aliasId)
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ success: false, ids: [], source: 'none', error: e.message }));
     return true;
   }
 

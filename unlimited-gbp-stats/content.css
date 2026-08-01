@@ -109,6 +109,14 @@
 }
 #gbp-fetch-all:hover { background: #3d3d54; }
 
+/* Fetch New Reviews — incremental catch-up, the everyday review action */
+#gbp-fetch-new-reviews {
+  background: #fdd663;
+  color: #1a1a2e;
+  font-weight: 700;
+}
+#gbp-fetch-new-reviews:hover { background: #fee79a; }
+
 .gbp-stats-actions button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
