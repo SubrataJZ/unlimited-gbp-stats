@@ -996,7 +996,19 @@
     }
   }
 
-  async function extractIndividualReviews(maxScrolls = 80, maxReviews = 1500) {
+  /**
+   * Scroll-harvest the review list.
+   *
+   * @param {number} maxScrolls
+   * @param {number} maxReviews
+   * @param {{shouldStop?: (collected:Array)=>boolean, onProgress?: (n:number)=>void}} [opts]
+   *   shouldStop is consulted after every harvest (including the first, before
+   *   any scrolling) so an incremental run can bail out the moment it reaches
+   *   reviews the server already has. Returning true ends the walk; the
+   *   reviews collected so far are still returned.
+   */
+  async function extractIndividualReviews(maxScrolls = 80, maxReviews = 1500, opts = {}) {
+    const { shouldStop = null, onProgress = null } = opts;
     const now = new Date();
 
     // Accumulator keyed by externalId. Harvested on every step because Google's
@@ -1019,6 +1031,13 @@
     let doc = harvestNow();
     let lastSize = collected.size;
     let noGrowthStreak = 0;
+    let stoppedEarly = false;
+
+    // The visible first screen may already be enough for an incremental run.
+    if (shouldStop && shouldStop([...collected.values()])) {
+      console.log('[SCRAPER-DEBUG] shouldStop satisfied on the first screen — no scrolling needed');
+      return [...collected.values()];
+    }
 
     for (let s = 0; s < maxScrolls; s++) {
       if (collected.size >= maxReviews) break;
@@ -1050,6 +1069,13 @@
       doc = harvestNow();
       let size = collected.size;
       console.log(`[SCRAPER-DEBUG] step ${s}: collected=${size} (was ${lastSize})`);
+      onProgress?.(size);
+
+      if (shouldStop && shouldStop([...collected.values()])) {
+        console.log(`[SCRAPER-DEBUG] shouldStop satisfied at step ${s} — collected=${size}`);
+        stoppedEarly = true;
+        break;
+      }
 
       if (size === lastSize) {
         // Stalled — wait for any in-flight spinner/fetch before declaring it
@@ -1089,7 +1115,10 @@
       lastSize = size;
     }
 
-    harvestNow(); // final sweep for anything loaded after the last step
+    // Final sweep for anything loaded after the last step. Skipped when we
+    // stopped early: the list is already past the point of interest, and a
+    // late-arriving card would only pad the scan count.
+    if (!stoppedEarly) harvestNow();
     console.log(`[SCRAPER-DEBUG] done — total collected=${collected.size}`);
     return [...collected.values()];
   }
@@ -1138,6 +1167,201 @@
       }, (response) => {
         if (chrome.runtime.lastError) resolve({ success: false, reason: chrome.runtime.lastError.message });
         else resolve(response || { success: false, reason: 'No response from background' });
+      });
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  INCREMENTAL REVIEW CATCH-UP  ("Fetch New Reviews")
+  //
+  //  "Fetch Reviews" walks the entire list every time — minutes of scrolling to
+  //  re-collect hundreds of reviews the server already stores. This path asks
+  //  the backend which review ids it already has, sorts Google's list by
+  //  Newest, and walks only until it runs into that known set. On a profile
+  //  that gains a couple of reviews a week it touches one or two screens.
+  //
+  //  The baseline is deliberately the SERVER's id set, not the local one: a
+  //  local row whose push is still queued (or failed) must stay eligible for
+  //  re-capture. Local ids are used only when the backend is unreachable.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Ask the background worker which review ids are already stored. */
+  function getKnownReviewIds(businessId, aliasId) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { action: 'getKnownReviewIds', businessId, aliasId },
+        (resp) => {
+          if (chrome.runtime.lastError || !resp?.success) {
+            resolve({ ids: new Set(), source: 'none', error: chrome.runtime.lastError?.message });
+            return;
+          }
+          resolve({
+            ids: new Set((resp.ids || []).map(String)),
+            source: resp.source || 'none',
+            error: resp.error,
+          });
+        }
+      );
+    });
+  }
+
+  /**
+   * Best-effort: switch the review list's sort order to "Newest".
+   *
+   * Without this the list is in "Most relevant" order, where a brand-new review
+   * can sit anywhere — and "stop when you reach known reviews" stops meaning
+   * anything. Returns false when the control could not be found, which the
+   * caller compensates for by scanning a much wider window. Never throws.
+   */
+  async function sortReviewsByNewest() {
+    try {
+      const doc = resolveReviewDoc();
+
+      // The trigger reads "Sort", "Most relevant" or "Newest" depending on
+      // surface and current state. Keep the label short to avoid matching a
+      // paragraph that merely contains the word.
+      const TRIGGER_RE = /^(sort(\s+reviews?)?|most relevant|newest|relevance|lowest rating|highest rating)$/i;
+      const trigger = [...doc.querySelectorAll('button, [role="button"], [role="combobox"], [aria-haspopup]')]
+        .find((el) => {
+          const label = (el.getAttribute('aria-label') || el.textContent || '').trim();
+          return label.length <= 40 && TRIGGER_RE.test(label);
+        });
+      if (!trigger) return false;
+
+      trigger.click();
+      realClick(trigger);
+      await sleep(900);
+
+      // The menu may render in the review document or be portalled to the top
+      // document — check both.
+      for (const d of new Set([doc, document])) {
+        const item = [...d.querySelectorAll('[role="menuitemradio"], [role="option"], [role="menuitem"], li, button')]
+          .find((el) => {
+            const label = (el.textContent || el.getAttribute('aria-label') || '').trim();
+            return /^newest$/i.test(label);
+          });
+        if (!item) continue;
+        item.click();
+        realClick(item);
+        await sleep(2000);
+        await waitForSpinner(resolveReviewDoc(), 6000);
+        return true;
+      }
+
+      // Menu opened but held no "Newest" — close it so the page is left as found.
+      try {
+        const target = doc.activeElement || doc.body;
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      } catch (_) { /* ignore */ }
+      return false;
+    } catch (e) {
+      console.warn('[GBP] sortReviewsByNewest:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Scrape ONLY the reviews the server does not already have, then persist them.
+   *
+   * @param {(msg:string, cur:number, tot:number)=>void} [progressCb]
+   * @returns {Promise<{success:boolean, newCount?:number, scanned?:number,
+   *                    knownCount?:number, source?:string, sorted?:boolean,
+   *                    reason?:string}>}
+   */
+  async function collectNewReviews(progressCb) {
+    const businessId = extractBusinessId();
+    const businessName = extractBusinessName();
+    if (!businessId) return { success: false, reason: 'Could not detect business ID on this page.' };
+    const aliasId = extractAliasLocalId();
+
+    progressCb?.('Checking what is already stored…', 0, 1);
+    const known = await getKnownReviewIds(businessId, aliasId);
+
+    // Same panel-opening rule as the full scrape.
+    if (!getReviewCards(resolveReviewDoc()).length) {
+      progressCb?.('Opening Reviews panel…', 0, 1);
+      await openReviewsPanel();
+      await sleep(1500);
+    }
+
+    progressCb?.('Sorting by newest…', 0, 1);
+    const sorted = await sortReviewsByNewest();
+
+    progressCb?.('Reading review summary…', 0, 1);
+    const snapshot = extractReviewSnapshot(resolveReviewDoc());
+
+    // How many consecutive already-known reviews end the walk. Sorted by
+    // Newest, a short run is conclusive; unsorted, only a wide sweep is.
+    const STOP_AFTER_KNOWN = sorted ? 12 : 60;
+    const isKnown = (r) => known.ids.has(String(r.externalId));
+
+    // Trailing run of known reviews at the end of the harvested list. Map
+    // insertion order tracks DOM order, so "the end" is the oldest screen seen.
+    const shouldStop = (list) => {
+      if (!known.ids.size) return false;   // nothing to stop against — full walk
+      let run = 0;
+      for (let i = list.length - 1; i >= 0 && isKnown(list[i]); i--) run++;
+      return run >= STOP_AFTER_KNOWN;
+    };
+
+    // With a baseline and a Newest sort the walk ends early, so a tighter cap
+    // is enough. With no baseline this run IS a full scrape — give it the full
+    // budget rather than truncating a long history on a first capture.
+    const scrollBudget = (known.ids.size && sorted) ? 40 : 80;
+
+    progressCb?.('Scanning for new reviews…', 0, 1);
+    let scanned = [];
+    try {
+      scanned = await extractIndividualReviews(scrollBudget, 1500, {
+        shouldStop,
+        onProgress: (n) => progressCb?.(`Scanned ${n} reviews…`, 0, 1),
+      });
+    } catch (e) {
+      console.warn('[GBP] incremental review scrape:', e);
+    }
+
+    const fresh = scanned.filter((r) => !isKnown(r));
+
+    if (!snapshot && !scanned.length)
+      return { success: false, reason: 'No review data found. Open the business’s Reviews on Google Maps, then try again.' };
+
+    // Backfill the star histogram only on a genuine first run, where `fresh` is
+    // the whole list. On a partial batch the distribution would be a lie.
+    if (snapshot && Object.keys(snapshot.stars).length === 0 && fresh.length && !known.ids.size) {
+      const dist = {};
+      for (const r of fresh) if (r.rating >= 1 && r.rating <= 5) dist[r.rating] = (dist[r.rating] || 0) + 1;
+      snapshot.stars = dist;
+    }
+
+    // `partial` tells the background worker this is a subset, so it does not
+    // recompute snapshot aggregates (true average, photo/local-guide counts)
+    // from what is only a handful of new reviews.
+    const partial = known.ids.size > 0;
+
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'saveReviewData',
+        business: { id: businessId, name: businessName, aliasId },
+        snapshot,
+        reviews: fresh,
+        partial,
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ success: false, reason: chrome.runtime.lastError.message });
+          return;
+        }
+        if (!response?.success) {
+          resolve({ success: false, reason: response?.reason || 'No response from background' });
+          return;
+        }
+        resolve({
+          success: true,
+          newCount:   fresh.length,
+          scanned:    scanned.length,
+          knownCount: known.ids.size,
+          source:     known.source,
+          sorted,
+        });
       });
     });
   }
@@ -1252,6 +1476,7 @@
           <button id="gbp-fetch-tab">Fetch All Months (Tab)</button>
           <button id="gbp-fetch-all">⭐ Fetch All Performance</button>
           <button id="gbp-fetch-reviews">⭐ Fetch Reviews</button>
+          <button id="gbp-fetch-new-reviews" title="Sorts by Newest and stops as soon as it reaches reviews the server already has">🆕 Fetch New Reviews</button>
           <button id="gbp-auto-draft-replies" style="display:none">🤖 Auto-draft replies</button>
         </div>
         <div id="gbp-progress" style="display:none;margin-top:8px">
@@ -1350,6 +1575,46 @@
       }
     };
 
+    // Fetch NEW reviews only — incremental catch-up. Sorts the list by Newest
+    // and stops as soon as it walks into the reviews the server already holds,
+    // so a daily run costs a handful of scrolls instead of a full re-scrape.
+    document.getElementById('gbp-fetch-new-reviews').onclick = async () => {
+      showProgress(true);
+      setResult('', '');
+      disableButtons(true);
+      try {
+        const result = await collectNewReviews((msg, cur, tot) => {
+          const fill = document.getElementById('gbp-progress-fill');
+          const text = document.getElementById('gbp-progress-text');
+          if (fill) fill.style.width = (tot > 0 ? Math.round((cur / tot) * 100) : 30) + '%';
+          if (text) text.textContent = msg;
+        });
+        if (result.success) {
+          const baseline = result.knownCount === 0
+            ? 'First run for this business — everything found is new.'
+            : `${result.knownCount} already on ${result.source === 'server' ? 'the server' : 'this device'}`;
+          const sortNote = result.sorted
+            ? ''
+            : '<div style="font-size:10px;color:#fdd663;margin-top:3px">⚠ Could not switch the list to “Newest” — scanned a wider window to compensate.</div>';
+          setResult('', `
+            <div style="font-size:13px;font-weight:700;color:${result.newCount ? '#81c995' : '#8ab4f8'};margin-bottom:4px">
+              ${result.newCount ? `✅ ${result.newCount} new review${result.newCount === 1 ? '' : 's'} captured` : '✓ Already up to date'}
+            </div>
+            <div style="font-size:11px;color:#aaa">Scanned ${result.scanned} · ${baseline}</div>
+            ${sortNote}
+          `);
+        } else {
+          setResult('', `<span style="color:#fdd663">⚠ ${result.reason}</span>`);
+        }
+      } catch (e) {
+        setResult('', `<span style="color:#fdd663">⚠ ${e.message}</span>`);
+      } finally {
+        showProgress(false);
+        disableButtons(false);
+        checkIframeAndUpdateInfo();
+      }
+    };
+
     // Auto-draft AI replies — only meaningful on the owner's own merchant
     // reviews page (business.google.com), where cards have a real reply box.
     // This ONLY opens each card's reply editor and fills it with a draft — it
@@ -1434,7 +1699,7 @@
   }
 
   function disableButtons(v) {
-    ['gbp-update-latest','gbp-save-current','gbp-fetch-tab','gbp-fetch-all','gbp-fetch-reviews','gbp-auto-draft-replies'].forEach(id => {
+    ['gbp-update-latest','gbp-save-current','gbp-fetch-tab','gbp-fetch-all','gbp-fetch-reviews','gbp-fetch-new-reviews','gbp-auto-draft-replies'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = v;
     });
