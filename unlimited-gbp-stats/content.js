@@ -1986,14 +1986,44 @@
     return [...doc.querySelectorAll('.jftiEf, article.VaHEVc')];
   }
 
+  // ── Icon-font-safe text extraction ──────────────────────────────────────────
+  // Google renders icons as Material Symbols LIGATURES: <i class="google-symbols">
+  // open_in_new</i> displays as an ↗ glyph, but its textContent is the literal
+  // string "open_in_new". Reading .textContent off a container therefore glues
+  // the icon name onto the real text — "Remo Ghosh" comes back as
+  // "Remo Ghoshopen_in_new". Strip the icon elements before reading.
+  const ICON_SEL = 'i.google-symbols, i.material-icons, .material-symbols-outlined, ' +
+                   '[class*="google-symbols"], [class*="material-icons"], svg';
+
+  // Safety net for icons carrying none of the classes above: strip a trailing
+  // ligature by EXACT name. A generic /[a-z]+(?:_[a-z]+)+$/ is wrong — it
+  // matches greedily backwards into the name itself ("Remo Ghoshopen_in_new"
+  // → "Remo G"). Every entry here contains an underscore, so it cannot collide
+  // with a real surname (a bare "star" would truncate "Costar" → "Co").
+  const TRAILING_LIGATURE_RE =
+    /(?:open_in_new|more_vert|more_horiz|arrow_outward|arrow_forward|arrow_back|chevron_right|chevron_left|expand_more|expand_less|photo_camera|thumb_up|thumb_down|content_copy|check_circle)$/;
+
+  function elementText(el) {
+    if (!el) return '';
+    let raw;
+    try {
+      const clone = el.cloneNode(true);
+      clone.querySelectorAll(ICON_SEL).forEach(n => n.remove());
+      raw = clone.textContent;
+    } catch (_) {
+      raw = el.textContent || '';
+    }
+    return raw.replace(/\s+/g, ' ').trim().replace(TRAILING_LIGATURE_RE, '').trim();
+  }
+
   // ── Extract one review object from a card element (null if not a real review) ─
   // Selectors carry Maps + Search/GBP-panel variants with generic fallbacks.
   // Rating is read from an aria-label (robust to class rotation); the card is
   // kept if it has either a rating OR text.
   function extractReviewFromCard(card, now) {
     const author =
-      card.querySelector('.d4r55, .PskQHd, [class*="title"]')?.textContent?.trim() ||
-      card.getAttribute('aria-label') || '';
+      elementText(card.querySelector('.d4r55, .PskQHd, [class*="title"]')) ||
+      (card.getAttribute('aria-label') || '').trim();
 
     // Rating: class-based first, then walk ALL descendants for any star aria-label.
     // The Search modal uses different classes than Maps so the generic walk is essential.
@@ -2039,10 +2069,10 @@
     }
     text = text.replace(/view full review/gi, ' ').replace(/\s+/g, ' ').trim();
 
-    const dateRaw = card.querySelector('.rsqaWe, .KEfuhb, .dehysf, [class*="date"]')?.textContent?.trim() || '';
+    const dateRaw = elementText(card.querySelector('.rsqaWe, .KEfuhb, .dehysf, [class*="date"]'));
     const reviewedAtISO = parseRelativeReviewDate(dateRaw, now);
 
-    const contributorText = card.querySelector('.RfnDt, .WEBjve, [class*="contributor"]')?.textContent?.trim() || '';
+    const contributorText = elementText(card.querySelector('.RfnDt, .WEBjve, [class*="contributor"]'));
     const countMatch = contributorText.match(/(\d+)\s+reviews?/i);
     const authorReviewCount = countMatch ? parseInt(countMatch[1]) : null;
 

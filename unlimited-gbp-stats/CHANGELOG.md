@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.20.1] - 2026-08-01
+- **Fixed: reviewer names were captured with an icon name glued to the end** — "Remo Ghosh" stored as "Remo Ghoshopen_in_new". Google renders the ↗ "open in new tab" icon as a Material Symbols *ligature*: the element's text really is the string `open_in_new`, and reading the name container's `textContent` swallowed it. Icon elements are now stripped before any text is read, with an exact-name fallback for icons that carry no identifying class. The same cleaning is applied to the review date and contributor fields.
+- Existing reviews keep the polluted name until they are scraped again. A full **⭐ Fetch Reviews** repairs them (the server updates `authorName` on re-ingest); **🆕 Fetch New Reviews** will not, since it deliberately skips reviews already stored.
+
 ## [1.20.0] - 2026-08-01
 - **New: "🆕 Fetch New Reviews" — an incremental catch-up that only collects reviews the server doesn't already have.** "Fetch Reviews" re-walks the entire list on every run, which on an established profile means minutes of scrolling to re-collect hundreds of reviews already stored. The new button asks the backend which review ids it holds, switches Google's list to **Newest**, and stops as soon as it walks into that known set — so a routine top-up usually costs one or two screens. The full "Fetch Reviews" is unchanged and remains the right choice for a first capture, for a competitor's profile you've never scraped, or any time you want a guaranteed complete re-read.
 - The baseline is the **server's** review ids, never the local copy: a review still queued in the outbox (or one whose upload failed) stays eligible for re-capture instead of being skipped forever. If the backend can't be reached, local ids are used as a fallback and the result says so.
