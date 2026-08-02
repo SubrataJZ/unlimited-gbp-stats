@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.21.0] - 2026-08-02
+- **New: the header month picker now drives the Reviews tab, not just Performance.** Selecting a period shows how many reviews arrived in it, the average rating *of those reviews* (labelled separately so it can't be mistaken for the lifetime average), and how both compare with the same period a year earlier. The "All reviews" list, its sorting and its pagination all follow the selected period too.
+- **Note this changes what the reviews list shows by default**: the picker always has a period selected, so the list is now scoped to it. The period block above the list always states the active range and count, and the view falls back to the full unfiltered history whenever the selected range already covers every review you have.
+- When there's nothing to compare against, the year-over-year figures read "no prior-year data" rather than inventing a 0 or a −100% drop.
+- **Reviews whose date could not be resolved are excluded from period maths and counted openly** ("N reviews without a date excluded"), instead of being quietly dropped into whichever month happened to be selected or dragged through the average.
+
 ## [1.20.4] - 2026-08-02
 - **Fixed: the pending-upload count grew without bound while uploads were failing** (one profile reported "76 pending"). Re-queuing a push only replaced an existing job if that job had never failed. So the moment an upload started failing — expired sign-in, offline, a rejected payload — every later scrape of the same thing added *another* job instead of replacing it. The number on the header chip was never 76 pieces of unsent data; it was one problem counted 76 times, with 76 doomed retries attached. Re-queuing now always collapses onto the job that already owns that data, and existing bloated queues are compacted automatically on the next sync — no data is discarded, and nothing has to be re-scraped.
 - A fresh scrape now also re-arms a push that was sitting in a long backoff, instead of making you wait out as much as six hours to find out whether it works now. The retry ladder itself is preserved, so a genuinely broken upload still backs off rather than hammering the server.

@@ -300,6 +300,35 @@
         <p>Open your business on <a href="https://maps.google.com/" target="_blank">Google Maps</a>, scroll to the Reviews section, then click <strong>⭐ Fetch Reviews</strong> on the floating panel.</p>
       </div>
 
+      <!-- ═══ Period-filter summary — driven by the header date picker. Only shown when the
+           selected period is narrower than the full review history; otherwise the picker
+           covers everything and the view falls back to today's all-time behaviour. ═══ -->
+      <div id="rvPeriodSection" class="rv-period-section" style="display:none">
+        <div class="rv-period-header">
+          <span class="rv-period-title">Selected period</span>
+          <span class="rv-period-range" id="rvPeriodRange"></span>
+        </div>
+        <div class="rv-period-stats">
+          <div class="rv-period-stat">
+            <div class="rv-period-num" id="rvPeriodCount">—</div>
+            <div class="rv-period-lbl">Reviews in period</div>
+          </div>
+          <div class="rv-period-stat">
+            <div class="rv-period-num" id="rvPeriodAvg">—</div>
+            <div class="rv-period-lbl">Avg rating (period only)</div>
+          </div>
+          <div class="rv-period-stat">
+            <div class="rv-period-num" id="rvPeriodYoyCount">—</div>
+            <div class="rv-period-lbl" id="rvPeriodYoyCountLbl">vs last year</div>
+          </div>
+          <div class="rv-period-stat">
+            <div class="rv-period-num" id="rvPeriodYoyRating">—</div>
+            <div class="rv-period-lbl">rating vs last year</div>
+          </div>
+        </div>
+        <div class="rv-period-note" id="rvPeriodNote" style="display:none"></div>
+      </div>
+
       <!-- ═══ Review Momentum Panel ═══ -->
       <div id="rvMomentumSection" style="display:none;margin-bottom:16px">
         <h3 class="rv-section-title" style="margin-bottom:10px">Review Momentum</h3>

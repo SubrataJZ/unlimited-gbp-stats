@@ -29,6 +29,7 @@
     // Reviews view
     reviewRateGranularity: 'month',
     currentReviews: [],
+    reviewListSource: [],         // currentReviews, or the period-filtered subset when a period is active
     rvChartOffset: 0,             // buckets panned back from the newest period
     reviewSort: 'newest',         // 'newest' | 'oldest' | 'highest' | 'lowest'
     reviewListLimit: 50,
@@ -149,32 +150,36 @@
   }
 
   // ── Init ──
-  document.addEventListener('DOMContentLoaded', async () => {
-    // Single source of truth: show the manifest version everywhere it appears
-    const _v = chrome.runtime.getManifest().version;
-    const _topbar = document.getElementById('appVersion');
-    const _footer = document.getElementById('appVersionFooter');
-    if (_topbar) _topbar.textContent = 'v' + _v;
-    if (_footer) _footer.textContent = 'v' + _v;
-    document.title = `Unlimited GBP Stats — Dashboard · v${_v} by ZixAI`;
+  // Guarded so this file can also be `require()`d in Node (unit tests for the
+  // pure ReviewPeriod math below) without a DOM crashing the top-level load.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('DOMContentLoaded', async () => {
+      // Single source of truth: show the manifest version everywhere it appears
+      const _v = chrome.runtime.getManifest().version;
+      const _topbar = document.getElementById('appVersion');
+      const _footer = document.getElementById('appVersionFooter');
+      if (_topbar) _topbar.textContent = 'v' + _v;
+      if (_footer) _footer.textContent = 'v' + _v;
+      document.title = `Unlimited GBP Stats — Dashboard · v${_v} by ZixAI`;
 
-    await GBPStorage.open();
-    bindEvents();
+      await GBPStorage.open();
+      bindEvents();
 
-    // Load auth state before anything else so auto-pull can work
-    await loadAuthUser();
-    updateCloudButton(_authUser ? 'connected' : 'login');
+      // Load auth state before anything else so auto-pull can work
+      await loadAuthUser();
+      updateCloudButton(_authUser ? 'connected' : 'login');
 
-    await loadBusinesses();
+      await loadBusinesses();
 
-    // Check URL params for pre-selected business
-    const params = new URLSearchParams(window.location.search);
-    const bizParam = params.get('business');
-    if (bizParam) {
-      document.getElementById('businessSelect').value = bizParam;
-      await selectBusiness(bizParam);
-    }
-  });
+      // Check URL params for pre-selected business
+      const params = new URLSearchParams(window.location.search);
+      const bizParam = params.get('business');
+      if (bizParam) {
+        document.getElementById('businessSelect').value = bizParam;
+        await selectBusiness(bizParam);
+      }
+    });
+  }
 
   // ── Event Binding ──
   function bindEvents() {
@@ -765,6 +770,216 @@
     }
   }
 
+  // ── Reviews: period-filter math (pure, DOM-free) ──────────────────────────
+  // Drives the Reviews view off the SAME startYear/startMonth..endYear/endMonth
+  // state the header date picker already sets for the Performance view — no
+  // second picker state to keep in sync. Kept dependency-free (only pulls in
+  // GBPDate for date resolution) so the math is unit-testable without a DOM;
+  // see review-period.test.js.
+  const ReviewPeriod = (function () {
+    // In the browser, review-date.js (loaded before this file) has already set
+    // window.GBPDate. In Node (unit tests, no DOM) pull the module directly.
+    const GBPDateLib = (typeof window !== 'undefined' && window.GBPDate)
+      ? window.GBPDate
+      : (typeof require === 'function' ? require('./review-date.js') : null);
+
+    function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+    /** Inclusive YYYY-MM-DD bounds for a startYear/startMonth..endYear/endMonth picker range. */
+    function periodBounds(startYear, startMonth, endYear, endMonth) {
+      const startDate = startYear + '-' + pad2(startMonth) + '-01';
+      const lastDay = new Date(endYear, endMonth, 0).getDate(); // day 0 of next month = last day of this one
+      const endDate = endYear + '-' + pad2(endMonth) + '-' + pad2(lastDay);
+      return { startDate, endDate };
+    }
+
+    /** Resolve a review to a local YYYY-MM-DD string, or null if it has no usable date. */
+    function reviewYMD(review, now) {
+      const d = GBPDateLib ? GBPDateLib.resolveReviewDate(review, now) : null;
+      if (!d) return null;
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    }
+
+    /**
+     * Split reviews into those inside [startDate, endDate] (inclusive) and those excluded.
+     * Reviews with no resolvable date are NEVER assigned to a period — they come back in
+     * `undated` and are never folded into `inPeriod`, so they can't silently skew the count
+     * or average.
+     */
+    function filterReviewsByPeriod(reviews, startDate, endDate, now) {
+      const inPeriod = [];
+      const undated = [];
+      for (const r of (reviews || [])) {
+        const ymd = reviewYMD(r, now);
+        if (!ymd) { undated.push(r); continue; }
+        if (ymd >= startDate && ymd <= endDate) inPeriod.push(r);
+      }
+      return { inPeriod, undated };
+    }
+
+    /** Mean of valid (1..5) star ratings. Null when there's nothing to average — never a fake 0. */
+    function averageRating(reviews) {
+      let sum = 0, n = 0;
+      for (const r of (reviews || [])) {
+        if (r.rating >= 1 && r.rating <= 5) { sum += r.rating; n++; }
+      }
+      return n > 0 ? Math.round((sum / n) * 100) / 100 : null;
+    }
+
+    /**
+     * True when [startDate,endDate] contains every dated review — i.e. the period filter
+     * is a no-op and the view should fall back to today's unfiltered, all-time behaviour.
+     * Also true when there's nothing dated to filter at all.
+     */
+    function isFullRangeSelected(reviews, startYear, startMonth, endYear, endMonth, now) {
+      const { startDate, endDate } = periodBounds(startYear, startMonth, endYear, endMonth);
+      let minYMD = null, maxYMD = null;
+      for (const r of (reviews || [])) {
+        const ymd = reviewYMD(r, now);
+        if (!ymd) continue;
+        if (minYMD === null || ymd < minYMD) minYMD = ymd;
+        if (maxYMD === null || ymd > maxYMD) maxYMD = ymd;
+      }
+      if (minYMD === null) return true;
+      return startDate <= minYMD && endDate >= maxYMD;
+    }
+
+    /**
+     * Full period summary for the Reviews view: count/avg for the selected period, the same
+     * period one year earlier as a delta (never a fake 0 or a misleading -100% when there's
+     * no prior-year data), and the filtered review list to drive "All reviews".
+     */
+    function computeSummary(reviews, startYear, startMonth, endYear, endMonth, now) {
+      const bounds = periodBounds(startYear, startMonth, endYear, endMonth);
+      const isFullRange = isFullRangeSelected(reviews, startYear, startMonth, endYear, endMonth, now);
+      const cur = filterReviewsByPeriod(reviews, bounds.startDate, bounds.endDate, now);
+      const curAvg = averageRating(cur.inPeriod);
+
+      const pyBounds = periodBounds(startYear - 1, startMonth, endYear - 1, endMonth);
+      const prior = filterReviewsByPeriod(reviews, pyBounds.startDate, pyBounds.endDate, now);
+      const priorAvg = averageRating(prior.inPeriod);
+      const hasPriorYear = prior.inPeriod.length > 0;
+
+      return {
+        isFullRange,
+        bounds,
+        count: cur.inPeriod.length,
+        avgRating: curAvg,
+        undatedCount: cur.undated.length,
+        reviews: cur.inPeriod,
+        priorYear: {
+          hasData: hasPriorYear,
+          count: hasPriorYear ? prior.inPeriod.length : null,
+          avgRating: hasPriorYear ? priorAvg : null,
+          countDelta: hasPriorYear ? (cur.inPeriod.length - prior.inPeriod.length) : null,
+          avgDelta: (hasPriorYear && curAvg != null && priorAvg != null)
+            ? Math.round((curAvg - priorAvg) * 100) / 100 : null,
+        },
+      };
+    }
+
+    const api = { periodBounds, filterReviewsByPeriod, averageRating, isFullRangeSelected, computeSummary };
+    if (typeof window !== 'undefined') window.ReviewPeriod = api;
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    return api;
+  })();
+
+  /**
+   * Render (or hide) the period-filter summary block above "All reviews" and return the
+   * review list the rest of the Reviews view should use — the full unfiltered list when
+   * the picker covers the whole history (today's all-time behaviour), or the period-
+   * filtered list otherwise.
+   */
+  function renderReviewPeriodSummary(reviews) {
+    const section = document.getElementById('rvPeriodSection');
+    if (!section) return reviews;
+    if (state.startYear == null || !window.ReviewPeriod) {
+      section.style.display = 'none';
+      return reviews;
+    }
+
+    const summary = window.ReviewPeriod.computeSummary(
+      reviews, state.startYear, state.startMonth, state.endYear, state.endMonth
+    );
+
+    if (summary.isFullRange) {
+      // Selected range covers the entire dated history — nothing meaningful to
+      // filter, so keep showing today's unfiltered, all-time behaviour.
+      section.style.display = 'none';
+      return reviews;
+    }
+
+    section.style.display = '';
+
+    const rangeEl = document.getElementById('rvPeriodRange');
+    if (rangeEl) {
+      const s = `${MONTH_NAMES[state.startMonth - 1]} ${state.startYear}`;
+      const e = `${MONTH_NAMES[state.endMonth - 1]} ${state.endYear}`;
+      rangeEl.textContent = (s === e) ? s : `${s} – ${e}`;
+    }
+
+    const countEl = document.getElementById('rvPeriodCount');
+    if (countEl) countEl.textContent = summary.count.toLocaleString();
+
+    const avgEl = document.getElementById('rvPeriodAvg');
+    if (avgEl) avgEl.textContent = summary.avgRating != null ? `★ ${summary.avgRating.toFixed(1)}` : '—';
+
+    const yoyCountEl = document.getElementById('rvPeriodYoyCount');
+    const yoyCountLbl = document.getElementById('rvPeriodYoyCountLbl');
+    const yoyRatingEl = document.getElementById('rvPeriodYoyRating');
+    const priorLabel = `${MONTH_NAMES[state.startMonth - 1]} ${state.startYear - 1}`;
+
+    if (!summary.priorYear.hasData) {
+      // Never fake a 0 or a misleading -100% when there's simply no data to compare against.
+      if (yoyCountEl) { yoyCountEl.textContent = '—'; yoyCountEl.style.color = ''; }
+      if (yoyCountLbl) yoyCountLbl.textContent = 'no prior-year data';
+      if (yoyRatingEl) { yoyRatingEl.textContent = '—'; yoyRatingEl.style.color = ''; }
+    } else {
+      const cd = summary.priorYear.countDelta;
+      if (yoyCountEl) {
+        yoyCountEl.textContent = (cd >= 0 ? '+' : '') + cd;
+        yoyCountEl.style.color = cd > 0 ? '#81c995' : cd < 0 ? '#f28b82' : '';
+      }
+      if (yoyCountLbl) yoyCountLbl.textContent = `vs ${priorLabel}`;
+
+      const ad = summary.priorYear.avgDelta;
+      if (yoyRatingEl) {
+        if (ad == null) {
+          yoyRatingEl.textContent = '—';
+          yoyRatingEl.style.color = '';
+        } else {
+          const arrow = ad > 0 ? '▲' : ad < 0 ? '▼' : '●';
+          yoyRatingEl.textContent = `${arrow} ${Math.abs(ad).toFixed(1)}★`;
+          yoyRatingEl.style.color = ad > 0 ? '#81c995' : ad < 0 ? '#f28b82' : '';
+        }
+      }
+    }
+
+    const noteEl = document.getElementById('rvPeriodNote');
+    if (noteEl) {
+      if (summary.undatedCount > 0) {
+        noteEl.style.display = '';
+        noteEl.textContent = `${summary.undatedCount} review${summary.undatedCount === 1 ? '' : 's'} without a date excluded from this period.`;
+      } else {
+        noteEl.style.display = 'none';
+      }
+    }
+
+    return summary.reviews;
+  }
+
+  /**
+   * Re-run just the period-dependent parts of the Reviews view (summary block + "All
+   * reviews" list) after the header picker changes, without re-fetching snapshots/reviews
+   * from storage — those are cached in state.currentReviews already.
+   */
+  function refreshReviewPeriodView() {
+    if (state.view !== 'reviews') return;
+    state.reviewListLimit = 50; // fresh period, fresh pagination
+    state.reviewListSource = renderReviewPeriodSummary(state.currentReviews);
+    renderRecentReviews(state.reviewListSource);
+  }
+
   // ── View switching: Performance / Reviews ──
   function switchView(view) {
     state.view = view;
@@ -787,7 +1002,7 @@
   function renderReviews(snapshots, reviews) {
     const hasData = (snapshots && snapshots.length) || (reviews && reviews.length);
     document.getElementById('rvEmpty').style.display = hasData ? 'none' : '';
-    ['rvCountSection','rvRatingSection','rvStarSection','rvListSection'].forEach(id => {
+    ['rvCountSection','rvRatingSection','rvStarSection','rvListSection','rvPeriodSection'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.style.display = hasData ? '' : 'none';
     });
@@ -829,7 +1044,9 @@
     renderReviewRateChart(state.currentReviews, state.reviewRateGranularity);
     renderReviewLineChart('rvRatingChart', snapshots, s => s.avgRating, { color: '#fdd663', min: 0, max: 5 });
     renderStarDistribution(latest, reviews);
-    renderRecentReviews(reviews);
+    // Period summary + "All reviews" both key off the header date picker's range.
+    state.reviewListSource = renderReviewPeriodSummary(reviews);
+    renderRecentReviews(state.reviewListSource);
 
     // Momentum panel
     renderMomentumPanel(state.currentReviews);
@@ -1475,14 +1692,15 @@
         moreBtn.textContent = `Show ${Math.min(100, remaining)} more`;
         moreBtn.onclick = () => {
           state.reviewListLimit += 100;
-          renderRecentReviews(state.currentReviews);
+          // Re-render against the same source (period-filtered or full list) shown now.
+          renderRecentReviews(state.reviewListSource);
         };
       }
       if (allBtn) {
         allBtn.textContent = `Show all ${decorated.length.toLocaleString()}`;
         allBtn.onclick = () => {
           state.reviewListLimit = Infinity;
-          renderRecentReviews(state.currentReviews);
+          renderRecentReviews(state.reviewListSource);
         };
       }
     }
@@ -1494,7 +1712,7 @@
       sortSel.onchange = () => {
         state.reviewSort = sortSel.value;
         state.reviewListLimit = 50;
-        renderRecentReviews(state.currentReviews);
+        renderRecentReviews(state.reviewListSource);
       };
     }
   }
@@ -1889,6 +2107,9 @@
     state.dpSelecting = false;
     closeDatePicker();
     loadMetricData();
+    // Performance reloads via loadMetricData() above; Reviews doesn't share that
+    // pipeline (it isn't month-metric data), so it needs its own refresh here.
+    refreshReviewPeriodView();
   }
 
   function updateDateLabel() {
