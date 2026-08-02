@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.21.1] - 2026-08-02
+- **Fixed: the "5★ reviews to next tier" card told profiles to climb to a rating they already had.** With 4,233 reviews showing 4.1, it advised "+1 5★ review → 4.1". Google publishes an already-rounded average, and rebuilding a review-score total from it lands a hair below the tier (4.09993 rather than 4.1), so the card read that as "not yet 4.1". It now trusts the displayed rating as the current tier and targets the next one up — the same profile now correctly reads "+530 5★ reviews → 4.2", and says "(approx.)" when it is working from the rounded figure rather than an exact star breakdown.
+- The exact path is unchanged and still preferred: when the 1–5 star breakdown is available the answer is computed from real counts with no approximation. That breakdown is what 1.20.2 stopped erasing, so this card gets more accurate as fresh scrapes land.
+
 ## [1.21.0] - 2026-08-02
 - **New: the header month picker now drives the Reviews tab, not just Performance.** Selecting a period shows how many reviews arrived in it, the average rating *of those reviews* (labelled separately so it can't be mistaken for the lifetime average), and how both compare with the same period a year earlier. The "All reviews" list, its sorting and its pagination all follow the selected period too.
 - **Note this changes what the reviews list shows by default**: the picker always has a period selected, so the list is now scoped to it. The period block above the list always states the active range and count, and the view falls back to the full unfiltered history whenever the selected range already covers every review you have.

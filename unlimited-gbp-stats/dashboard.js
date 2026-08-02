@@ -1583,19 +1583,33 @@
     const histTotal = latest.stars
       ? Object.values(latest.stars).reduce((a, b) => a + (b || 0), 0)
       : 0;
+    // `approx` marks the branch where we only have Google's ROUNDED average and
+    // must reason from it, so the label can say so rather than implying an
+    // exactness we do not have.
+    let approx = false;
     if (histTotal > 0) {
       S = 0;
       for (let s = 1; s <= 5; s++) S += s * (latest.stars[s] || 0);
       N = histTotal; // keep S and N consistent with each other
     } else if (latest.avgRating != null) {
-      S = Math.round(latest.avgRating * N);
+      // Do NOT reconstruct an integer rating sum here. Google's 4.1 is already
+      // rounded, so round(4.1 x 4233) = 17355 gives R = 4.09993 — a hair BELOW
+      // 4.1. Flooring that lands on tier 4.0 and the card then advises "+1 5★
+      // review → 4.1", a tier the profile is already displayed at. Trust the
+      // displayed figure as the tier and keep the sum as a float estimate.
+      S = latest.avgRating * N;
+      approx = true;
     } else {
       return null;
     }
     if (!N) return null;
 
     const R = S / N;
-    const currentTier = Math.floor(R * 10 + 1e-9) / 10;
+    // Exact histogram → the true tier is the floor. Rounded average → the
+    // displayed value IS the tier the user sees, so round rather than floor.
+    const currentTier = approx
+      ? Math.round(R * 10) / 10
+      : Math.floor(R * 10 + 1e-9) / 10;
     const nextTier = Math.round((currentTier + 0.1) * 10) / 10;
 
     if (nextTier >= 5) {
@@ -1605,7 +1619,17 @@
     }
 
     const x = Math.max(0, Math.ceil((nextTier * N - S) / (5 - nextTier) - 1e-9));
-    return { text: `+${x}`, sub: `5★ reviews → ${nextTier.toFixed(1)}` };
+    return {
+      text: `+${x}`,
+      sub: `5★ reviews → ${nextTier.toFixed(1)}${approx ? ' (approx.)' : ''}`,
+      approx,
+    };
+  }
+
+  // Exported for unit tests (rating-tier.test.js). No browser behaviour change:
+  // module.exports only exists when this file is required from Node.
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports.computeNextTierMetric = computeNextTierMetric;
   }
 
   function renderStarDistribution(latest, reviews) {
