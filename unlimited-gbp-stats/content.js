@@ -1996,12 +1996,14 @@
                    '[class*="google-symbols"], [class*="material-icons"], svg';
 
   // Safety net for icons carrying none of the classes above: strip a trailing
-  // ligature by EXACT name. A generic /[a-z]+(?:_[a-z]+)+$/ is wrong — it
-  // matches greedily backwards into the name itself ("Remo Ghoshopen_in_new"
-  // → "Remo G"). Every entry here contains an underscore, so it cannot collide
-  // with a real surname (a bare "star" would truncate "Costar" → "Co").
-  const TRAILING_LIGATURE_RE =
-    /(?:open_in_new|more_vert|more_horiz|arrow_outward|arrow_forward|arrow_back|chevron_right|chevron_left|expand_more|expand_less|photo_camera|thumb_up|thumb_down|content_copy|check_circle)$/;
+  // ligature by EXACT name. Owned by storage.js (GBPStorage.stripIconLigature)
+  // so the scrape path and the storage path can never drift apart — storage.js
+  // is loaded before this file in both the content script and the service
+  // worker. The inline fallback only matters if that load ever failed.
+  const stripLigature = (s) =>
+    (typeof GBPStorage !== 'undefined' && GBPStorage.stripIconLigature)
+      ? GBPStorage.stripIconLigature(s)
+      : String(s || '').replace(/\s+/g, ' ').trim().replace(/(?:open_in_new|more_vert)+$/, '').trim();
 
   function elementText(el) {
     if (!el) return '';
@@ -2013,7 +2015,7 @@
     } catch (_) {
       raw = el.textContent || '';
     }
-    return raw.replace(/\s+/g, ' ').trim().replace(TRAILING_LIGATURE_RE, '').trim();
+    return stripLigature(raw);
   }
 
   // ── Extract one review object from a card element (null if not a real review) ─
@@ -2021,9 +2023,11 @@
   // Rating is read from an aria-label (robust to class rotation); the card is
   // kept if it has either a rating OR text.
   function extractReviewFromCard(card, now) {
+    // The aria-label fallback goes through the same scrubber: on some surfaces
+    // the label is built from the card's own text and carries the ligature too.
     const author =
       elementText(card.querySelector('.d4r55, .PskQHd, [class*="title"]')) ||
-      (card.getAttribute('aria-label') || '').trim();
+      stripLigature(card.getAttribute('aria-label') || '');
 
     // Rating: class-based first, then walk ALL descendants for any star aria-label.
     // The Search modal uses different classes than Maps so the generic walk is essential.
