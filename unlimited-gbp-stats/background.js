@@ -288,11 +288,13 @@ async function pullReviewsFromServer(businessId) {
       const localId = b.googlePlaceId || b.id;
       if (!localId) continue;
       for (const s of b.snapshots || []) {
+        // `stars` is deliberately omitted, not sent as {}: the backend has no
+        // star-histogram column, so a server row has no opinion on it. Sending
+        // an empty object would wipe a histogram that only a scrape can read.
         await GBPStorage.saveReviewSnapshot(localId, {
           capturedOn:   (s.capturedOn || '').slice(0, 10),
           totalReviews: s.totalReviews,
           avgRating:    s.displayRating ?? s.trueAverage ?? null,
-          stars:        {},
         });
         snaps++;
       }
@@ -627,11 +629,13 @@ async function hydrateBusiness(businessId, full = false) {
     // ── Review snapshots ──
     let snapsMerged = 0;
     for (const s of match.snapshots || []) {
+      // See pullReviewsFromServer: omit `stars` rather than sending {}, so a
+      // hydrate (which now runs after every scrape) cannot erase the histogram
+      // the scrape just read off the page.
       await GBPStorage.saveReviewSnapshot(canonicalId, {
         capturedOn:   String(s.capturedOn || '').slice(0, 10),
         totalReviews: s.totalReviews,
         avgRating:    s.displayRating ?? s.trueAverage ?? null,
-        stars:        {},
       });
       snapsMerged++;
     }

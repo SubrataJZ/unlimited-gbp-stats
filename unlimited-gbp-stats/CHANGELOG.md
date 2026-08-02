@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.20.2] - 2026-08-01
+- **Fixed: the 1–5 star breakdown emptied itself after a scrape.** Only a scrape can read the star histogram — it's rendered on Google's page and the backend has no column for it — but each day's snapshot was saved with a full overwrite. Since 1.18.0 every scrape is followed by a server hydrate, and that hydrate had no histogram to offer, so it wrote an empty one straight over the breakdown the scrape had just captured. The star chart was reliably blank a second or two after a successful fetch. A day's snapshot is now merged rather than replaced: a field is written only when the incoming data actually carries a value, so "I don't know" can no longer overwrite "I do". The same fix protects the average rating from being blanked by a server row that has neither a display rating nor a true average.
+- Existing snapshots that were already blanked stay blank until the business is scraped again — either review button repairs them, since both re-read the histogram from the page.
+
 ## [1.20.1] - 2026-08-01
 - **Fixed: reviewer names were captured with an icon name glued to the end** — "Remo Ghosh" stored as "Remo Ghoshopen_in_new". Google renders the ↗ "open in new tab" icon as a Material Symbols *ligature*: the element's text really is the string `open_in_new`, and reading the name container's `textContent` swallowed it. Icon elements are now stripped before any text is read, with an exact-name fallback for icons that carry no identifying class. The same cleaning is applied to the review date and contributor fields.
 - Existing reviews keep the polluted name until they are scraped again. A full **⭐ Fetch Reviews** repairs them (the server updates `authorName` on re-ingest); **🆕 Fetch New Reviews** will not, since it deliberately skips reviews already stored.

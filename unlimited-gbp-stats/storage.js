@@ -176,20 +176,41 @@ const GBPStorage = (() => {
   }
 
   /**
-   * Save a dated review snapshot. One snapshot per business per day —
-   * re-running on the same day overwrites that day's row.
-   * @param {object} snap { totalReviews, avgRating, stars:{1..5}, capturedOn? }
+   * Save a dated review snapshot. One snapshot per business per day — re-running
+   * on the same day MERGES into that day's row rather than replacing it.
+   *
+   * The merge is what keeps the star histogram alive. Only a scrape can read the
+   * 1–5 star breakdown, because it is rendered on Google's page and the backend
+   * has no column for it; every server-driven write (hydrateBusiness,
+   * pullReviewsFromServer) therefore has no `stars` to offer. Under the previous
+   * full-replace `put`, the first hydrate after a scrape — which now runs after
+   * EVERY scrape — overwrote the freshly-read histogram with `{}`, so the
+   * dashboard's star breakdown silently emptied itself. Same story for a null
+   * avgRating arriving from a server row that has neither displayRating nor
+   * trueAverage.
+   *
+   * Rule: a field is only written when the incoming snapshot actually carries a
+   * value for it. Absent/null/empty means "no opinion", not "set to nothing".
+   *
+   * @param {object} snap { totalReviews?, avgRating?, stars?:{1..5}, capturedOn? }
    */
   async function saveReviewSnapshot(businessId, snap) {
     const { store } = await tx('reviewSnapshots', 'readwrite');
     const capturedOn = snap.capturedOn || todayStr();
+    const id = `${businessId}_${capturedOn}`;
+    const existing = (await promisifyRequest(store.get(id))) || null;
+
+    // An empty object carries no histogram — treat it as "not provided" so it
+    // can never displace one that was actually read off the page.
+    const hasStars = snap.stars && Object.keys(snap.stars).length > 0;
+
     const record = {
-      id: `${businessId}_${capturedOn}`,
+      id,
       businessId,
       capturedOn,
-      totalReviews: snap.totalReviews || 0,
-      avgRating:    snap.avgRating ?? null,
-      stars:        snap.stars || {},
+      totalReviews: snap.totalReviews ?? existing?.totalReviews ?? 0,
+      avgRating:    snap.avgRating   ?? existing?.avgRating   ?? null,
+      stars:        hasStars ? snap.stars : (existing?.stars || {}),
       collectedAt:  Date.now(),
     };
     await promisifyRequest(store.put(record));
