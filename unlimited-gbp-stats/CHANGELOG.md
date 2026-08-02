@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.20.4] - 2026-08-02
+- **Fixed: the pending-upload count grew without bound while uploads were failing** (one profile reported "76 pending"). Re-queuing a push only replaced an existing job if that job had never failed. So the moment an upload started failing — expired sign-in, offline, a rejected payload — every later scrape of the same thing added *another* job instead of replacing it. The number on the header chip was never 76 pieces of unsent data; it was one problem counted 76 times, with 76 doomed retries attached. Re-queuing now always collapses onto the job that already owns that data, and existing bloated queues are compacted automatically on the next sync — no data is discarded, and nothing has to be re-scraped.
+- A fresh scrape now also re-arms a push that was sitting in a long backoff, instead of making you wait out as much as six hours to find out whether it works now. The retry ladder itself is preserved, so a genuinely broken upload still backs off rather than hammering the server.
+- Note: this fixes the *count*, not necessarily the underlying upload failure. Hover the header chip to see the actual error — an expired sign-in is the most common cause and is fixed by signing in again.
+
 ## [1.20.3] - 2026-08-02
 - **Fixed: reviewer names still showed "open_in_new" glued to the end** ("Ankit Roy Chowdhuryopen_in_new"). 1.20.1 stripped the icon-font ligature at scrape time, which only protected newly scraped reviews — every name already stored, and every name arriving from the server (which holds the polluted copy), stayed wrong. The scrub now runs on the way INTO local storage, so it covers the server-hydrate path too and the dashboard repairs itself as data flows through, with no re-scrape and no backend migration needed. Repeated icons ("…open_in_newopen_in_new") are handled, and the scrubber is now owned in one place so the scrape path and the storage path cannot drift apart.
 

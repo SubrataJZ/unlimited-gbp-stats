@@ -358,10 +358,33 @@ const GBPStorage = (() => {
   }
 
   /**
-   * Enqueue a push. When a pending job with the same dedupeKey already exists
-   * and has not started failing, its payload is replaced instead of adding a
-   * second job — re-scraping the same month five times must not queue five
-   * identical uploads.
+   * Enqueue a push, collapsing onto any job that already owns this dedupeKey.
+   *
+   * The previous rule only collapsed onto a job with `attempts === 0`, which
+   * made the queue grow without bound exactly when it must not. Once a job had
+   * failed once — expired token, offline, a rejected payload — every later
+   * scrape of the same thing appended ANOTHER job instead of replacing it. A
+   * user who keeps working while uploads are failing ends up with dozens of
+   * jobs that all carry the same logical push, each retried forever. That is
+   * what "76 pending" is: not 76 pieces of unsent data, but one problem
+   * multiplied by 76 scrapes.
+   *
+   * Collapsing is safe for every kind currently queued, because each dedupeKey
+   * addresses one logical record and the newest payload supersedes the older:
+   *   - metrics -> key is business+metricType+year-month, payload is that one
+   *     metric, newest wins.
+   *   - intel (full) -> payload is the complete scrape, a superset.
+   *   - intel (partial) -> payload is "reviews the SERVER does not have". If an
+   *     earlier partial never landed, the server still lacks those reviews, so
+   *     the next incremental scrape re-collects them and its payload is again a
+   *     superset.
+   *
+   * `attempts` is carried over rather than reset, so a persistently failing
+   * push keeps climbing its backoff ladder instead of restarting at 30s on
+   * every scrape. `nextAttemptAt` IS reset: a fresh scrape is a deliberate user
+   * action, and making them wait out a 6-hour backoff to find out whether it
+   * works now is worse than spending one request.
+   *
    * @param {string} kind        'metrics' | 'intel'
    * @param {string} businessId  Local business id the job belongs to.
    * @param {string} dedupeKey   Stable key for this logical push.
@@ -370,11 +393,24 @@ const GBPStorage = (() => {
   async function enqueueSync(kind, businessId, dedupeKey, payload) {
     const { store } = await tx('syncQueue', 'readwrite');
     const existing = await promisifyRequest(store.index('dedupeKey').getAll(dedupeKey));
-    const fresh = existing.find(j => j.attempts === 0);
-    if (fresh) {
-      await promisifyRequest(store.put({ ...fresh, payload, queuedAt: Date.now() }));
-      return fresh.id;
+
+    if (existing.length) {
+      // Keep the oldest so queue order (and its place in the backoff ladder) is
+      // preserved; fold the newest payload onto it and drop the duplicates.
+      const sorted = existing.sort((a, b) => (a.queuedAt || 0) - (b.queuedAt || 0));
+      const keep = sorted[0];
+      for (const dup of sorted.slice(1)) await promisifyRequest(store.delete(dup.id));
+      await promisifyRequest(store.put({
+        ...keep,
+        kind,
+        businessId,
+        payload,
+        queuedAt: Date.now(),
+        nextAttemptAt: Date.now(),
+      }));
+      return keep.id;
     }
+
     return promisifyRequest(store.add({
       kind,
       businessId,
@@ -385,6 +421,47 @@ const GBPStorage = (() => {
       nextAttemptAt: Date.now(),
       queuedAt: Date.now(),
     }));
+  }
+
+  /**
+   * Collapse pre-existing duplicate jobs down to one per dedupeKey.
+   *
+   * enqueueSync now prevents duplicates from forming, but that does nothing for
+   * queues already bloated by the old rule. Called at the start of every drain
+   * so an affected install heals on its own rather than needing the user to
+   * discard the queue (which would throw away real unsent data).
+   *
+   * The surviving job is the NEWEST, since its payload supersedes the others
+   * (see enqueueSync), and it keeps the highest attempts count seen for the key
+   * so the backoff ladder is not silently reset.
+   *
+   * @returns {Promise<{removed:number, keys:number}>}
+   */
+  async function compactSyncQueue() {
+    const { store } = await tx('syncQueue', 'readwrite');
+    const all = await promisifyRequest(store.getAll());
+    const byKey = new Map();
+    for (const job of all) {
+      const key = job.dedupeKey || `__id:${job.id}`;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(job);
+    }
+
+    let removed = 0;
+    for (const [, jobs] of byKey) {
+      if (jobs.length < 2) continue;
+      jobs.sort((a, b) => (a.queuedAt || 0) - (b.queuedAt || 0));
+      const keep = jobs[jobs.length - 1];
+      const maxAttempts = Math.max(...jobs.map(j => j.attempts || 0));
+      const lastError = jobs.map(j => j.lastError).filter(Boolean).pop() || null;
+      for (const dup of jobs.slice(0, -1)) {
+        await promisifyRequest(store.delete(dup.id));
+        removed++;
+      }
+      await promisifyRequest(store.put({ ...keep, attempts: maxAttempts, lastError }));
+    }
+    if (removed) console.log(`[GBPStorage] compacted sync queue: removed ${removed} duplicate job(s)`);
+    return { removed, keys: byKey.size };
   }
 
   /** Jobs whose nextAttemptAt has passed, oldest first. */
@@ -510,6 +587,7 @@ const GBPStorage = (() => {
     stripIconLigature,
     migrateBusinessData,
     enqueueSync,
+    compactSyncQueue,
     getDueSyncJobs,
     completeSyncJob,
     failSyncJob,
