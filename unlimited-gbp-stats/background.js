@@ -704,6 +704,9 @@ async function drainSyncQueue() {
   _draining = true;
   let drained = 0, failed = 0;
   try {
+    // Heal queues bloated by the pre-1.20.4 dedupe rule before doing any work,
+    // so a backlog of duplicate jobs is not re-sent one request at a time.
+    await GBPStorage.compactSyncQueue().catch(() => {});
     const jobs = await GBPStorage.getDueSyncJobs(25);
     for (const job of jobs) {
       let result;
