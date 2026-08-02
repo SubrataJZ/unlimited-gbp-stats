@@ -174,6 +174,31 @@ const STARS = { 1: 2, 2: 1, 3: 5, 4: 40, 5: 120 };
     deepEq(snaps[1].stars, {}, 'today\'s row has its own (empty) histogram');
   }
 
+  // 9. Icon-font ligatures are scrubbed on the way into storage, so rows that
+  //    arrive from the server already polluted are displayed clean.
+  {
+    const cases = [
+      ['Ankit Roy Chowdhuryopen_in_new', 'Ankit Roy Chowdhury'],
+      ['Rantim Banerjeeopen_in_new',     'Rantim Banerjee'],
+      ['DR SUVAYAN SAHAopen_in_new',     'DR SUVAYAN SAHA'],
+      ['God’s plan are always betteropen_in_new', 'God’s plan are always better'],
+      ['Remo Ghoshopen_in_newopen_in_new', 'Remo Ghosh'],   // repeated icon
+      ['Nicolas Costar',                 'Nicolas Costar'], // must NOT truncate
+      ['Jean_Luc',                       'Jean_Luc'],
+      ['',                               ''],
+    ];
+    for (const [raw, want] of cases) {
+      eq(GBPStorage.stripIconLigature(raw), want, `stripIconLigature(${JSON.stringify(raw)})`);
+    }
+
+    const biz = 'biz-ligature';
+    await GBPStorage.saveReviews(biz, [
+      { externalId: 'r1', rating: 5, author: 'Barsha Mallickopen_in_new', text: 'nice' },
+    ]);
+    const [rev] = await GBPStorage.getReviews(biz);
+    eq(rev.author, 'Barsha Mallick', 'saveReviews must store the scrubbed author');
+  }
+
   console.log(`ALL TESTS PASSED (${n} assertions)`);
 })().catch((err) => {
   console.error(err.message);

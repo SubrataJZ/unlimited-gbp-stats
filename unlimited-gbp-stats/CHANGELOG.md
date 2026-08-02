@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.20.3] - 2026-08-02
+- **Fixed: reviewer names still showed "open_in_new" glued to the end** ("Ankit Roy Chowdhuryopen_in_new"). 1.20.1 stripped the icon-font ligature at scrape time, which only protected newly scraped reviews — every name already stored, and every name arriving from the server (which holds the polluted copy), stayed wrong. The scrub now runs on the way INTO local storage, so it covers the server-hydrate path too and the dashboard repairs itself as data flows through, with no re-scrape and no backend migration needed. Repeated icons ("…open_in_newopen_in_new") are handled, and the scrubber is now owned in one place so the scrape path and the storage path cannot drift apart.
+
 ## [1.20.2] - 2026-08-01
 - **Fixed: the 1–5 star breakdown emptied itself after a scrape.** Only a scrape can read the star histogram — it's rendered on Google's page and the backend has no column for it — but each day's snapshot was saved with a full overwrite. Since 1.18.0 every scrape is followed by a server hydrate, and that hydrate had no histogram to offer, so it wrote an empty one straight over the breakdown the scrape had just captured. The star chart was reliably blank a second or two after a successful fetch. A day's snapshot is now merged rather than replaced: a field is written only when the incoming data actually carries a value, so "I don't know" can no longer overwrite "I do". The same fix protects the average rating from being blanked by a server row that has neither a display rating nor a true average.
 - Existing snapshots that were already blanked stay blank until the business is scraped again — either review button repairs them, since both re-read the histogram from the page.

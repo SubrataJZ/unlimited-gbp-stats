@@ -224,6 +224,34 @@ const GBPStorage = (() => {
     return all.sort((a, b) => (a.capturedOn < b.capturedOn ? -1 : 1));
   }
 
+  // ── Icon-font ligature scrubber ─────────────────────────────────────────────
+  // Google renders icons as Material Symbols ligatures, so an "open in new tab"
+  // affordance inside a reviewer's name element has the literal textContent
+  // "open_in_new" — "Ankit Roy Chowdhury" arrives as
+  // "Ankit Roy Chowdhuryopen_in_new".
+  //
+  // content.js strips these at scrape time, but that only protects NEW scrapes.
+  // Rows already stored (and rows arriving from the server, which holds the
+  // polluted copy) stay wrong forever. Scrubbing here — on the way INTO local
+  // storage — fixes both paths at once, including the hydrate that follows every
+  // scrape, so the dashboard heals itself without a backend migration.
+  //
+  // Matching is by EXACT ligature name. A generic /[a-z]+(?:_[a-z]+)+$/ is wrong:
+  // it matches greedily backwards into the name ("Remo Ghoshopen_in_new" →
+  // "Remo G"). Every name here contains an underscore, so it cannot collide with
+  // a real surname — a bare "star" would truncate "Costar" → "Co".
+  const LIGATURES = [
+    'open_in_new', 'more_vert', 'more_horiz', 'arrow_outward', 'arrow_forward',
+    'arrow_back', 'chevron_right', 'chevron_left', 'expand_more', 'expand_less',
+    'photo_camera', 'thumb_up', 'thumb_down', 'content_copy', 'check_circle',
+  ];
+  const TRAILING_LIGATURE_RE = new RegExp('(?:' + LIGATURES.join('|') + ')+$');
+
+  function stripIconLigature(s) {
+    if (!s) return '';
+    return String(s).replace(/\s+/g, ' ').trim().replace(TRAILING_LIGATURE_RE, '').trim();
+  }
+
   /**
    * Save an array of individual reviews (idempotent by externalId).
    * @param {Array} reviews [{ externalId, rating, text, author, isLocalGuide, hasPhoto, reviewedAt }]
@@ -240,7 +268,7 @@ const GBPStorage = (() => {
         externalId:   r.externalId,
         rating:       r.rating || 0,
         text:         r.text || '',
-        author:       r.author || '',
+        author:       stripIconLigature(r.author),
         isLocalGuide: !!r.isLocalGuide,
         hasPhoto:     !!r.hasPhoto,
         reviewedAt:    r.reviewedAt || '',
@@ -479,6 +507,7 @@ const GBPStorage = (() => {
     getReviewSnapshots,
     saveReviews,
     getReviews,
+    stripIconLigature,
     migrateBusinessData,
     enqueueSync,
     getDueSyncJobs,
