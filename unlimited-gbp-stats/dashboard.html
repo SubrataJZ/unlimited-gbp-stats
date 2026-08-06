@@ -452,6 +452,33 @@
         <div id="rvStarBars" class="rv-star-bars"></div>
       </div>
 
+      <!-- ═══ What customers talk about ═══
+           Concepts discovered from the review text itself, in whatever language
+           it was written. Nothing here is fetched or analysed until the user
+           asks: the rollup is free but needs a click, and Analyse spends the
+           metered AI budget, so it is never triggered by a page load. ═══ -->
+      <div class="chart-section" id="rvConceptSection">
+        <div class="rv-concept-head">
+          <div>
+            <h3 class="rv-section-title" style="margin-bottom:2px">What customers talk about</h3>
+            <div class="rv-concept-sub" id="rvConceptSub">
+              Dishes, services and staff mentioned in your reviews — Hindi, Bengali and English
+              spellings of the same thing are counted together.
+            </div>
+          </div>
+          <div class="rv-concept-actions">
+            <button id="rvConceptLoad" class="rv-concept-btn">Load insights</button>
+            <button id="rvConceptAnalyze" class="rv-concept-btn rv-concept-btn-primary" style="display:none">Analyse new reviews</button>
+          </div>
+        </div>
+
+        <div id="rvConceptStatus" class="rv-concept-status" style="display:none"></div>
+
+        <div id="rvConceptLangs" class="rv-concept-langs" style="display:none"></div>
+
+        <div id="rvConceptList" class="rv-concept-list"></div>
+      </div>
+
       <!-- All reviews -->
       <div class="table-section" id="rvListSection">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
