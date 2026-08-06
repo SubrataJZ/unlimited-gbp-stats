@@ -111,7 +111,10 @@ export interface ConceptSummary {
   surfaces: string[];
   recentMentions: number;
   priorMentions: number;
-  /** rising | falling | steady — mention volume recent vs prior window. */
+  /** Mentions per month in each window — the comparable figures behind `trend`. */
+  recentPerMonth: number;
+  priorPerMonth: number;
+  /** rising | falling | steady — mention RATE recent vs prior window. */
   trend: 'rising' | 'falling' | 'steady';
   /** avgRating(recent) - avgRating(prior), or null when either side is empty. */
   ratingDelta: number | null;
@@ -310,14 +313,26 @@ export function parseConceptResponse(
  * dating them by scrape time would fabricate a trend out of when we happened
  * to run the scraper.
  *
+ * The two windows are NOT the same length — a 12-month view compares the last
+ * 4 months against the preceding 8 — so the trend compares mentions per month,
+ * not raw counts. Comparing counts across unequal windows would label a
+ * perfectly steady concept "falling" purely because the older window is twice
+ * as wide, which is the opposite of the truth.
+ *
  * Ordering puts the loudest recent signal on top: negative mentions in the
  * recent window first, then total volume.
  */
 export function summarizeConcepts(
   mentions: MentionRow[],
-  splitAt: Date
+  splitAt: Date,
+  spans: { recentMonths: number; priorMonths: number } = {
+    recentMonths: 1,
+    priorMonths: 1,
+  }
 ): ConceptSummary[] {
   const split = splitAt.getTime();
+  const recentMonths = Math.max(1, spans.recentMonths);
+  const priorMonths = Math.max(1, spans.priorMonths);
 
   interface Acc {
     label: string;
@@ -408,9 +423,16 @@ export function summarizeConcepts(
     const recentAvg = a.recent ? a.recentRatingSum / a.recent : null;
     const priorAvg = a.prior ? a.priorRatingSum / a.prior : null;
 
+    // Rates, not counts — see the note on unequal window lengths above. The
+    // 25% band keeps one extra mention in a quiet month from being announced
+    // as a trend.
+    const recentRate = a.recent / recentMonths;
+    const priorRate = a.prior / priorMonths;
     let trend: ConceptSummary['trend'] = 'steady';
-    if (a.recent > a.prior) trend = 'rising';
-    else if (a.recent < a.prior) trend = 'falling';
+    if (a.recent || a.prior) {
+      if (recentRate > priorRate * 1.25) trend = 'rising';
+      else if (recentRate < priorRate * 0.8) trend = 'falling';
+    }
 
     rows.push({
       label: a.label,
@@ -426,6 +448,8 @@ export function summarizeConcepts(
         .map(([s]) => s),
       recentMentions: a.recent,
       priorMentions: a.prior,
+      recentPerMonth: Math.round(recentRate * 100) / 100,
+      priorPerMonth: Math.round(priorRate * 100) / 100,
       trend,
       ratingDelta:
         recentAvg !== null && priorAvg !== null
@@ -707,7 +731,9 @@ export async function getConceptInsights(
   const since = windowStart(now, months);
   // Recent = the most recent third of the window, minimum one month, so a
   // 12-month view compares the last 4 months against the preceding 8.
-  const recentSince = windowStart(now, Math.max(1, Math.round(months / 3)));
+  const recentMonths = Math.max(1, Math.round(months / 3));
+  const priorMonths = Math.max(1, months - recentMonths);
+  const recentSince = windowStart(now, recentMonths);
 
   const mentionRows = await prisma.reviewConceptMention.findMany({
     where: {
@@ -733,7 +759,10 @@ export async function getConceptInsights(
     reviewedAt: m.scrapedReview.reviewedAt,
   }));
 
-  const concepts = summarizeConcepts(mentions, recentSince).filter(
+  const concepts = summarizeConcepts(mentions, recentSince, {
+    recentMonths,
+    priorMonths,
+  }).filter(
     (c) => c.mentions >= minMentions
   );
 

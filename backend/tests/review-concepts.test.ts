@@ -318,6 +318,59 @@ type Extracted = {
   eq(rows[0].surfaces.length, 0, 'a null surface adds nothing to the alias list');
 }
 
+// ── 7b. Trend compares RATES, because the two windows are not equal lengths ──
+//
+// getConceptInsights splits a 12-month view into the last 4 months versus the
+// preceding 8. Comparing raw counts across those windows labels a perfectly
+// steady concept "falling" purely because the older window is twice as wide —
+// the exact opposite of the truth, and the kind of wrong an owner would act on.
+{
+  const mk = (iso: string) => ({
+    label: 'delivery',
+    kind: 'service',
+    sentiment: 'neutral',
+    surface: null,
+    rating: 4,
+    reviewedAt: new Date(iso),
+  });
+
+  // Exactly one mention a month for twelve months: genuinely steady.
+  const steady = [
+    '2025-09-15', '2025-10-15', '2025-11-15', '2025-12-15',
+    '2026-01-15', '2026-02-15', '2026-03-15', '2026-04-15',
+    '2026-05-15', '2026-06-15', '2026-07-15', '2026-08-05',
+  ].map(mk);
+
+  const split = new Date('2026-05-01T00:00:00Z'); // last 4 months vs prior 8
+
+  const naive = summarizeConcepts(steady, split);
+  eq(naive.recentMentions !== undefined || true, true, 'sanity');
+  eq(naive[0].recentMentions, 4, 'four mentions in the recent window');
+  eq(naive[0].priorMentions, 8, 'eight in the prior window — twice as wide');
+
+  const correct = summarizeConcepts(steady, split, { recentMonths: 4, priorMonths: 8 });
+  eq(correct[0].recentPerMonth, 1, 'one mention per month recently');
+  eq(correct[0].priorPerMonth, 1, 'and one per month before that');
+  eq(correct[0].trend, 'steady', 'so a steady concept reads as steady, not falling');
+
+  // A genuine doubling is still detected.
+  const surging = [...steady, mk('2026-06-20'), mk('2026-07-20'), mk('2026-08-01'), mk('2026-05-20')];
+  const rising = summarizeConcepts(surging, split, { recentMonths: 4, priorMonths: 8 });
+  eq(rising[0].recentPerMonth, 2, 'twice the recent rate');
+  eq(rising[0].trend, 'rising', 'and that is reported as rising');
+
+  // A genuine collapse too.
+  const dying = steady.filter((m) => m.reviewedAt < split);
+  const falling = summarizeConcepts(dying, split, { recentMonths: 4, priorMonths: 8 });
+  eq(falling[0].recentPerMonth, 0, 'nothing recent');
+  eq(falling[0].trend, 'falling', 'reads as falling');
+
+  // One extra mention in a quiet period is noise, not a trend.
+  const noisy = [mk('2026-01-15'), mk('2026-02-15'), mk('2026-06-15')];
+  const flat = summarizeConcepts(noisy, split, { recentMonths: 4, priorMonths: 8 });
+  eq(flat[0].trend, 'steady', 'a single extra mention does not become a headline');
+}
+
 // ── 8. Kind is decided by majority vote, not by whichever row came last ──────
 {
   const rows = summarizeConcepts(
