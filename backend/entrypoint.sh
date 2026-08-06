@@ -38,16 +38,71 @@ fi
 # Wait a bit more for postgres to fully initialize
 sleep 3
 
-# Run migrations
+# ── Step 2: migrations ───────────────────────────────────────────────────────
+#
+# This used to run `prisma db push --accept-data-loss` on EVERY container
+# start. That flag authorises Prisma to drop columns and tables in order to
+# make the database match schema.prisma, which means any accidental deletion
+# in the schema file became silent production data loss on the next deploy,
+# with no review step in between. `migrate deploy` cannot do that: it only
+# ever runs the SQL committed under prisma/migrations, and it refuses to run
+# anything it does not recognise.
+#
+# One wrinkle. Because every previous release used db push, the production
+# database has tables but no migration history, so a first `migrate deploy`
+# there fails with P3005 ("the database schema is not empty"). Prisma's
+# documented remedy is to baseline: record the existing migrations as already
+# applied without executing their SQL. That only ever writes rows to
+# _prisma_migrations, so it cannot touch application data. We do it lazily,
+# and ONLY after a deploy has actually failed for that reason — never
+# speculatively, and never on a fresh database, where the normal path applies
+# every migration properly from scratch.
 echo ""
-echo "Step 2: Running Prisma migrations..."
-if npx prisma db push --skip-generate --accept-data-loss 2>&1; then
-  echo "✓ Database migrations completed successfully"
+echo "Step 2: Applying database migrations..."
+
+run_migrate_deploy() {
+  migrate_out=$(npx prisma migrate deploy 2>&1)
+  migrate_rc=$?
+  echo "$migrate_out"
+  return $migrate_rc
+}
+
+baseline_existing_migrations() {
+  echo ""
+  echo "→ Database has tables but no migration history."
+  echo "  Baselining: recording existing migrations as applied (no SQL is run,"
+  echo "  no data is touched)."
+  for dir in ./prisma/migrations/*/; do
+    [ -f "${dir}migration.sql" ] || continue
+    name=$(basename "$dir")
+    echo "  · $name"
+    npx prisma migrate resolve --applied "$name" >/dev/null 2>&1 \
+      || echo "    (already recorded, skipping)"
+  done
+}
+
+if run_migrate_deploy; then
+  echo "✓ Migrations applied"
 else
-  status=$?
-  echo "⚠ Prisma db push returned status $status"
-  echo "This might be OK if the schema is already up to date"
-  echo "Continuing with server startup..."
+  if echo "$migrate_out" | grep -qE "P3005|schema is not empty"; then
+    baseline_existing_migrations
+    if run_migrate_deploy; then
+      echo "✓ Migrations applied after baselining"
+    else
+      echo ""
+      echo "✗✗✗ MIGRATIONS FAILED AFTER BASELINING ✗✗✗"
+      echo "The database schema may not match this build. Investigate before"
+      echo "trusting any write path."
+      [ "$STRICT_MIGRATIONS" = "1" ] && exit 1
+    fi
+  else
+    echo ""
+    echo "✗✗✗ MIGRATIONS FAILED ✗✗✗"
+    echo "Refusing to fall back to a destructive schema sync. The server will"
+    echo "still start so the outage is not total, but the schema may be stale."
+    echo "Set STRICT_MIGRATIONS=1 to make this fatal instead."
+    [ "$STRICT_MIGRATIONS" = "1" ] && exit 1
+  fi
 fi
 
 echo ""
