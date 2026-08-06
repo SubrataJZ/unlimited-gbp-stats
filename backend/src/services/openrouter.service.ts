@@ -24,6 +24,11 @@ export interface ChatCompletionOpts {
   user: string;
   /** Override the default model for this request. */
   model?: string;
+  /**
+   * Sampling temperature. Defaults to 0.7, which suits prose generation.
+   * Extraction callers that need reproducible, parseable output should pass 0.
+   */
+  temperature?: number;
 }
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
@@ -64,7 +69,7 @@ export async function generateChatCompletion(
       { role: 'system', content: opts.system },
       { role: 'user', content: opts.user },
     ],
-    temperature: 0.7,
+    temperature: opts.temperature ?? 0.7,
     usage: { include: true },
   };
 

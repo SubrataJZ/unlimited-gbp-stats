@@ -27,9 +27,25 @@ import {
   updateReply,
   getUsage,
   setContext,
+  analyzeConcepts,
+  getConcepts,
 } from '../controllers/ai.controller';
 
 const router = Router();
+
+/**
+ * POST /api/ai/concepts/analyze
+ * Extract multilingual concepts from un-analysed reviews. Spends the AI
+ * budget, so it rejects OWNER_READONLY and is never triggered automatically.
+ */
+router.post('/concepts/analyze', asyncHandler(validateJWTOrApiKey), analyzeConcepts);
+
+/**
+ * GET /api/ai/concepts
+ * Concept insight rollup — mentions, sentiment split, rating and trend per
+ * concept. Read-only, available to every role.
+ */
+router.get('/concepts', asyncHandler(validateJWTOrApiKey), getConcepts);
 
 /**
  * POST /api/ai/reply
