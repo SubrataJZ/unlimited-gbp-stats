@@ -245,6 +245,7 @@ model TrackedBusiness {
   scrapedReviews ScrapedReview[]
   metricMonths   MetricMonth[]
   context        BusinessContext?
+  concepts       ReviewConcept[]
 
   @@unique([orgId, googlePlaceId])
   @@index([orgId])
@@ -340,12 +341,97 @@ model ScrapedReview {
   reviewedAt        DateTime? @map("reviewed_at")
   scrapedAt         DateTime  @default(now()) @map("scraped_at")
 
-  trackedBusiness TrackedBusiness @relation(fields: [trackedBusinessId], references: [id], onDelete: Cascade)
+  trackedBusiness TrackedBusiness        @relation(fields: [trackedBusinessId], references: [id], onDelete: Cascade)
   reply           ReviewReply?
+  analysis        ReviewAnalysis?
+  conceptMentions ReviewConceptMention[]
 
   @@unique([trackedBusinessId, externalReviewId])
   @@index([trackedBusinessId])
   @@map("scraped_reviews")
+}
+
+/// One row per review that the concept extractor has already processed.
+///
+/// Exists purely so we never pay OpenRouter twice for the same review. Kept
+/// separate from ScrapedReview because the extension re-upserts that row on
+/// every scrape; a marker living there would have to survive merge semantics
+/// it was never designed for. A review that yields zero concepts still gets a
+/// row here — "analysed, found nothing" and "not yet analysed" must not look
+/// alike, or the backfill would retry empty reviews forever.
+model ReviewAnalysis {
+  id              String   @id @default(cuid())
+  scrapedReviewId String   @unique @map("scraped_review_id")
+  model           String
+  /// BCP-47-ish tag the model reported for the review body: en | hi | bn | ...
+  language        String?
+  /// Overall review sentiment, independent of any single concept.
+  sentiment       String?
+  analyzedAt      DateTime @default(now()) @map("analyzed_at")
+
+  scrapedReview ScrapedReview @relation(fields: [scrapedReviewId], references: [id], onDelete: Cascade)
+
+  @@map("review_analyses")
+}
+
+/// A thing customers talk about, discovered from the reviews themselves.
+///
+/// `label` is a canonical lowercase English noun phrase chosen by the model —
+/// that canonicalisation is the whole point. "biryani", "বিরিয়ানি" and
+/// "बिरयानी" must collapse to ONE concept, and they do so because the model
+/// normalises, not because we shipped a synonym table. There are deliberately
+/// no hardcoded keyword rules anywhere in this feature.
+///
+/// `aliases` records the surface forms actually seen, so the dashboard can show
+/// an owner the words their customers really typed.
+model ReviewConcept {
+  id                String @id @default(cuid())
+  trackedBusinessId String @map("tracked_business_id")
+
+  label String
+  /// Coarse bucket the model assigns: dish | service | staff | facility |
+  /// price | other. Advisory only — never validated against a fixed list, so a
+  /// new kind of business can surface its own vocabulary.
+  kind  String @default("other")
+
+  /// string[] — surface forms seen in any script, deduped.
+  aliases Json @default("[]")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  trackedBusiness TrackedBusiness        @relation(fields: [trackedBusinessId], references: [id], onDelete: Cascade)
+  mentions        ReviewConceptMention[]
+
+  @@unique([trackedBusinessId, label])
+  @@index([trackedBusinessId])
+  @@map("review_concepts")
+}
+
+/// One review talking about one concept, with the sentiment of that mention.
+///
+/// Sentiment is per-mention rather than per-review because a single review
+/// routinely praises the food and damns the wait — collapsing that to one
+/// score would destroy exactly the signal an owner needs.
+model ReviewConceptMention {
+  id              String @id @default(cuid())
+  conceptId       String @map("concept_id")
+  scrapedReviewId String @map("scraped_review_id")
+
+  /// positive | negative | neutral
+  sentiment String
+  /// The surface form as written, in the reviewer's own script.
+  surface   String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  concept       ReviewConcept @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+  scrapedReview ScrapedReview @relation(fields: [scrapedReviewId], references: [id], onDelete: Cascade)
+
+  @@unique([conceptId, scrapedReviewId])
+  @@index([conceptId])
+  @@index([scrapedReviewId])
+  @@map("review_concept_mentions")
 }
 
 model BusinessContext {

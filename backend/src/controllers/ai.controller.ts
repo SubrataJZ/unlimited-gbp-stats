@@ -18,6 +18,10 @@ import {
   setBusinessContext,
   MAX_BULK_BATCH_SIZE,
 } from '../services/ai-reply.service';
+import {
+  analyzeReviews as svcAnalyzeReviews,
+  getConceptInsights as svcGetConceptInsights,
+} from '../services/review-concepts.service';
 
 // ─── POST /api/ai/reply ───────────────────────────────────────────────────────
 
@@ -308,4 +312,78 @@ export const listReviews = asyncHandler(async (req: Request, res: Response) => {
   });
 
   res.status(200).json({ ok: true, reviews });
+});
+
+// ─── Review concept analyser ──────────────────────────────────────────────────
+
+/**
+ * POST /api/ai/concepts/analyze
+ *
+ * Run the multilingual concept extractor over un-analysed reviews for one
+ * business. Costs money, so it is an explicit user action rather than
+ * something that fires on ingest, and it is gated to write-capable roles.
+ *
+ * Body: { trackedBusinessId: string, months?: number, limit?: number, model?: string }
+ * Response 200: { ok: true, analyzed, conceptsFound, remaining, costUsd, model, stoppedForBudget }
+ */
+export const analyzeConcepts = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError('Authentication required');
+  }
+
+  const body = req.body as Record<string, unknown>;
+  const trackedBusinessId =
+    typeof body.trackedBusinessId === 'string' ? body.trackedBusinessId.trim() : '';
+
+  if (!trackedBusinessId) {
+    throw new ValidationError('"trackedBusinessId" is required and must be a non-empty string');
+  }
+
+  const model =
+    typeof body.model === 'string' && body.model.trim() !== '' ? body.model.trim() : undefined;
+
+  logger.info(
+    `Concept analysis requested by user ${req.user.id} for business=${trackedBusinessId}`
+  );
+
+  const result = await svcAnalyzeReviews({
+    userId: req.user.id,
+    trackedBusinessId,
+    months: body.months as number | undefined,
+    limit: body.limit as number | undefined,
+    model,
+  });
+
+  res.status(200).json({ ok: true, ...result });
+});
+
+/**
+ * GET /api/ai/concepts?trackedBusinessId=...&months=12&minMentions=2
+ *
+ * Read-only insight rollup over already-analysed reviews. Spends nothing, so
+ * every role including the read-only Owner tier may call it.
+ *
+ * Response 200: { ok: true, months, windowStart, recentSince, reviewsAnalyzed,
+ *                 reviewsPending, languages, concepts }
+ */
+export const getConcepts = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError('Authentication required');
+  }
+
+  const trackedBusinessId =
+    typeof req.query.trackedBusinessId === 'string' ? req.query.trackedBusinessId.trim() : '';
+
+  if (!trackedBusinessId) {
+    throw new ValidationError('"trackedBusinessId" query parameter is required');
+  }
+
+  const result = await svcGetConceptInsights({
+    userId: req.user.id,
+    trackedBusinessId,
+    months: req.query.months as string | undefined,
+    minMentions: req.query.minMentions as string | undefined,
+  });
+
+  res.status(200).json({ ok: true, ...result });
 });
