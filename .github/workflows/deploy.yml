@@ -46,21 +46,38 @@ jobs:
       # prints the migration output, and fails the deploy on the failure banner.
       - name: Verify database migrations
         run: |
-          LOGS=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "cd /home/zixify-app && docker compose logs --tail=400 backend")
+          # NEVER print raw container logs. The backend's startup banner is
+          # read by whoever can read this workflow run, and anything the
+          # container chooses to echo would land in it. Only the slice between
+          # the "Step 2" banner and the end is printed, and only after it has
+          # actually appeared.
+          LAST=""
+          for attempt in $(seq 1 12); do
+            LOGS=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+              ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+              "cd /home/zixify-app && docker compose logs --tail=400 backend" 2>/dev/null)
 
-          # Only the most recent boot matters. Everything from the last "Step 2"
-          # banner onward is this container's startup; earlier text may belong to
-          # a previous run whose outcome says nothing about this deploy.
-          LAST=$(echo "$LOGS" | awk '
-            /Step 2: Applying database migrations/ { buf = "" }
-            { buf = buf $0 ORS }
-            END { printf "%s", buf }')
+            # Only the most recent boot matters. Everything from the last
+            # "Step 2" banner onward is this container's startup; earlier text
+            # may belong to a previous run whose outcome says nothing about
+            # this deploy.
+            LAST=$(echo "$LOGS" | awk '
+              /Step 2: Applying database migrations/ { found = 1; buf = "" }
+              found { buf = buf $0 ORS }
+              END { printf "%s", buf }')
+
+            # Migrations take a few seconds; the banner appears before the
+            # result does, so wait for a verdict rather than the banner alone.
+            if echo "$LAST" | grep -qE "Migrations applied|MIGRATIONS FAILED"; then
+              break
+            fi
+            echo "waiting for migration output (attempt $attempt)…"
+            sleep 5
+          done
 
           echo "── migration output from the most recent backend start ──"
           if [ -z "$LAST" ]; then
-            echo "(no migration banner found in the last 400 log lines)"
+            echo "(no migration banner found — see the note below)"
           else
             echo "$LAST" | head -40
           fi

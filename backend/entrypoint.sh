@@ -7,7 +7,15 @@ echo ""
 echo "Environment:"
 echo "  NODE_ENV: $NODE_ENV"
 echo "  PORT: $PORT"
-echo "  DATABASE_URL: ${DATABASE_URL:0:50}..."
+# Never print DATABASE_URL, not even a prefix: the first 50 characters carry
+# the username and most of the password. These logs are read by CI, which
+# copies them into GitHub Actions output where anyone with repo access can see
+# them. Confirm it is set, and say nothing about its contents.
+if [ -n "$DATABASE_URL" ]; then
+  echo "  DATABASE_URL: [set]"
+else
+  echo "  DATABASE_URL: [MISSING]"
+fi
 echo ""
 
 # Wait for database with better error handling
