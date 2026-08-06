@@ -38,6 +38,47 @@ jobs:
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "cd /home/zixify-app && docker compose up -d"
 
+      # Migrations run inside entrypoint.sh at container start, and it
+      # deliberately keeps the server up when they fail so an outage is not
+      # total. That tolerance means a failed migration is otherwise INVISIBLE:
+      # the deploy goes green, the app serves traffic, and the schema quietly
+      # stops tracking the code. This step is what makes it visible — it always
+      # prints the migration output, and fails the deploy on the failure banner.
+      - name: Verify database migrations
+        run: |
+          LOGS=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "cd /home/zixify-app && docker compose logs --tail=400 backend")
+
+          # Only the most recent boot matters. Everything from the last "Step 2"
+          # banner onward is this container's startup; earlier text may belong to
+          # a previous run whose outcome says nothing about this deploy.
+          LAST=$(echo "$LOGS" | awk '
+            /Step 2: Applying database migrations/ { buf = "" }
+            { buf = buf $0 ORS }
+            END { printf "%s", buf }')
+
+          echo "── migration output from the most recent backend start ──"
+          if [ -z "$LAST" ]; then
+            echo "(no migration banner found in the last 400 log lines)"
+          else
+            echo "$LAST" | head -40
+          fi
+          echo "────────────────────────────────────────────────────────"
+
+          if echo "$LAST" | grep -q "MIGRATIONS FAILED"; then
+            echo "::error::Database migrations failed on the VPS. The schema may not match this build — investigate before trusting any write path."
+            exit 1
+          fi
+
+          if echo "$LAST" | grep -q "Migrations applied"; then
+            echo "✅ Migrations applied cleanly"
+          else
+            # Not fatal: `docker compose up -d` is a no-op when nothing changed,
+            # so an unchanged container simply never re-ran its entrypoint.
+            echo "::warning::No migration result line found — the backend container may not have restarted during this deploy."
+          fi
+
       - name: Verify backend health
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
