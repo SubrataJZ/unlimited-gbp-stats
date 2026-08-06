@@ -69,9 +69,11 @@ run_migrate_deploy() {
 
 baseline_existing_migrations() {
   echo ""
-  echo "→ Database has tables but no migration history."
-  echo "  Baselining: recording existing migrations as applied (no SQL is run,"
-  echo "  no data is touched)."
+  echo "→ Database already has these tables but no usable migration history."
+  echo "  Baselining: recording the migration(s) as applied. No SQL is run and"
+  echo "  no data is touched — this only writes to _prisma_migrations."
+  echo "  'migrate resolve --applied' also clears a migration recorded as"
+  echo "  failed, which is what unblocks P3018."
   for dir in ./prisma/migrations/*/; do
     [ -f "${dir}migration.sql" ] || continue
     name=$(basename "$dir")
@@ -81,10 +83,31 @@ baseline_existing_migrations() {
   done
 }
 
+# Does this failure mean "the tables are already there", rather than "the SQL
+# is wrong"?
+#
+# The first version of this check only looked for P3005. That was wrong:
+# P3005 is raised by `migrate dev`, not by `migrate deploy`, which simply tries
+# to apply the migration and trips over the existing objects instead —
+# P3018 / SQLSTATE 42710, `type "Role" already exists`. The baseline branch
+# therefore never ran, and the deploy failed.
+#
+# The guard is that this is only ever legitimate for the INIT migration.
+# Baselining exists to adopt a database that predates migrations entirely; any
+# LATER migration failing with "already exists" is a genuine bug, and must fail
+# the deploy loudly rather than be quietly marked as done.
+needs_baseline() {
+  echo "$migrate_out" | grep -qE "P3005|schema is not empty" && return 0
+  echo "$migrate_out" | grep -qE "P3018|already exists|42710" \
+    && echo "$migrate_out" | grep -q "00000000000000_init" \
+    && return 0
+  return 1
+}
+
 if run_migrate_deploy; then
   echo "✓ Migrations applied"
 else
-  if echo "$migrate_out" | grep -qE "P3005|schema is not empty"; then
+  if needs_baseline; then
     baseline_existing_migrations
     if run_migrate_deploy; then
       echo "✓ Migrations applied after baselining"
