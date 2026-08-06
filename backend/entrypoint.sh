@@ -104,9 +104,29 @@ baseline_existing_migrations() {
 # Baselining exists to adopt a database that predates migrations entirely; any
 # LATER migration failing with "already exists" is a genuine bug, and must fail
 # the deploy loudly rather than be quietly marked as done.
+# Three distinct failure codes mean the same underlying thing, and it took
+# three deploys to learn all of them. Recorded here so the next person does not
+# rediscover them one at a time:
+#
+#   P3005  the schema is not empty and has no history. Raised by `migrate dev`,
+#          NOT by `migrate deploy` - which is why the first version of this
+#          check never fired.
+#   P3018  deploy tried to apply the init and hit an object that db push had
+#          already created (SQLSTATE 42710, `type "Role" already exists`).
+#   P3009  the aftermath of P3018: the init is now recorded as failed, and
+#          nothing can be applied until that record is resolved.
+#
+# In every case `migrate resolve --applied` is the documented remedy, and it is
+# correct here because the objects the init describes are all present already:
+# db push built them, and the failed attempt rolled back in its transaction.
 needs_baseline() {
   echo "$migrate_out" | grep -qE "P3005|schema is not empty" && return 0
-  echo "$migrate_out" | grep -qE "P3018|already exists|42710" \
+  # Deliberately NOT keyed on P3018 alone. P3018 just means "a migration
+  # failed" — a SQL syntax error in the init reports it too, and baselining
+  # that would mark a broken migration as done and leave a fresh database
+  # empty. The signal has to be the specific "it is already there" evidence:
+  # SQLSTATE 42710 / "already exists", or P3009's failed-migration record.
+  echo "$migrate_out" | grep -qE "already exists|42710|P3009|failed migrations" \
     && echo "$migrate_out" | grep -q "00000000000000_init" \
     && return 0
   return 1
