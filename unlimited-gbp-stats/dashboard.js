@@ -33,6 +33,7 @@
     rvChartOffset: 0,             // buckets panned back from the newest period
     reviewSort: 'newest',         // 'newest' | 'oldest' | 'highest' | 'lowest'
     reviewListLimit: 50,
+    conceptData: null,            // last GET /api/ai/concepts payload; cleared on business switch
   };
 
   // ── API Helper Functions ──────────────────────────────────────────────────
@@ -641,6 +642,10 @@
       return;
     }
 
+    // Concepts are per-business; carrying the previous business's themes over
+    // would attribute one shop's complaints to another.
+    if (state.businessId !== businessId) state.conceptData = null;
+
     state.businessId = businessId;
     document.getElementById('emptyState').style.display = 'none';
     document.getElementById('dashboard').style.display = '';
@@ -1051,6 +1056,13 @@
     // Momentum panel
     renderMomentumPanel(state.currentReviews);
     renderCompetitorPace();
+
+    // Concept panel. Deliberately NOT auto-fetched: the rollup is free but the
+    // Analyse button beside it is not, and a panel that populates itself on
+    // every view switch trains the user to click without reading. Re-render
+    // whatever was already loaded for this business, otherwise show the prompt.
+    wireConceptPanel();
+    renderConceptPanel(state.conceptData || null);
 
     // Wire granularity toggle buttons (safe to call multiple times — replaces listeners via re-assignment)
     document.querySelectorAll('.rv-gran-btn').forEach(function (btn) {
@@ -1626,10 +1638,258 @@
     };
   }
 
-  // Exported for unit tests (rating-tier.test.js). No browser behaviour change:
-  // module.exports only exists when this file is required from Node.
+  // ── "What customers talk about" — concept panel ────────────────────────────
+  //
+  // The backend does the multilingual extraction; everything here is
+  // presentation. The two jobs worth separating out and testing are turning a
+  // concept row into the sentence an owner reads, and deciding which concepts
+  // are worth putting at the top of the panel at all.
+
+  /**
+   * Describe one concept in the owner's terms.
+   *
+   * The trend sentence deliberately quotes mentions-per-month rather than raw
+   * counts, because the two windows the backend compares are different lengths
+   * (a 12-month view is the last 4 months against the preceding 8). Printing
+   * "4 recently vs 8 before" would read as a collapse when the rate is flat.
+   */
+  function describeConcept(c) {
+    if (!c || !c.mentions) return null;
+
+    const total = c.mentions;
+    const negPct = Math.round((c.negative / total) * 100);
+    const posPct = Math.round((c.positive / total) * 100);
+
+    let trendText = '';
+    if (c.trend === 'rising' || c.trend === 'falling') {
+      const from = c.priorPerMonth;
+      const to = c.recentPerMonth;
+      const word = c.trend === 'rising' ? 'up' : 'down';
+      trendText =
+        (from > 0 && to > 0)
+          ? `${word} from ${from}/mo to ${to}/mo`
+          : (to > 0 ? `newly appearing — ${to}/mo` : 'no longer mentioned');
+    }
+
+    // What an owner should feel about this concept, in one word. Rating is a
+    // better signal than sentiment share alone, because a concept can be
+    // mentioned neutrally in reviews that are themselves scathing.
+    let tone = 'neutral';
+    if (c.avgRating >= 4.2 && negPct < 25) tone = 'good';
+    else if (c.avgRating <= 3.0 || negPct >= 50) tone = 'bad';
+
+    return {
+      label: c.label,
+      kind: c.kind || 'other',
+      mentions: total,
+      avgRating: c.avgRating,
+      posPct,
+      negPct,
+      neutralPct: Math.max(0, 100 - posPct - negPct),
+      trend: c.trend,
+      trendText,
+      tone,
+      surfaces: Array.isArray(c.surfaces) ? c.surfaces : [],
+      /**
+       * Worth surfacing at the top: something people complain about that is
+       * also getting more common, or simply a concept dragging the rating down.
+       * This is what turns a word cloud into something actionable.
+       */
+      needsAttention: (tone === 'bad' && total >= 3) || (c.trend === 'rising' && negPct >= 50),
+    };
+  }
+
+  /**
+   * One-line headline for the panel: the single thing most worth acting on, or
+   * an honest statement that there isn't one. Never invents urgency.
+   */
+  function conceptHeadline(rows) {
+    const described = (rows || []).map(describeConcept).filter(Boolean);
+    if (!described.length) return null;
+
+    const attention = described.filter(r => r.needsAttention);
+    if (!attention.length) {
+      const best = described.slice().sort((a, b) => b.avgRating - a.avgRating)[0];
+      return {
+        tone: 'good',
+        text: `Nothing looks urgent. “${best.label}” is your strongest theme at ★ ${best.avgRating.toFixed(1)} across ${best.mentions} mentions.`,
+      };
+    }
+
+    // Loudest problem first: most negative mentions, tie-broken by how bad.
+    const worst = attention.slice().sort(
+      (a, b) => (b.negPct * b.mentions) - (a.negPct * a.mentions) || a.avgRating - b.avgRating
+    )[0];
+    return {
+      tone: 'bad',
+      text: `“${worst.label}” needs attention — ${worst.negPct}% of its ${worst.mentions} mentions are negative` +
+            (worst.trendText ? `, and ${worst.trendText}.` : '.'),
+    };
+  }
+
+  /** Render the concept rollup returned by GET /api/ai/concepts. */
+  function renderConceptPanel(data) {
+    const listEl = document.getElementById('rvConceptList');
+    const langsEl = document.getElementById('rvConceptLangs');
+    const analyzeBtn = document.getElementById('rvConceptAnalyze');
+    if (!listEl) return;
+
+    const concepts = (data && data.concepts) || [];
+    const pending = (data && data.reviewsPending) || 0;
+    const analyzed = (data && data.reviewsAnalyzed) || 0;
+
+    // The Analyse button only appears when there is something left to analyse,
+    // so the user is never invited to spend money for no result.
+    if (analyzeBtn) {
+      analyzeBtn.style.display = pending > 0 ? '' : 'none';
+      analyzeBtn.textContent = analyzed > 0
+        ? `Analyse ${pending.toLocaleString()} new review${pending === 1 ? '' : 's'}`
+        : `Analyse ${pending.toLocaleString()} review${pending === 1 ? '' : 's'}`;
+    }
+
+    if (langsEl) {
+      const langs = (data && data.languages) || [];
+      if (langs.length > 1) {
+        langsEl.style.display = '';
+        langsEl.innerHTML = 'Languages detected: ' + langs
+          .map(l => `<span class="rv-concept-lang">${escHtml(l.language)} · ${l.count.toLocaleString()}</span>`)
+          .join('');
+      } else {
+        langsEl.style.display = 'none';
+      }
+    }
+
+    if (!concepts.length) {
+      listEl.innerHTML = analyzed > 0
+        ? `<div class="rv-concept-empty">No repeated themes yet. Concepts appear once at least two reviews mention the same thing.</div>`
+        : `<div class="rv-concept-empty">No reviews analysed yet.${pending > 0 ? ' Click “Analyse” above to start.' : ''}</div>`;
+      return;
+    }
+
+    const rows = concepts.map(describeConcept).filter(Boolean);
+    const headline = conceptHeadline(concepts);
+
+    const headlineHtml = headline
+      ? `<div class="rv-concept-headline rv-concept-headline-${headline.tone}">${escHtml(headline.text)}</div>`
+      : '';
+
+    const rowsHtml = rows.map(r => {
+      const trendIcon = r.trend === 'rising' ? '▲' : r.trend === 'falling' ? '▼' : '';
+      const surfaces = r.surfaces.length
+        ? `<div class="rv-concept-surfaces" title="The words customers actually wrote">${
+            r.surfaces.slice(0, 5).map(s => `<span>${escHtml(s)}</span>`).join('')
+          }</div>`
+        : '';
+      return `
+        <div class="rv-concept-row rv-concept-${r.tone}${r.needsAttention ? ' rv-concept-attention' : ''}">
+          <div class="rv-concept-main">
+            <span class="rv-concept-label">${escHtml(r.label)}</span>
+            <span class="rv-concept-kind">${escHtml(r.kind)}</span>
+            ${r.trendText ? `<span class="rv-concept-trend rv-concept-trend-${r.trend}">${trendIcon} ${escHtml(r.trendText)}</span>` : ''}
+          </div>
+          <div class="rv-concept-bar" role="img"
+               aria-label="${r.posPct}% positive, ${r.neutralPct}% neutral, ${r.negPct}% negative">
+            <span style="width:${r.posPct}%" class="rv-cb-pos"></span>
+            <span style="width:${r.neutralPct}%" class="rv-cb-neu"></span>
+            <span style="width:${r.negPct}%" class="rv-cb-neg"></span>
+          </div>
+          <div class="rv-concept-meta">
+            <span class="rv-concept-count">${r.mentions.toLocaleString()} mention${r.mentions === 1 ? '' : 's'}</span>
+            <span class="rv-concept-rating">★ ${r.avgRating.toFixed(1)}</span>
+          </div>
+          ${surfaces}
+        </div>`;
+    }).join('');
+
+    listEl.innerHTML = headlineHtml + rowsHtml;
+  }
+
+  /**
+   * Promise wrapper around chrome.runtime.sendMessage. Resolves to null rather
+   * than rejecting when the service worker is asleep or the channel closes, so
+   * every caller can report a message instead of throwing into the console.
+   */
+  function sendBg(msg) {
+    return new Promise(resolve => {
+      try {
+        chrome.runtime.sendMessage(msg, res => {
+          if (chrome.runtime.lastError) { resolve(null); return; }
+          resolve(res);
+        });
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  }
+
+  function setConceptStatus(text, kind) {
+    const el = document.getElementById('rvConceptStatus');
+    if (!el) return;
+    if (!text) { el.style.display = 'none'; el.textContent = ''; return; }
+    el.style.display = '';
+    el.className = 'rv-concept-status' + (kind ? ` rv-concept-status-${kind}` : '');
+    el.textContent = text;
+  }
+
+  /** Fetch and render the rollup. Free — but still only on an explicit click. */
+  async function loadConcepts() {
+    if (!state.businessId) return;
+    setConceptStatus('Loading insights…');
+    const res = await sendBg({ action: 'aiGetConcepts', businessId: state.businessId });
+    if (!res || !res.ok) {
+      setConceptStatus(res?.error || 'Could not load review insights.', 'error');
+      return;
+    }
+    setConceptStatus('');
+    state.conceptData = res.data;
+    renderConceptPanel(res.data);
+  }
+
+  /**
+   * Run the extractor. This spends the metered AI budget, so it is wired to a
+   * click and nothing else, the button is disabled while in flight, and the
+   * result is reported honestly including a budget stop or a partial run.
+   */
+  async function analyzeConcepts() {
+    if (!state.businessId) return;
+    const btn = document.getElementById('rvConceptAnalyze');
+    if (btn) { btn.disabled = true; btn.textContent = 'Analysing…'; }
+    setConceptStatus('Analysing reviews — this can take a minute.');
+
+    const res = await sendBg({ action: 'aiAnalyzeConcepts', businessId: state.businessId });
+
+    if (btn) btn.disabled = false;
+
+    if (!res || !res.ok) {
+      setConceptStatus(res?.error || 'Analysis failed.', 'error');
+      return;
+    }
+
+    let msg = `Analysed ${res.analyzed} review${res.analyzed === 1 ? '' : 's'}, found ${res.conceptsFound} concept mentions.`;
+    if (res.stoppedForBudget) {
+      msg += ' Stopped early — the monthly AI budget is used up.';
+    } else if (res.remaining > 0) {
+      msg += ` ${res.remaining} still to go — click again to continue.`;
+    }
+    setConceptStatus(msg, res.stoppedForBudget ? 'error' : 'ok');
+
+    await loadConcepts();
+  }
+
+  function wireConceptPanel() {
+    const loadBtn = document.getElementById('rvConceptLoad');
+    const analyzeBtn = document.getElementById('rvConceptAnalyze');
+    if (loadBtn) loadBtn.onclick = loadConcepts;
+    if (analyzeBtn) analyzeBtn.onclick = analyzeConcepts;
+  }
+
+  // Exported for unit tests (rating-tier.test.js, review-concepts-view.test.js).
+  // No browser behaviour change: module.exports only exists under Node.
   if (typeof module !== 'undefined' && module.exports) {
     module.exports.computeNextTierMetric = computeNextTierMetric;
+    module.exports.describeConcept = describeConcept;
+    module.exports.conceptHeadline = conceptHeadline;
+    module.exports.renderConceptPanel = renderConceptPanel;
   }
 
   function renderStarDistribution(latest, reviews) {

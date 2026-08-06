@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.22.0] - 2026-08-06
+- **New: "What customers talk about" — a panel in the Reviews tab that reads your reviews in Hindi, Bengali and English and tells you what people actually keep mentioning.** Spellings of the same thing in different languages or scripts are counted as one theme, so a Bengali, Hindi and romanised spelling of one dish all land on a single row — with the words your customers really typed shown underneath, in their own script.
+- Nothing is hardcoded. There is no keyword list, no menu and no dictionary anywhere in the feature; the themes are discovered from your reviews, so a salon gets salon themes and a restaurant gets dishes without either being configured.
+- Each theme shows how often it comes up, how positive or negative those mentions are, the average rating of the reviews mentioning it, and whether it is being mentioned **more or less often than before** — measured per month, so a quiet stretch isn't mistaken for a problem going away.
+- A single line at the top names the one thing most worth acting on, e.g. *"waiting time needs attention — 88% of its 34 mentions are negative, and up from 1.5/mo to 5.5/mo"*. When nothing looks urgent it says so, and credits your strongest theme instead of inventing a worry.
+- **Analysis costs money, so it only ever runs when you click.** The panel loads nothing on its own, the "Analyse" button appears only when there are un-analysed reviews and says exactly how many, and a review is never analysed twice. If the monthly AI budget runs out mid-run, the panel says so plainly and keeps everything already analysed.
+- Requires being signed in and having synced the business to the server first.
+
 ## [1.21.1] - 2026-08-02
 - **Fixed: the "5★ reviews to next tier" card told profiles to climb to a rating they already had.** With 4,233 reviews showing 4.1, it advised "+1 5★ review → 4.1". Google publishes an already-rounded average, and rebuilding a review-score total from it lands a hair below the tier (4.09993 rather than 4.1), so the card read that as "not yet 4.1". It now trusts the displayed rating as the current tier and targets the next one up — the same profile now correctly reads "+530 5★ reviews → 4.2", and says "(approx.)" when it is working from the rounded figure rather than an exact star breakdown.
 - The exact path is unchanged and still preferred: when the 1–5 star breakdown is available the answer is computed from real counts with no approximation. That breakdown is what 1.20.2 stopped erasing, so this card gets more accurate as fresh scrapes land.

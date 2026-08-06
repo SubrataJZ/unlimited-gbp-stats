@@ -1685,3 +1685,152 @@ tr:hover td { background: var(--bg-hover); }
   margin-top: 4px;
   padding-right: 4px;
 }
+
+/* ═══ "What customers talk about" — concept panel ═══════════════════════════
+   Concepts discovered from review text by the backend analyser. The visual
+   priority is deliberate: the headline states the single thing worth acting
+   on, rows needing attention carry a left border, and the sentiment bar is
+   readable at a glance without reading any number. */
+
+.rv-concept-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.rv-concept-sub {
+  font-size: 12px;
+  color: var(--text-secondary, #9aa0a6);
+  max-width: 52ch;
+  line-height: 1.45;
+}
+.rv-concept-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.rv-concept-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--bg-card, #1a1a2e);
+  border: 1px solid var(--accent-dim, #2a2a3e);
+  border-radius: 6px;
+  color: var(--text-primary, #e8eaed);
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.rv-concept-btn:hover:not(:disabled) { background: #23233a; border-color: #3d3d55; }
+.rv-concept-btn:disabled { opacity: .55; cursor: default; }
+/* The spending action is the only accented control here. */
+.rv-concept-btn-primary { background: #fdd663; border-color: #fdd663; color: #202124; }
+.rv-concept-btn-primary:hover:not(:disabled) { background: #ffe082; border-color: #ffe082; }
+
+.rv-concept-status {
+  font-size: 12px;
+  color: var(--text-secondary, #9aa0a6);
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  background: rgba(255,255,255,.03);
+  border-radius: 6px;
+}
+.rv-concept-status-ok    { color: #81c995; background: rgba(129,201,149,.08); }
+.rv-concept-status-error { color: #f28b82; background: rgba(242,139,130,.08); }
+
+.rv-concept-langs { font-size: 11px; color: var(--text-secondary, #9aa0a6); margin-bottom: 10px; }
+.rv-concept-lang {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 7px;
+  background: rgba(255,255,255,.05);
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.rv-concept-headline {
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.rv-concept-headline-bad  { background: rgba(242,139,130,.10); color: #f6aba5; }
+.rv-concept-headline-good { background: rgba(129,201,149,.10); color: #a5d9b6; }
+
+.rv-concept-list { display: flex; flex-direction: column; gap: 8px; }
+.rv-concept-empty {
+  font-size: 13px;
+  color: var(--text-secondary, #9aa0a6);
+  padding: 18px 4px;
+  text-align: center;
+}
+
+.rv-concept-row {
+  padding: 10px 12px;
+  background: rgba(255,255,255,.02);
+  border: 1px solid var(--accent-dim, #2a2a3e);
+  border-left: 3px solid transparent;
+  border-radius: 8px;
+}
+.rv-concept-attention { border-left-color: #f28b82; }
+.rv-concept-good      { border-left-color: #81c995; }
+
+.rv-concept-main {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+.rv-concept-label { font-size: 14px; font-weight: 600; color: var(--text-primary, #e8eaed); }
+.rv-concept-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-secondary, #9aa0a6);
+  padding: 2px 6px;
+  background: rgba(255,255,255,.05);
+  border-radius: 4px;
+}
+.rv-concept-trend { font-size: 11px; margin-left: auto; }
+.rv-concept-trend-rising  { color: #f6aba5; }
+.rv-concept-trend-falling { color: #9aa0a6; }
+
+/* Sentiment split. Three spans summing to 100% — no labels, because the
+   colours and the counts beneath already say it. */
+.rv-concept-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(255,255,255,.06);
+}
+.rv-concept-bar span { display: block; height: 100%; }
+.rv-cb-pos { background: #81c995; }
+.rv-cb-neu { background: #5f6368; }
+.rv-cb-neg { background: #f28b82; }
+
+.rv-concept-meta {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary, #9aa0a6);
+}
+.rv-concept-rating { color: #fdd663; }
+
+/* The words customers actually typed, in their own script — the proof that
+   the canonical English label above is not a guess. */
+.rv-concept-surfaces { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.rv-concept-surfaces span {
+  font-size: 11px;
+  padding: 2px 7px;
+  background: rgba(255,255,255,.04);
+  border-radius: 10px;
+  color: var(--text-secondary, #9aa0a6);
+}
+
+@media (max-width: 560px) {
+  .rv-concept-actions { width: 100%; }
+  .rv-concept-btn { flex: 1; }
+  .rv-concept-trend { margin-left: 0; width: 100%; }
+}

@@ -831,6 +831,71 @@ async function aiBulkDraft(businessId, scrapedReviewIds, model) {
   }
 }
 
+/**
+ * Fetch the multilingual concept rollup for a business (read-only, costs
+ * nothing). Returns concepts with per-mention sentiment, average rating and a
+ * recent-vs-prior trend, plus how many reviews are still un-analysed.
+ */
+async function aiGetConcepts(businessId, months) {
+  const key = await getBackendKey();
+  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable review insights' };
+
+  const trackedBusinessId = await resolveTrackedBusinessId(businessId);
+  if (!trackedBusinessId) return { ok: false, error: 'This business has not been synced to the backend yet. Fetch reviews first.' };
+
+  try {
+    const qs = new URLSearchParams({ trackedBusinessId });
+    if (months) qs.set('months', String(months));
+    const resp = await fetch(`${BACKEND_URL}/api/ai/concepts?${qs.toString()}`, {
+      headers: { 'Authorization': `Bearer ${key}` },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText);
+      return { ok: false, error: `HTTP ${resp.status}: ${text}` };
+    }
+    const data = await resp.json();
+    return { ok: true, data, trackedBusinessId };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Run the concept extractor over un-analysed reviews. This one spends the
+ * metered OpenRouter budget, so it is only ever called from an explicit user
+ * click — never from a sync, an alarm, or a page load.
+ *
+ * The backend caps the run at 200 reviews, so a business with a long history
+ * needs several clicks; `remaining` in the response tells the caller whether
+ * more work is left.
+ */
+async function aiAnalyzeConcepts(businessId, months) {
+  const key = await getBackendKey();
+  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable review insights' };
+
+  const trackedBusinessId = await resolveTrackedBusinessId(businessId);
+  if (!trackedBusinessId) return { ok: false, error: 'This business has not been synced to the backend yet. Fetch reviews first.' };
+
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/ai/concepts/analyze`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+      body: JSON.stringify({ trackedBusinessId, ...(months ? { months } : {}) }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText);
+      return { ok: false, error: `HTTP ${resp.status}: ${text}` };
+    }
+    const data = await resp.json();
+    return { ok: true, ...data };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 /** Return the calling user's monthly AI usage/cost-cap summary. */
 async function aiUsage() {
   const key = await getBackendKey();
@@ -1556,6 +1621,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // ── AI Reply Copilot: bulk-draft replies for un-replied reviews ───────────
   if (msg.action === 'aiBulkDraft') {
     aiBulkDraft(msg.businessId, msg.scrapedReviewIds || [], msg.model)
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // ── Review concepts: read the rollup (free) ───────────────────────────────
+  if (msg.action === 'aiGetConcepts') {
+    aiGetConcepts(msg.businessId, msg.months)
+      .then(result => sendResponse(result))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // ── Review concepts: run the extractor (spends budget — user click only) ──
+  if (msg.action === 'aiAnalyzeConcepts') {
+    aiAnalyzeConcepts(msg.businessId, msg.months)
       .then(result => sendResponse(result))
       .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
