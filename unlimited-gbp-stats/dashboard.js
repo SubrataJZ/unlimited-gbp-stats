@@ -1053,6 +1053,11 @@
     state.reviewListSource = renderReviewPeriodSummary(reviews);
     renderRecentReviews(state.reviewListSource);
 
+    // Reviews at risk — always the full review set, never the period-filtered
+    // subset. An unanswered 1★ from March is not less urgent because the picker
+    // happens to be showing August.
+    renderReviewsAtRisk(state.currentReviews);
+
     // Momentum panel
     renderMomentumPanel(state.currentReviews);
     renderCompetitorPace();
@@ -1638,6 +1643,139 @@
     };
   }
 
+  // ── "Reviews at risk" — low-rated reviews with no owner reply ──────────────
+  //
+  // The one screen that answers "what needs me today". An unanswered 1★ is the
+  // most expensive review a business owns: it is the one prospects read, and
+  // unlike a bad rating it is still fixable.
+
+  /** A review older than this with no reply is past the point of a graceful save. */
+  const AT_RISK_STALE_DAYS = 14;
+
+  /**
+   * Select the reviews that need a reply, worst-waited first.
+   *
+   * Deliberately strict about what counts as unanswered: ONLY reviews we have
+   * actually observed to have no owner response. A review whose reply status we
+   * never captured is reported separately as unknown, never folded into the
+   * list. Telling an owner they ignored a customer, on the strength of a field
+   * we never read, is worse than telling them nothing — they would go looking
+   * for a reply that is already there and stop trusting the panel.
+   *
+   * @param reviews     stored review rows
+   * @param opts.now    reference time (injectable so tests are not clock-dependent)
+   * @param opts.maxRating  ratings at or below this are "at risk" (default 2)
+   * @param opts.resolveDate  date resolver; defaults to reviewedAtISO
+   */
+  function selectReviewsAtRisk(reviews, opts) {
+    const o = opts || {};
+    const now = o.now instanceof Date ? o.now.getTime() : Date.now();
+    const maxRating = o.maxRating != null ? o.maxRating : 2;
+    const resolveDate = o.resolveDate || ((r) => (r.reviewedAtISO ? new Date(r.reviewedAtISO) : null));
+
+    const list = Array.isArray(reviews) ? reviews : [];
+    const lowRated = list.filter(r => r && r.rating >= 1 && r.rating <= maxRating);
+
+    const atRisk = [];
+    let unknown = 0;
+
+    for (const r of lowRated) {
+      if (r.ownerResponded === true) continue;
+      if (r.ownerResponded !== false) { unknown++; continue; }
+
+      const d = resolveDate(r);
+      const t = d && !isNaN(d.getTime()) ? d.getTime() : null;
+      atRisk.push({
+        review: r,
+        // Undated reviews keep a null age rather than being aged from the scrape
+        // date, which would invent an urgency the data does not support.
+        ageDays: t != null ? Math.max(0, Math.floor((now - t) / 86400000)) : null,
+        stale: t != null && (now - t) / 86400000 >= AT_RISK_STALE_DAYS,
+      });
+    }
+
+    // Longest-waiting first; undated last, since we cannot rank what we cannot date.
+    atRisk.sort((a, b) => {
+      if (a.ageDays == null && b.ageDays == null) return (a.review.rating || 0) - (b.review.rating || 0);
+      if (a.ageDays == null) return 1;
+      if (b.ageDays == null) return -1;
+      return b.ageDays - a.ageDays || (a.review.rating || 0) - (b.review.rating || 0);
+    });
+
+    return {
+      atRisk,
+      unknown,
+      staleCount: atRisk.filter(x => x.stale).length,
+      lowRatedTotal: lowRated.length,
+    };
+  }
+
+  function renderReviewsAtRisk(reviews) {
+    const section = document.getElementById('rvRiskSection');
+    if (!section) return;
+    const listEl = document.getElementById('rvRiskList');
+    const countEl = document.getElementById('rvRiskCount');
+    const noteEl = document.getElementById('rvRiskNote');
+
+    const res = selectReviewsAtRisk(reviews, {
+      resolveDate: (r) => (window.GBPDate ? window.GBPDate.resolveReviewDate(r) : (r.reviewedAtISO ? new Date(r.reviewedAtISO) : null)),
+    });
+
+    // Nothing low-rated at all, and nothing unknown: the section has nothing to
+    // say, so it says nothing rather than showing a triumphant empty state on
+    // a profile that simply has not been scraped yet.
+    if (!res.lowRatedTotal) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+
+    if (countEl) {
+      countEl.textContent = res.atRisk.length
+        ? `${res.atRisk.length} waiting${res.staleCount ? ` · ${res.staleCount} over ${AT_RISK_STALE_DAYS} days` : ''}`
+        : '';
+    }
+
+    if (noteEl) {
+      if (res.unknown > 0) {
+        noteEl.style.display = '';
+        noteEl.textContent =
+          `${res.unknown} low-rated review${res.unknown === 1 ? '' : 's'} ` +
+          `${res.unknown === 1 ? 'has' : 'have'} no reply status recorded yet. ` +
+          `Run “Fetch Reviews” on Google Maps to check ${res.unknown === 1 ? 'it' : 'them'}.`;
+      } else {
+        noteEl.style.display = 'none';
+      }
+    }
+
+    if (!listEl) return;
+
+    if (!res.atRisk.length) {
+      listEl.innerHTML = res.unknown
+        ? ''
+        : `<div class="rv-risk-clear">Every low-rated review has an owner reply. Nothing waiting.</div>`;
+      return;
+    }
+
+    listEl.innerHTML = res.atRisk.slice(0, 25).map(({ review: r, ageDays, stale }) => {
+      const filled = '★'.repeat(r.rating || 0);
+      const empty = '☆'.repeat(Math.max(0, 5 - (r.rating || 0)));
+      const age = ageDays == null
+        ? 'undated'
+        : ageDays === 0 ? 'today'
+        : ageDays === 1 ? '1 day' : `${ageDays} days`;
+      return `
+        <div class="rv-risk-item${stale ? ' rv-risk-stale' : ''}">
+          <div class="rv-risk-head">
+            <span class="rv-risk-stars">${filled}<span class="rv-star-empty">${empty}</span></span>
+            <span class="rv-risk-author">${escHtml(r.author) || 'Anonymous'}</span>
+            <span class="rv-risk-age" title="Time since the review was left">${escHtml(age)}</span>
+          </div>
+          ${r.text ? `<div class="rv-risk-text">${escHtml(r.text)}</div>` : ''}
+        </div>`;
+    }).join('');
+  }
+
   // ── "What customers talk about" — concept panel ────────────────────────────
   //
   // The backend does the multilingual extraction; everything here is
@@ -1890,6 +2028,8 @@
     module.exports.describeConcept = describeConcept;
     module.exports.conceptHeadline = conceptHeadline;
     module.exports.renderConceptPanel = renderConceptPanel;
+    module.exports.selectReviewsAtRisk = selectReviewsAtRisk;
+    module.exports.AT_RISK_STALE_DAYS = AT_RISK_STALE_DAYS;
   }
 
   function renderStarDistribution(latest, reviews) {

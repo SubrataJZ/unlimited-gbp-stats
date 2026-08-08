@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.23.0] - 2026-08-06
+- **New: "Reviews at risk" in the Reviews tab — your 1-2★ reviews with no reply from you, longest-waiting first.** These are the ones prospects actually read, and unlike the rating itself they can still be answered. Anything unanswered for more than 14 days is marked, and the list always covers your whole history rather than the selected month, because an unanswered review from March is not less urgent because the picker is showing August.
+- **Fixed: reply status was being thrown away.** The extension has always read "Response from the owner" off the review card, and the server has always stored it, but the browser's local copy dropped it on save — which is why nothing could ever tell you which reviews were still waiting. It is now kept, and carried across when data is pulled back from the server.
+- Reviews whose reply status was never recorded are counted separately and named as unknown, never listed as unanswered. Re-run **Fetch Reviews** on Google Maps to fill them in. Telling you that you ignored a customer you actually replied to would be worse than saying nothing.
+- Undated reviews still appear in the list but are never given an invented age or marked stale on a guess.
+
 ## [1.22.0] - 2026-08-06
 - **New: "What customers talk about" — a panel in the Reviews tab that reads your reviews in Hindi, Bengali and English and tells you what people actually keep mentioning.** Spellings of the same thing in different languages or scripts are counted as one theme, so a Bengali, Hindi and romanised spelling of one dish all land on a single row — with the words your customers really typed shown underneath, in their own script.
 - Nothing is hardcoded. There is no keyword list, no menu and no dictionary anywhere in the feature; the themes are discovered from your reviews, so a salon gets salon themes and a restaurant gets dishes without either being configured.

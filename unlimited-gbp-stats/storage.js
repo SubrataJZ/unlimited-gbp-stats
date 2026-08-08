@@ -256,14 +256,33 @@ const GBPStorage = (() => {
    * Save an array of individual reviews (idempotent by externalId).
    * @param {Array} reviews [{ externalId, rating, text, author, isLocalGuide, hasPhoto, reviewedAt }]
    */
+  /**
+   * Upsert scraped reviews, MERGING with what is already stored.
+   *
+   * The merge matters for ownerResponded. Only the Maps/Search scrape can see
+   * whether the owner replied; the server-pull paths in background.js carry it
+   * when the backend knows it, but any payload that simply omits the field must
+   * leave the stored value alone. A blind write would let one hydrate turn a
+   * scraped "replied" back into "not replied" and put an already-answered
+   * review back on the at-risk list — the same way a blind write once erased
+   * the star histogram (see saveReviewSnapshot).
+   *
+   * Absent stays absent: a review we have never scraped since this field
+   * existed keeps ownerResponded undefined, which reads as "unknown" rather
+   * than "unanswered". Claiming an owner ignored a customer on the strength of
+   * a field we never captured is worse than saying nothing.
+   */
   async function saveReviews(businessId, reviews) {
     if (!Array.isArray(reviews) || !reviews.length) return 0;
     const { store } = await tx('reviews', 'readwrite');
     let n = 0;
     for (const r of reviews) {
       if (!r || !r.externalId) continue;
-      await promisifyRequest(store.put({
-        id: `${businessId}_${r.externalId}`,
+      const id = `${businessId}_${r.externalId}`;
+      const existing = await promisifyRequest(store.get(id));
+
+      const row = {
+        id,
         businessId,
         externalId:   r.externalId,
         rating:       r.rating || 0,
@@ -274,7 +293,19 @@ const GBPStorage = (() => {
         reviewedAt:    r.reviewedAt || '',
         reviewedAtISO: r.reviewedAtISO || '',
         collectedAt:   Date.now(),
-      }));
+      };
+
+      const responded = r.ownerResponded !== undefined
+        ? !!r.ownerResponded
+        : existing?.ownerResponded;
+      if (responded !== undefined) row.ownerResponded = responded;
+
+      const authorCount = r.authorReviewCount !== undefined
+        ? r.authorReviewCount
+        : existing?.authorReviewCount;
+      if (authorCount !== undefined && authorCount !== null) row.authorReviewCount = authorCount;
+
+      await promisifyRequest(store.put(row));
       n++;
     }
     return n;
