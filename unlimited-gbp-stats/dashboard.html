@@ -452,6 +452,24 @@
         <div id="rvStarBars" class="rv-star-bars"></div>
       </div>
 
+      <!-- ═══ Reviews at risk ═══
+           Low-rated reviews with no owner reply, longest-waiting first. Sits
+           above the analysis sections because it is the only one that asks the
+           owner to do something today. Hidden entirely when there are no
+           low-rated reviews at all. ═══ -->
+      <div class="chart-section rv-risk-section" id="rvRiskSection" style="display:none">
+        <div class="rv-risk-header">
+          <h3 class="rv-section-title" style="margin-bottom:2px">Reviews at risk</h3>
+          <span class="rv-risk-count" id="rvRiskCount"></span>
+        </div>
+        <div class="rv-risk-sub">
+          1–2★ reviews with no reply from you. These are the ones prospects read — and
+          unlike the rating itself, they can still be answered.
+        </div>
+        <div class="rv-risk-note" id="rvRiskNote" style="display:none"></div>
+        <div id="rvRiskList" class="rv-risk-list"></div>
+      </div>
+
       <!-- ═══ What customers talk about ═══
            Concepts discovered from the review text itself, in whatever language
            it was written. Nothing here is fetched or analysed until the user

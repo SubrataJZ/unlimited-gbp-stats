@@ -1834,3 +1834,88 @@ tr:hover td { background: var(--bg-hover); }
   .rv-concept-btn { flex: 1; }
   .rv-concept-trend { margin-left: 0; width: 100%; }
 }
+
+/* ═══ Reviews at risk ═════════════════════════════════════════════════════════
+   The only section that asks the owner to act, so it is the only one allowed a
+   warning colour. Everything else in the Reviews view is reporting; this is a
+   queue. The left border carries the urgency so the eye finds the stale ones
+   without reading a single number. */
+
+.rv-risk-section { border: 1px solid rgba(242,139,130,.28); }
+.rv-risk-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.rv-risk-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f28b82;
+  padding: 2px 8px;
+  background: rgba(242,139,130,.12);
+  border-radius: 10px;
+}
+.rv-risk-sub {
+  font-size: 12px;
+  color: var(--text-secondary, #9aa0a6);
+  line-height: 1.45;
+  margin-bottom: 10px;
+  max-width: 62ch;
+}
+.rv-risk-note {
+  font-size: 12px;
+  color: #fdd663;
+  background: rgba(253,214,99,.08);
+  padding: 7px 10px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+.rv-risk-clear {
+  font-size: 13px;
+  color: #81c995;
+  padding: 14px 4px;
+  text-align: center;
+}
+
+.rv-risk-list { display: flex; flex-direction: column; gap: 8px; }
+.rv-risk-item {
+  padding: 10px 12px;
+  background: rgba(255,255,255,.02);
+  border: 1px solid var(--accent-dim, #2a2a3e);
+  border-left: 3px solid #f6aba5;
+  border-radius: 8px;
+}
+/* Past the point of a graceful save — a deeper red, not a different shape. */
+.rv-risk-stale { border-left-color: #f28b82; background: rgba(242,139,130,.05); }
+
+.rv-risk-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.rv-risk-stars { color: #fdd663; font-size: 13px; letter-spacing: 1px; }
+.rv-risk-author { font-size: 13px; font-weight: 600; color: var(--text-primary, #e8eaed); }
+/* Age is the ranking signal, so it sits at the far end and reads as a figure. */
+.rv-risk-age {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-secondary, #9aa0a6);
+  white-space: nowrap;
+}
+.rv-risk-stale .rv-risk-age { color: #f28b82; font-weight: 600; }
+.rv-risk-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary, #9aa0a6);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 560px) {
+  .rv-risk-age { margin-left: 0; width: 100%; }
+}

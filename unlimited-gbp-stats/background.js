@@ -305,6 +305,9 @@ async function pullReviewsFromServer(businessId) {
         author:       r.authorName || '',
         isLocalGuide: !!r.isLocalGuide,
         hasPhoto:     !!r.hasPhoto,
+        // The backend has always returned this; dropping it here is why nothing
+        // could tell you which reviews are still unanswered.
+        ownerResponded: !!r.ownerResponded,
         reviewedAt:   r.reviewedAt ? String(r.reviewedAt).slice(0, 10) : '',
       }));
       if (mapped.length) { await GBPStorage.saveReviews(localId, mapped); revs += mapped.length; }
@@ -648,6 +651,9 @@ async function hydrateBusiness(businessId, full = false) {
       author:       r.authorName || '',
       isLocalGuide: !!r.isLocalGuide,
       hasPhoto:     !!r.hasPhoto,
+      // The backend has always returned this; dropping it here is why nothing
+      // could tell you which reviews are still unanswered.
+      ownerResponded: !!r.ownerResponded,
       reviewedAt:   r.reviewedAt ? String(r.reviewedAt).slice(0, 10) : '',
     }));
     if (mapped.length) await GBPStorage.saveReviews(canonicalId, mapped);
