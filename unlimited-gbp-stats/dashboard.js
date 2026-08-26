@@ -112,7 +112,10 @@
 
   /**
    * Generate report via backend API
-   * Returns { reportId, reportType, generatedAt, htmlUrl, pdfUrl, expiresAt }
+   * Returns { reportId, reportType, locationId, generatedAt, expiresAt,
+   *           downloadUrl, pdfUrl } — the URLs are paths on the API host.
+   * `options` may carry metricTypes and period1/period2 date ranges; for a
+   * 'full' report period1 is the window and period2 an optional comparison.
    */
   async function generateReportViaAPI(locationId, reportType = 'full', options = {}) {
     try {
@@ -3920,48 +3923,161 @@
     return svg;
   }
 
+  const REPORT_METRIC_TYPES = ['overview', 'calls', 'chat_clicks', 'bookings', 'directions', 'website_clicks'];
+
+  /** UTC bounds for a whole month, as the API expects them (ISO strings). */
+  function monthStartISO(year, month) {
+    return new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0)).toISOString();
+  }
+  function monthEndISO(year, month) {
+    // Day 0 of the next month = last day of this month
+    return new Date(Date.UTC(year, month, 0, 23, 59, 59, 999)).toISOString();
+  }
+
+  /**
+   * Describe the export the user has actually asked for, from dashboard state:
+   * the selected month range, the comparison period (when comparison is on),
+   * and the labels the local builder needs.
+   *
+   * `canUseApi` says whether POST /api/reports/generate can honour this spec
+   * exactly. When it is false the caller must build the report locally rather
+   * than silently ship a report over a different window than the one selected.
+   */
+  function buildExportSpec(s) {
+    if (!s.businessId || !s.startYear || !s.startMonth || !s.endYear || !s.endMonth) return null;
+
+    const startLabel  = `${MONTH_FULL[s.startMonth - 1]} ${s.startYear}`;
+    const endLabel    = `${MONTH_FULL[s.endMonth - 1]} ${s.endYear}`;
+    const periodLabel = startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`;
+
+    // Number of months in the selected range
+    let monthsCount = 0;
+    let cy = s.startYear, cm = s.startMonth;
+    while (cy < s.endYear || (cy === s.endYear && cm <= s.endMonth)) {
+      monthsCount++;
+      cm++; if (cm > 12) { cm = 1; cy++; }
+    }
+
+    const range = {
+      start: monthStartISO(s.startYear, s.startMonth),
+      end:   monthEndISO(s.endYear, s.endMonth),
+    };
+
+    // Comparison window, expressed as a date range the API can consume
+    let comparison = null;
+    let canUseApi = true;
+
+    if (s.compareEnabled) {
+      if (s.compareMode === 'yoy') {
+        comparison = {
+          start: monthStartISO(s.startYear - 1, s.startMonth),
+          end:   monthEndISO(s.endYear - 1, s.endMonth),
+        };
+      } else if (s.compareMode === 'prev') {
+        // The block of `monthsCount` months immediately before the selection
+        let py = s.startYear, pm = s.startMonth - monthsCount;
+        while (pm < 1) { pm += 12; py--; }
+        let ey = s.startYear, em = s.startMonth - 1;
+        if (em < 1) { em += 12; ey--; }
+        comparison = { start: monthStartISO(py, pm), end: monthEndISO(ey, em) };
+      } else if (s.compareMode === 'custom') {
+        if (s.compareYear && s.compareMonth) {
+          comparison = {
+            start: monthStartISO(s.compareYear, s.compareMonth),
+            end:   monthEndISO(s.compareYear, s.compareMonth),
+          };
+        } else {
+          // Comparison is on but not fully chosen — the API cannot reproduce
+          // what the dashboard is showing, so don't pretend it can.
+          canUseApi = false;
+        }
+      } else {
+        canUseApi = false;
+      }
+    }
+
+    return {
+      locationId: s.businessId,
+      metricTypes: REPORT_METRIC_TYPES.slice(),
+      range,
+      comparison,
+      canUseApi,
+      startYear: s.startYear, startMonth: s.startMonth,
+      endYear: s.endYear, endMonth: s.endMonth,
+      startLabel, endLabel, periodLabel, monthsCount,
+    };
+  }
+
+  /**
+   * Ask the backend for the report described by `spec` and download the HTML it
+   * renders. Returns the report metadata on success (so the caller can surface
+   * the shareable link), or null if the API could not serve it.
+   */
+  async function generateReportViaAPIForSpec(spec, bizName) {
+    const reportData = await generateReportViaAPI(spec.locationId, 'full', {
+      metricTypes: spec.metricTypes,
+      period1: spec.range,
+      ...(spec.comparison ? { period2: spec.comparison } : {}),
+    });
+
+    if (!reportData || !reportData.reportId) return null;
+
+    // Service returns paths relative to the API host; htmlUrl kept for older builds
+    const path = reportData.htmlUrl || reportData.downloadUrl
+      || `/api/reports/${reportData.reportId}/download?format=html`;
+    const url = /^https?:\/\//.test(path)
+      ? path
+      : `${API_BASE.replace(/\/api\/?$/, '')}${path}`;
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.warn('Failed to download API report:', response.status);
+        return null;
+      }
+      const html = await response.text();
+      downloadHTML(html, bizName);
+      return { ...reportData, shareUrl: url };
+    } catch (error) {
+      console.warn('Failed to download API report:', error);
+      return null;
+    }
+  }
+
   async function generateReport() {
     if (!state.businessId) { showToast('Select a business first'); return; }
 
     const bizEl    = document.querySelector(`#businessSelect option[value="${state.businessId}"]`);
     const bizName  = bizEl ? bizEl.textContent.trim() : state.businessId;
 
-    // Try API first (new feature)
-    showToast('⏳ Generating report via server…');
-    const reportData = await generateReportViaAPI(state.businessId, 'full', {
-      metricTypes: ['overview', 'calls', 'website_clicks', 'directions', 'bookings', 'chat_clicks']
-    });
+    const spec = buildExportSpec(state);
+    if (!spec) { showToast('Pick a date range first'); return; }
 
-    if (reportData && reportData.htmlUrl) {
-      // Successfully generated via API - download the HTML
-      try {
-        const response = await fetch(reportData.htmlUrl);
-        if (response.ok) {
-          const html = await response.text();
-          downloadHTML(html, bizName);
-          showToast('✅ Report downloaded from server!');
-          return;
-        }
-      } catch (error) {
-        console.warn('Failed to download API report:', error);
-        // Fall through to local generation
+    // Prefer the server when it can honour the selection exactly — that is what
+    // produces the shareable / white-label report link.
+    if (_authUser && spec.canUseApi) {
+      showToast('⏳ Generating report via server…');
+      const reportData = await generateReportViaAPIForSpec(spec, bizName);
+      if (reportData) {
+        console.info('Shareable report link:', reportData.shareUrl);
+        showToast('✅ Report downloaded — shareable link in console');
+        return;
       }
+      // Fall through to local generation if the API could not serve it
     }
 
-    // Fallback to local report generation if API unavailable
     showToast('⏳ Building report locally…');
-    const startLabel  = `${MONTH_FULL[state.startMonth - 1]} ${state.startYear}`;
-    const endLabel    = `${MONTH_FULL[state.endMonth - 1]} ${state.endYear}`;
-    const periodLabel = startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`;
+    const { startLabel, endLabel, periodLabel } = spec;
+    const allMonthsCount = spec.monthsCount;
 
     // Fetch all metric types for the selected range
-    const MT = ['overview', 'calls', 'chat_clicks', 'bookings', 'directions', 'website_clicks'];
+    const MT = spec.metricTypes;
     const metricsData = {};
     for (const mt of MT) {
       metricsData[mt] = await GBPStorage.getMetricsForRange(
-        state.businessId, mt,
-        state.startYear, state.startMonth,
-        state.endYear, state.endMonth
+        spec.locationId, mt,
+        spec.startYear, spec.startMonth,
+        spec.endYear, spec.endMonth
       );
     }
 
@@ -3975,14 +4091,6 @@
     const latestBreakdown   = [...ov].reverse().find(m => m.breakdown);
     const latestSearchTerms = [...ov].reverse().find(m => m.searchTerms && m.searchTerms.length);
     const latestFunnel      = [...ov].reverse().find(m => m.searchImpressions || m.profileViews);
-
-    // Count months in selected range
-    let allMonthsCount = 0;
-    { let cy = state.startYear, cm = state.startMonth;
-      while (cy < state.endYear || (cy === state.endYear && cm <= state.endMonth)) {
-        allMonthsCount++;
-        cm++; if (cm > 12) { cm = 1; cy++; }
-      } }
 
     const html = buildReportHtml({
       bizName, periodLabel, startLabel, endLabel, allMonthsCount,
