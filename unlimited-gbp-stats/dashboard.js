@@ -3864,10 +3864,21 @@
     return `rgba(${r},${g},${b},${alpha})`;
   }
 
-  function buildReportChartSvg(values, labels, color) {
+  /**
+   * Trend chart for the exported report.
+   *
+   * `compareValues` is the aligned comparison series (same month a year earlier
+   * in the default YoY mode); where a comparison value exists, the point is
+   * labelled with the percentage change, which is the figure the report is
+   * actually read for. Pass null to draw the plain value labels only.
+   */
+  function buildReportChartSvg(values, labels, color, compareValues, compareLabel) {
     if (!values.length) return '';
-    const W = 860, H = 240;
-    const PAD = { top: 30, right: 20, bottom: 44, left: 64 };
+    const showChange = Array.isArray(compareValues) && compareValues.length === values.length;
+    const W = 860, H = showChange ? 260 : 240;
+    // Extra headroom on top so the change label above the tallest point has
+    // somewhere to go rather than being clipped out of the viewBox.
+    const PAD = { top: showChange ? 52 : 30, right: 20, bottom: 44, left: 64 };
     const plotW = W - PAD.left - PAD.right;
     const plotH = H - PAD.top - PAD.bottom;
 
@@ -3914,8 +3925,23 @@
     for (let i = 0; i < values.length; i++) {
       const cx = toX(i), cy = toY(values[i]);
       svg += `<circle cx="${cx}" cy="${cy}" r="5" fill="#fff" stroke="${color}" stroke-width="2.5"/>`;
-      if (values.length <= 18) {
+
+      const showValue = values.length <= 18;
+      if (showValue) {
         svg += `<text x="${cx}" y="${cy - 10}" fill="#444" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="600">${values[i].toLocaleString()}</text>`;
+      }
+
+      // Percentage change vs the comparison period, above the value label
+      if (showChange) {
+        const cmp = compareValues[i];
+        if (cmp != null && cmp > 0) {
+          const pct = ((values[i] - cmp) / cmp) * 100;
+          const sign = pct >= 0 ? '+' : '';
+          const changeColor = pct >= 0 ? '#0d904f' : '#d93025';
+          // Keep the label inside the viewBox even for the tallest point
+          const y = Math.max(14, cy - (showValue ? 26 : 12));
+          svg += `<text x="${cx}" y="${y}" fill="${changeColor}" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">${escHtml(compareLabel || '')} ${sign}${pct.toFixed(1)}%</text>`;
+        }
       }
     }
 
@@ -3996,6 +4022,14 @@
       }
     }
 
+    // The report always shows a percentage change per month; with comparison
+    // switched off that is year-on-year, which is what a report is read for.
+    const compareMode = s.compareEnabled ? s.compareMode : 'yoy';
+    const compareLabel = compareMode === 'prev' ? 'PoP'
+      : compareMode === 'custom' && s.compareYear && s.compareMonth
+        ? `vs ${MONTH_NAMES[s.compareMonth - 1]} ${s.compareYear}`
+        : 'YoY';
+
     return {
       locationId: s.businessId,
       metricTypes: REPORT_METRIC_TYPES.slice(),
@@ -4004,8 +4038,52 @@
       canUseApi,
       startYear: s.startYear, startMonth: s.startMonth,
       endYear: s.endYear, endMonth: s.endMonth,
+      compareMode, compareLabel,
+      compareYear: s.compareYear, compareMonth: s.compareMonth,
       startLabel, endLabel, periodLabel, monthsCount,
     };
+  }
+
+  /** The month a given month of the selection is compared against. */
+  function comparisonMonthFor(spec, year, month) {
+    if (spec.compareMode === 'custom') {
+      return (spec.compareYear && spec.compareMonth)
+        ? { year: spec.compareYear, month: spec.compareMonth }
+        : null;
+    }
+    if (spec.compareMode === 'prev') {
+      let y = year, m = month - spec.monthsCount;
+      while (m < 1) { m += 12; y--; }
+      return { year: y, month: m };
+    }
+    return { year: year - 1, month }; // yoy
+  }
+
+  /**
+   * Comparison totals aligned 1:1 with `records`, so each point of the report
+   * chart can be labelled with its percentage change. Entries are null where
+   * the comparison month was never collected.
+   */
+  async function fetchReportCompareSeries(spec, metricType, records) {
+    if (!records.length) return null;
+
+    const months = records.map(m => comparisonMonthFor(spec, m.year, m.month));
+    const known = months.filter(Boolean);
+    if (!known.length) return null;
+
+    const ordinal = (c) => c.year * 12 + c.month;
+    const first = known.reduce((a, b) => (ordinal(b) < ordinal(a) ? b : a));
+    const last  = known.reduce((a, b) => (ordinal(b) > ordinal(a) ? b : a));
+
+    const rows = await GBPStorage.getMetricsForRange(
+      spec.locationId, metricType,
+      first.year, first.month, last.year, last.month
+    );
+
+    const byMonth = new Map((rows || []).map(r => [`${r.year}-${r.month}`, r.total || 0]));
+    const series = months.map(c => (c ? (byMonth.has(`${c.year}-${c.month}`) ? byMonth.get(`${c.year}-${c.month}`) : null) : null));
+
+    return series.some(v => v != null) ? series : null;
   }
 
   /**
@@ -4092,9 +4170,14 @@
     const latestSearchTerms = [...ov].reverse().find(m => m.searchTerms && m.searchTerms.length);
     const latestFunnel      = [...ov].reverse().find(m => m.searchImpressions || m.profileViews);
 
+    // Per-month percentage change for the trend chart (year-on-year unless the
+    // user picked another comparison)
+    const overviewCompare = await fetchReportCompareSeries(spec, 'overview', ov);
+
     const html = buildReportHtml({
       bizName, periodLabel, startLabel, endLabel, allMonthsCount,
       totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
+      overviewCompare, compareLabel: spec.compareLabel,
     });
 
     downloadHTML(html, bizName);
@@ -4118,7 +4201,8 @@
   }
 
   function buildReportHtml({ bizName, periodLabel, startLabel, endLabel, allMonthsCount,
-                              totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel }) {
+                              totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
+                              overviewCompare, compareLabel }) {
     const now           = new Date();
     const dateGenerated = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -4150,13 +4234,18 @@
       ? buildReportChartSvg(
           ov.map(m => m.total || 0),
           ov.map(m => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
-          '#1a73e8'
+          '#1a73e8',
+          overviewCompare,
+          compareLabel
         )
+      : '';
+    const changeNote = overviewCompare
+      ? ` · ${escHtml(compareLabel === 'YoY' ? 'year-on-year' : compareLabel === 'PoP' ? 'vs the previous period' : compareLabel)} change shown above each month`
       : '';
     const chartSection = chartSvg ? `
       <div class="section">
         <h2>Interaction Trend</h2>
-        <p class="section-note">${escHtml(periodLabel)} · monthly totals from Google Business Profile</p>
+        <p class="section-note">${escHtml(periodLabel)} · monthly totals from Google Business Profile${changeNote}</p>
         <div class="chart-wrap">${chartSvg}</div>
       </div>` : '';
 

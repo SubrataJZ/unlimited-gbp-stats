@@ -4,6 +4,8 @@ import logger from '../utils/logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 // ── Type Definitions ───────────────────────────────────────────────────────
 
 export interface GenerateReportOptions {
@@ -193,12 +195,15 @@ class ReportService {
       // Build summary cards, with a comparison block when a second period is given
       let summaryCards = this.buildSummaryCards(metricsByType);
 
+      // The chart is read for the change per month, so it always needs something
+      // to compare against: the caller's comparison period, or the same months a
+      // year earlier when none was given.
+      const chartComparison = comparison || (range ? this.previousYearOf(range) : undefined);
+      const comparisonMetrics = chartComparison
+        ? await metricsService.getAllMetricsForLocation(locationId, metricTypes, chartComparison)
+        : [];
+
       if (comparison) {
-        const comparisonMetrics = await metricsService.getAllMetricsForLocation(
-          locationId,
-          metricTypes,
-          comparison
-        );
         summaryCards +=
           this.buildRangeComparison(
             metricsByType,
@@ -208,8 +213,20 @@ class ReportService {
           );
       }
 
-      // Build main chart SVG (oldest → newest reads left to right)
-      const mainChart = this.buildChartSvg([...allMetrics].reverse());
+      // Build main chart SVG (oldest → newest reads left to right), labelling
+      // each month with its change against the comparison period
+      const primaryType = this.pickPrimaryMetricType(metricsByType);
+      const series = this.monthlySeries(metricsByType[primaryType] || []);
+      const compareSeries = this.monthlySeries(
+        this.groupMetricsByType(comparisonMetrics)[primaryType] || []
+      );
+      const mainChart = series.length
+        ? this.buildTrendChartSvg(
+            series,
+            compareSeries,
+            comparison ? 'vs prev' : 'YoY'
+          )
+        : this.buildChartSvg([...allMetrics].reverse());
 
       // Build platform breakdown
       const platformBreakdown = this.buildPlatformBreakdown(metricsByType);
@@ -275,6 +292,115 @@ class ReportService {
 
   private formatRange(range: DateRange): string {
     return `${range.start.toLocaleDateString()} to ${range.end.toLocaleDateString()}`;
+  }
+
+  /** The same window one year earlier — the default thing to compare against. */
+  private previousYearOf(range: DateRange): DateRange {
+    const shift = (d: Date) => {
+      const out = new Date(d);
+      out.setFullYear(out.getFullYear() - 1);
+      return out;
+    };
+    return { start: shift(range.start), end: shift(range.end) };
+  }
+
+  /** Chart the type the report is really about, falling back to the fullest series. */
+  private pickPrimaryMetricType(metricsByType: { [key: string]: any[] }): string {
+    if (metricsByType['overview']?.length) return 'overview';
+    return Object.keys(metricsByType).reduce(
+      (best, type) =>
+        (metricsByType[type]?.length || 0) > (metricsByType[best]?.length || 0) ? type : best,
+      Object.keys(metricsByType)[0] || 'overview'
+    );
+  }
+
+  /** Monthly totals for one metric type, oldest month first. */
+  private monthlySeries(metrics: any[]): { key: string; label: string; value: number }[] {
+    const byMonth = new Map<string, number>();
+
+    for (const metric of metrics) {
+      const date = new Date(metric.date);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      byMonth.set(key, (byMonth.get(key) || 0) + metric.value);
+    }
+
+    return Array.from(byMonth.entries())
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, value]) => {
+        const [year, month] = key.split('-');
+        const label = `${MONTH_NAMES[Number(month) - 1]} ${year.slice(2)}`;
+        return { key, label, value };
+      });
+  }
+
+  /**
+   * Monthly trend chart with the percentage change above each point.
+   *
+   * Months are matched to the comparison series by position, so a comparison
+   * window of the same length lines up month for month; where there is no
+   * matching month, the point is simply left unlabelled rather than guessed at.
+   */
+  private buildTrendChartSvg(
+    series: { label: string; value: number }[],
+    compareSeries: { value: number }[],
+    compareLabel: string
+  ): string {
+    const width = 860;
+    const height = 300;
+    // Headroom on top so the label above the tallest point is never clipped
+    const pad = { top: 56, right: 24, bottom: 44, left: 64 };
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+
+    const maxValue = Math.max(...series.map((p) => p.value), 1);
+    const toX = (i: number) =>
+      pad.left + (series.length > 1 ? (i / (series.length - 1)) * plotW : plotW / 2);
+    const toY = (v: number) => pad.top + plotH - (v / maxValue) * plotH;
+
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="background: #f9f9f9; border-radius: 4px;">`;
+
+    // Baseline
+    svg += `<line x1="${pad.left}" x2="${width - pad.right}" y1="${toY(0)}" y2="${toY(0)}" stroke="#e8eaed" stroke-width="1"/>`;
+
+    // Area + line
+    if (series.length > 1) {
+      let path = `M${toX(0)},${toY(series[0].value)}`;
+      for (let i = 1; i < series.length; i++) path += `L${toX(i)},${toY(series[i].value)}`;
+      svg += `<path d="${path}L${toX(series.length - 1)},${toY(0)}L${toX(0)},${toY(0)}Z" fill="#8ab4f8" opacity="0.15"/>`;
+      svg += `<path d="${path}" fill="none" stroke="#1a73e8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }
+
+    const labelStep = Math.max(1, Math.floor(series.length / 8));
+
+    for (let i = 0; i < series.length; i++) {
+      const cx = toX(i);
+      const cy = toY(series[i].value);
+
+      svg += `<circle cx="${cx}" cy="${cy}" r="5" fill="#fff" stroke="#1a73e8" stroke-width="2.5"/>`;
+
+      const showValue = series.length <= 18;
+      if (showValue) {
+        svg += `<text x="${cx}" y="${cy - 10}" fill="#444" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="600">${series[i].value.toLocaleString()}</text>`;
+      }
+
+      // Percentage change against the aligned comparison month
+      const previous = compareSeries[i]?.value;
+      if (previous && previous > 0) {
+        const change = ((series[i].value - previous) / previous) * 100;
+        const color = change >= 0 ? '#0d904f' : '#d93025';
+        const y = Math.max(16, cy - (showValue ? 26 : 12));
+        svg += `<text x="${cx}" y="${y}" fill="${color}" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">${compareLabel} ${change >= 0 ? '+' : ''}${change.toFixed(1)}%</text>`;
+      }
+
+      // X labels
+      if (i === 0 || i === series.length - 1 || i % labelStep === 0) {
+        const anchor = i === 0 ? 'start' : i === series.length - 1 ? 'end' : 'middle';
+        svg += `<text x="${cx}" y="${height - 16}" fill="#9aa0a6" font-size="11" text-anchor="${anchor}" font-family="Arial,sans-serif">${series[i].label}</text>`;
+      }
+    }
+
+    svg += '</svg>';
+    return svg;
   }
 
   /**
