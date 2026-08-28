@@ -112,7 +112,10 @@
 
   /**
    * Generate report via backend API
-   * Returns { reportId, reportType, generatedAt, htmlUrl, pdfUrl, expiresAt }
+   * Returns { reportId, reportType, locationId, generatedAt, expiresAt,
+   *           downloadUrl, pdfUrl } — the URLs are paths on the API host.
+   * `options` may carry metricTypes and period1/period2 date ranges; for a
+   * 'full' report period1 is the window and period2 an optional comparison.
    */
   async function generateReportViaAPI(locationId, reportType = 'full', options = {}) {
     try {
@@ -3861,10 +3864,21 @@
     return `rgba(${r},${g},${b},${alpha})`;
   }
 
-  function buildReportChartSvg(values, labels, color) {
+  /**
+   * Trend chart for the exported report.
+   *
+   * `compareValues` is the aligned comparison series (same month a year earlier
+   * in the default YoY mode); where a comparison value exists, the point is
+   * labelled with the percentage change, which is the figure the report is
+   * actually read for. Pass null to draw the plain value labels only.
+   */
+  function buildReportChartSvg(values, labels, color, compareValues, compareLabel) {
     if (!values.length) return '';
-    const W = 860, H = 240;
-    const PAD = { top: 30, right: 20, bottom: 44, left: 64 };
+    const showChange = Array.isArray(compareValues) && compareValues.length === values.length;
+    const W = 860, H = showChange ? 260 : 240;
+    // Extra headroom on top so the change label above the tallest point has
+    // somewhere to go rather than being clipped out of the viewBox.
+    const PAD = { top: showChange ? 52 : 30, right: 20, bottom: 44, left: 64 };
     const plotW = W - PAD.left - PAD.right;
     const plotH = H - PAD.top - PAD.bottom;
 
@@ -3911,13 +3925,201 @@
     for (let i = 0; i < values.length; i++) {
       const cx = toX(i), cy = toY(values[i]);
       svg += `<circle cx="${cx}" cy="${cy}" r="5" fill="#fff" stroke="${color}" stroke-width="2.5"/>`;
-      if (values.length <= 18) {
+
+      const showValue = values.length <= 18;
+      if (showValue) {
         svg += `<text x="${cx}" y="${cy - 10}" fill="#444" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="600">${values[i].toLocaleString()}</text>`;
+      }
+
+      // Percentage change vs the comparison period, above the value label
+      if (showChange) {
+        const cmp = compareValues[i];
+        if (cmp != null && cmp > 0) {
+          const pct = ((values[i] - cmp) / cmp) * 100;
+          const sign = pct >= 0 ? '+' : '';
+          const changeColor = pct >= 0 ? '#0d904f' : '#d93025';
+          // Keep the label inside the viewBox even for the tallest point
+          const y = Math.max(14, cy - (showValue ? 26 : 12));
+          svg += `<text x="${cx}" y="${y}" fill="${changeColor}" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">${escHtml(compareLabel || '')} ${sign}${pct.toFixed(1)}%</text>`;
+        }
       }
     }
 
     svg += `</svg>`;
     return svg;
+  }
+
+  const REPORT_METRIC_TYPES = ['overview', 'calls', 'chat_clicks', 'bookings', 'directions', 'website_clicks'];
+
+  /** UTC bounds for a whole month, as the API expects them (ISO strings). */
+  function monthStartISO(year, month) {
+    return new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0)).toISOString();
+  }
+  function monthEndISO(year, month) {
+    // Day 0 of the next month = last day of this month
+    return new Date(Date.UTC(year, month, 0, 23, 59, 59, 999)).toISOString();
+  }
+
+  /**
+   * Describe the export the user has actually asked for, from dashboard state:
+   * the selected month range, the comparison period (when comparison is on),
+   * and the labels the local builder needs.
+   *
+   * `canUseApi` says whether POST /api/reports/generate can honour this spec
+   * exactly. When it is false the caller must build the report locally rather
+   * than silently ship a report over a different window than the one selected.
+   */
+  function buildExportSpec(s) {
+    if (!s.businessId || !s.startYear || !s.startMonth || !s.endYear || !s.endMonth) return null;
+
+    const startLabel  = `${MONTH_FULL[s.startMonth - 1]} ${s.startYear}`;
+    const endLabel    = `${MONTH_FULL[s.endMonth - 1]} ${s.endYear}`;
+    const periodLabel = startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`;
+
+    // Number of months in the selected range
+    let monthsCount = 0;
+    let cy = s.startYear, cm = s.startMonth;
+    while (cy < s.endYear || (cy === s.endYear && cm <= s.endMonth)) {
+      monthsCount++;
+      cm++; if (cm > 12) { cm = 1; cy++; }
+    }
+
+    const range = {
+      start: monthStartISO(s.startYear, s.startMonth),
+      end:   monthEndISO(s.endYear, s.endMonth),
+    };
+
+    // Comparison window, expressed as a date range the API can consume
+    let comparison = null;
+    let canUseApi = true;
+
+    if (s.compareEnabled) {
+      if (s.compareMode === 'yoy') {
+        comparison = {
+          start: monthStartISO(s.startYear - 1, s.startMonth),
+          end:   monthEndISO(s.endYear - 1, s.endMonth),
+        };
+      } else if (s.compareMode === 'prev') {
+        // The block of `monthsCount` months immediately before the selection
+        let py = s.startYear, pm = s.startMonth - monthsCount;
+        while (pm < 1) { pm += 12; py--; }
+        let ey = s.startYear, em = s.startMonth - 1;
+        if (em < 1) { em += 12; ey--; }
+        comparison = { start: monthStartISO(py, pm), end: monthEndISO(ey, em) };
+      } else if (s.compareMode === 'custom') {
+        if (s.compareYear && s.compareMonth) {
+          comparison = {
+            start: monthStartISO(s.compareYear, s.compareMonth),
+            end:   monthEndISO(s.compareYear, s.compareMonth),
+          };
+        } else {
+          // Comparison is on but not fully chosen — the API cannot reproduce
+          // what the dashboard is showing, so don't pretend it can.
+          canUseApi = false;
+        }
+      } else {
+        canUseApi = false;
+      }
+    }
+
+    // The report always shows a percentage change per month; with comparison
+    // switched off that is year-on-year, which is what a report is read for.
+    const compareMode = s.compareEnabled ? s.compareMode : 'yoy';
+    const compareLabel = compareMode === 'prev' ? 'PoP'
+      : compareMode === 'custom' && s.compareYear && s.compareMonth
+        ? `vs ${MONTH_NAMES[s.compareMonth - 1]} ${s.compareYear}`
+        : 'YoY';
+
+    return {
+      locationId: s.businessId,
+      metricTypes: REPORT_METRIC_TYPES.slice(),
+      range,
+      comparison,
+      canUseApi,
+      startYear: s.startYear, startMonth: s.startMonth,
+      endYear: s.endYear, endMonth: s.endMonth,
+      compareMode, compareLabel,
+      compareYear: s.compareYear, compareMonth: s.compareMonth,
+      startLabel, endLabel, periodLabel, monthsCount,
+    };
+  }
+
+  /** The month a given month of the selection is compared against. */
+  function comparisonMonthFor(spec, year, month) {
+    if (spec.compareMode === 'custom') {
+      return (spec.compareYear && spec.compareMonth)
+        ? { year: spec.compareYear, month: spec.compareMonth }
+        : null;
+    }
+    if (spec.compareMode === 'prev') {
+      let y = year, m = month - spec.monthsCount;
+      while (m < 1) { m += 12; y--; }
+      return { year: y, month: m };
+    }
+    return { year: year - 1, month }; // yoy
+  }
+
+  /**
+   * Comparison totals aligned 1:1 with `records`, so each point of the report
+   * chart can be labelled with its percentage change. Entries are null where
+   * the comparison month was never collected.
+   */
+  async function fetchReportCompareSeries(spec, metricType, records) {
+    if (!records.length) return null;
+
+    const months = records.map(m => comparisonMonthFor(spec, m.year, m.month));
+    const known = months.filter(Boolean);
+    if (!known.length) return null;
+
+    const ordinal = (c) => c.year * 12 + c.month;
+    const first = known.reduce((a, b) => (ordinal(b) < ordinal(a) ? b : a));
+    const last  = known.reduce((a, b) => (ordinal(b) > ordinal(a) ? b : a));
+
+    const rows = await GBPStorage.getMetricsForRange(
+      spec.locationId, metricType,
+      first.year, first.month, last.year, last.month
+    );
+
+    const byMonth = new Map((rows || []).map(r => [`${r.year}-${r.month}`, r.total || 0]));
+    const series = months.map(c => (c ? (byMonth.has(`${c.year}-${c.month}`) ? byMonth.get(`${c.year}-${c.month}`) : null) : null));
+
+    return series.some(v => v != null) ? series : null;
+  }
+
+  /**
+   * Ask the backend for the report described by `spec` and download the HTML it
+   * renders. Returns the report metadata on success (so the caller can surface
+   * the shareable link), or null if the API could not serve it.
+   */
+  async function generateReportViaAPIForSpec(spec, bizName) {
+    const reportData = await generateReportViaAPI(spec.locationId, 'full', {
+      metricTypes: spec.metricTypes,
+      period1: spec.range,
+      ...(spec.comparison ? { period2: spec.comparison } : {}),
+    });
+
+    if (!reportData || !reportData.reportId) return null;
+
+    // Service returns paths relative to the API host; htmlUrl kept for older builds
+    const path = reportData.htmlUrl || reportData.downloadUrl
+      || `/api/reports/${reportData.reportId}/download?format=html`;
+    const url = /^https?:\/\//.test(path)
+      ? path
+      : `${API_BASE.replace(/\/api\/?$/, '')}${path}`;
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.warn('Failed to download API report:', response.status);
+        return null;
+      }
+      const html = await response.text();
+      downloadHTML(html, bizName);
+      return { ...reportData, shareUrl: url };
+    } catch (error) {
+      console.warn('Failed to download API report:', error);
+      return null;
+    }
   }
 
   async function generateReport() {
@@ -3926,42 +4128,34 @@
     const bizEl    = document.querySelector(`#businessSelect option[value="${state.businessId}"]`);
     const bizName  = bizEl ? bizEl.textContent.trim() : state.businessId;
 
-    // Try API first (new feature)
-    showToast('⏳ Generating report via server…');
-    const reportData = await generateReportViaAPI(state.businessId, 'full', {
-      metricTypes: ['overview', 'calls', 'website_clicks', 'directions', 'bookings', 'chat_clicks']
-    });
+    const spec = buildExportSpec(state);
+    if (!spec) { showToast('Pick a date range first'); return; }
 
-    if (reportData && reportData.htmlUrl) {
-      // Successfully generated via API - download the HTML
-      try {
-        const response = await fetch(reportData.htmlUrl);
-        if (response.ok) {
-          const html = await response.text();
-          downloadHTML(html, bizName);
-          showToast('✅ Report downloaded from server!');
-          return;
-        }
-      } catch (error) {
-        console.warn('Failed to download API report:', error);
-        // Fall through to local generation
+    // Prefer the server when it can honour the selection exactly — that is what
+    // produces the shareable / white-label report link.
+    if (_authUser && spec.canUseApi) {
+      showToast('⏳ Generating report via server…');
+      const reportData = await generateReportViaAPIForSpec(spec, bizName);
+      if (reportData) {
+        console.info('Shareable report link:', reportData.shareUrl);
+        showToast('✅ Report downloaded — shareable link in console');
+        return;
       }
+      // Fall through to local generation if the API could not serve it
     }
 
-    // Fallback to local report generation if API unavailable
     showToast('⏳ Building report locally…');
-    const startLabel  = `${MONTH_FULL[state.startMonth - 1]} ${state.startYear}`;
-    const endLabel    = `${MONTH_FULL[state.endMonth - 1]} ${state.endYear}`;
-    const periodLabel = startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`;
+    const { startLabel, endLabel, periodLabel } = spec;
+    const allMonthsCount = spec.monthsCount;
 
     // Fetch all metric types for the selected range
-    const MT = ['overview', 'calls', 'chat_clicks', 'bookings', 'directions', 'website_clicks'];
+    const MT = spec.metricTypes;
     const metricsData = {};
     for (const mt of MT) {
       metricsData[mt] = await GBPStorage.getMetricsForRange(
-        state.businessId, mt,
-        state.startYear, state.startMonth,
-        state.endYear, state.endMonth
+        spec.locationId, mt,
+        spec.startYear, spec.startMonth,
+        spec.endYear, spec.endMonth
       );
     }
 
@@ -3976,17 +4170,14 @@
     const latestSearchTerms = [...ov].reverse().find(m => m.searchTerms && m.searchTerms.length);
     const latestFunnel      = [...ov].reverse().find(m => m.searchImpressions || m.profileViews);
 
-    // Count months in selected range
-    let allMonthsCount = 0;
-    { let cy = state.startYear, cm = state.startMonth;
-      while (cy < state.endYear || (cy === state.endYear && cm <= state.endMonth)) {
-        allMonthsCount++;
-        cm++; if (cm > 12) { cm = 1; cy++; }
-      } }
+    // Per-month percentage change for the trend chart (year-on-year unless the
+    // user picked another comparison)
+    const overviewCompare = await fetchReportCompareSeries(spec, 'overview', ov);
 
     const html = buildReportHtml({
       bizName, periodLabel, startLabel, endLabel, allMonthsCount,
       totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
+      overviewCompare, compareLabel: spec.compareLabel,
     });
 
     downloadHTML(html, bizName);
@@ -4010,7 +4201,8 @@
   }
 
   function buildReportHtml({ bizName, periodLabel, startLabel, endLabel, allMonthsCount,
-                              totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel }) {
+                              totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
+                              overviewCompare, compareLabel }) {
     const now           = new Date();
     const dateGenerated = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -4042,13 +4234,18 @@
       ? buildReportChartSvg(
           ov.map(m => m.total || 0),
           ov.map(m => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
-          '#1a73e8'
+          '#1a73e8',
+          overviewCompare,
+          compareLabel
         )
+      : '';
+    const changeNote = overviewCompare
+      ? ` · ${escHtml(compareLabel === 'YoY' ? 'year-on-year' : compareLabel === 'PoP' ? 'vs the previous period' : compareLabel)} change shown above each month`
       : '';
     const chartSection = chartSvg ? `
       <div class="section">
         <h2>Interaction Trend</h2>
-        <p class="section-note">${escHtml(periodLabel)} · monthly totals from Google Business Profile</p>
+        <p class="section-note">${escHtml(periodLabel)} · monthly totals from Google Business Profile${changeNote}</p>
         <div class="chart-wrap">${chartSvg}</div>
       </div>` : '';
 

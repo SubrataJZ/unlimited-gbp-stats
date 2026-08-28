@@ -4,11 +4,21 @@ import logger from '../utils/logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 // ── Type Definitions ───────────────────────────────────────────────────────
 
 export interface GenerateReportOptions {
   metricTypes?: string[];
+  /**
+   * For 'pvp': the first of the two compared periods.
+   * For 'full': the report window. Omit to report on all data ever tracked.
+   */
   period1?: DateRange;
+  /**
+   * For 'pvp': the second of the two compared periods (required).
+   * For 'full': an optional comparison window rendered alongside period1.
+   */
   period2?: DateRange;
   customMonth?: string;
   recipientEmail?: string;
@@ -19,6 +29,11 @@ export interface DateRange {
   start: Date;
   end: Date;
 }
+
+/**
+ * Options arrive over HTTP as JSON, so date bounds are ISO strings on the wire.
+ */
+type RawDateRange = { start: Date | string; end: Date | string };
 
 export interface ReportMeta {
   title: string;
@@ -65,25 +80,35 @@ class ReportService {
         throw new Error(`Location ${locationId} not found`);
       }
 
+      // Options come off the wire as JSON: normalise date bounds before use
+      const period1 = this.normalizeDateRange(options.period1, 'period1');
+      const period2 = this.normalizeDateRange(options.period2, 'period2');
+
       // Generate report content based on type
       let reportData: { html: string; meta: ReportMeta };
 
       switch (reportType) {
         case 'full':
-          reportData = await this.buildFullReport(locationId, location.businessName);
+          reportData = await this.buildFullReport(
+            locationId,
+            location.businessName,
+            period1,
+            period2,
+            options.metricTypes
+          );
           break;
         case 'mvm':
           reportData = await this.buildMvMReport(locationId, location.businessName);
           break;
         case 'pvp':
-          if (!options.period1 || !options.period2) {
+          if (!period1 || !period2) {
             throw new Error('Period vs Period reports require period1 and period2');
           }
           reportData = await this.buildPvPReport(
             locationId,
             location.businessName,
-            options.period1,
-            options.period2
+            period1,
+            period2
           );
           break;
         case '6year':
@@ -130,36 +155,90 @@ class ReportService {
   }
 
   /**
-   * Full Performance Report: All historical data since location was tracked
+   * Full Performance Report.
+   *
+   * With no `range`, this reports on all data ever tracked for the location.
+   * With a `range`, only metrics inside it are reported — this is what the
+   * extension's export sends so the report honours the months the user picked.
+   * An optional `comparison` range adds a period-over-period section.
    */
   private async buildFullReport(
     locationId: string,
-    businessName: string
+    businessName: string,
+    range?: DateRange,
+    comparison?: DateRange,
+    metricTypes?: string[]
   ): Promise<{ html: string; meta: ReportMeta }> {
     try {
-      // Fetch all metrics for location
-      const allMetrics = await metricsService.getAllMetricsForLocation(locationId);
+      // Fetch metrics for the location, narrowed to the requested window
+      const allMetrics = await metricsService.getAllMetricsForLocation(
+        locationId,
+        metricTypes,
+        range
+      );
 
       if (allMetrics.length === 0) {
-        throw new Error('No metrics found for location');
+        throw new Error(
+          range
+            ? `No metrics found for location in ${this.formatRange(range)}`
+            : 'No metrics found for location'
+        );
       }
+
+      // getAllMetricsForLocation orders newest-first
+      const newest = new Date(allMetrics[0].date);
+      const oldest = new Date(allMetrics[allMetrics.length - 1].date);
 
       // Group by metric type
       const metricsByType = this.groupMetricsByType(allMetrics);
 
-      // Build summary cards
-      const summaryCards = this.buildSummaryCards(metricsByType);
+      // Build summary cards, with a comparison block when a second period is given
+      let summaryCards = this.buildSummaryCards(metricsByType);
 
-      // Build main chart SVG
-      const mainChart = this.buildChartSvg(allMetrics);
+      // The chart is read for the change per month, so it always needs something
+      // to compare against: the caller's comparison period, or the same months a
+      // year earlier when none was given.
+      const chartComparison = comparison || (range ? this.previousYearOf(range) : undefined);
+      const comparisonMetrics = chartComparison
+        ? await metricsService.getAllMetricsForLocation(locationId, metricTypes, chartComparison)
+        : [];
+
+      if (comparison) {
+        summaryCards +=
+          this.buildRangeComparison(
+            metricsByType,
+            this.groupMetricsByType(comparisonMetrics),
+            range ? this.formatRange(range) : `${oldest.toLocaleDateString()} to ${newest.toLocaleDateString()}`,
+            this.formatRange(comparison)
+          );
+      }
+
+      // Build main chart SVG (oldest → newest reads left to right), labelling
+      // each month with its change against the comparison period
+      const primaryType = this.pickPrimaryMetricType(metricsByType);
+      const series = this.monthlySeries(metricsByType[primaryType] || []);
+      const compareSeries = this.monthlySeries(
+        this.groupMetricsByType(comparisonMetrics)[primaryType] || []
+      );
+      const mainChart = series.length
+        ? this.buildTrendChartSvg(
+            series,
+            compareSeries,
+            comparison ? 'vs prev' : 'YoY'
+          )
+        : this.buildChartSvg([...allMetrics].reverse());
 
       // Build platform breakdown
       const platformBreakdown = this.buildPlatformBreakdown(metricsByType);
 
+      const period = range
+        ? this.formatRange(range) + (comparison ? ` vs ${this.formatRange(comparison)}` : '')
+        : `${oldest.toLocaleDateString()} to ${newest.toLocaleDateString()}`;
+
       // Load and render template
       const templateData: TemplateData = {
         businessName,
-        period: `${new Date(allMetrics[allMetrics.length - 1].date).toLocaleDateString()} to ${new Date(allMetrics[0].date).toLocaleDateString()}`,
+        period,
         generatedAt: new Date().toLocaleString(),
         summaryCards,
         mainChart,
@@ -177,14 +256,151 @@ class ReportService {
           generatedAt: templateData.generatedAt,
           businessName,
           locationId,
-          dateRangeStart: new Date(allMetrics[allMetrics.length - 1].date),
-          dateRangeEnd: new Date(allMetrics[0].date),
+          // Persist the window that was asked for, so saved reports are
+          // addressable by the user's selection rather than by what data existed
+          dateRangeStart: range ? range.start : oldest,
+          dateRangeEnd: range ? range.end : newest,
         },
       };
     } catch (error) {
       logger.error('Error building full report:', error);
       throw error;
     }
+  }
+
+  /**
+   * Coerce an over-the-wire date range into real Dates, rejecting bad input.
+   */
+  private normalizeDateRange(
+    range: RawDateRange | undefined,
+    label: string
+  ): DateRange | undefined {
+    if (!range) return undefined;
+
+    const start = new Date(range.start);
+    const end = new Date(range.end);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new Error(`${label} must have valid start and end dates`);
+    }
+    if (start > end) {
+      throw new Error(`${label}.start must not be after ${label}.end`);
+    }
+
+    return { start, end };
+  }
+
+  private formatRange(range: DateRange): string {
+    return `${range.start.toLocaleDateString()} to ${range.end.toLocaleDateString()}`;
+  }
+
+  /** The same window one year earlier — the default thing to compare against. */
+  private previousYearOf(range: DateRange): DateRange {
+    const shift = (d: Date) => {
+      const out = new Date(d);
+      out.setFullYear(out.getFullYear() - 1);
+      return out;
+    };
+    return { start: shift(range.start), end: shift(range.end) };
+  }
+
+  /** Chart the type the report is really about, falling back to the fullest series. */
+  private pickPrimaryMetricType(metricsByType: { [key: string]: any[] }): string {
+    if (metricsByType['overview']?.length) return 'overview';
+    return Object.keys(metricsByType).reduce(
+      (best, type) =>
+        (metricsByType[type]?.length || 0) > (metricsByType[best]?.length || 0) ? type : best,
+      Object.keys(metricsByType)[0] || 'overview'
+    );
+  }
+
+  /** Monthly totals for one metric type, oldest month first. */
+  private monthlySeries(metrics: any[]): { key: string; label: string; value: number }[] {
+    const byMonth = new Map<string, number>();
+
+    for (const metric of metrics) {
+      const date = new Date(metric.date);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      byMonth.set(key, (byMonth.get(key) || 0) + metric.value);
+    }
+
+    return Array.from(byMonth.entries())
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, value]) => {
+        const [year, month] = key.split('-');
+        const label = `${MONTH_NAMES[Number(month) - 1]} ${year.slice(2)}`;
+        return { key, label, value };
+      });
+  }
+
+  /**
+   * Monthly trend chart with the percentage change above each point.
+   *
+   * Months are matched to the comparison series by position, so a comparison
+   * window of the same length lines up month for month; where there is no
+   * matching month, the point is simply left unlabelled rather than guessed at.
+   */
+  private buildTrendChartSvg(
+    series: { label: string; value: number }[],
+    compareSeries: { value: number }[],
+    compareLabel: string
+  ): string {
+    const width = 860;
+    const height = 300;
+    // Headroom on top so the label above the tallest point is never clipped
+    const pad = { top: 56, right: 24, bottom: 44, left: 64 };
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+
+    const maxValue = Math.max(...series.map((p) => p.value), 1);
+    const toX = (i: number) =>
+      pad.left + (series.length > 1 ? (i / (series.length - 1)) * plotW : plotW / 2);
+    const toY = (v: number) => pad.top + plotH - (v / maxValue) * plotH;
+
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="background: #f9f9f9; border-radius: 4px;">`;
+
+    // Baseline
+    svg += `<line x1="${pad.left}" x2="${width - pad.right}" y1="${toY(0)}" y2="${toY(0)}" stroke="#e8eaed" stroke-width="1"/>`;
+
+    // Area + line
+    if (series.length > 1) {
+      let path = `M${toX(0)},${toY(series[0].value)}`;
+      for (let i = 1; i < series.length; i++) path += `L${toX(i)},${toY(series[i].value)}`;
+      svg += `<path d="${path}L${toX(series.length - 1)},${toY(0)}L${toX(0)},${toY(0)}Z" fill="#8ab4f8" opacity="0.15"/>`;
+      svg += `<path d="${path}" fill="none" stroke="#1a73e8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }
+
+    const labelStep = Math.max(1, Math.floor(series.length / 8));
+
+    for (let i = 0; i < series.length; i++) {
+      const cx = toX(i);
+      const cy = toY(series[i].value);
+
+      svg += `<circle cx="${cx}" cy="${cy}" r="5" fill="#fff" stroke="#1a73e8" stroke-width="2.5"/>`;
+
+      const showValue = series.length <= 18;
+      if (showValue) {
+        svg += `<text x="${cx}" y="${cy - 10}" fill="#444" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="600">${series[i].value.toLocaleString()}</text>`;
+      }
+
+      // Percentage change against the aligned comparison month
+      const previous = compareSeries[i]?.value;
+      if (previous && previous > 0) {
+        const change = ((series[i].value - previous) / previous) * 100;
+        const color = change >= 0 ? '#0d904f' : '#d93025';
+        const y = Math.max(16, cy - (showValue ? 26 : 12));
+        svg += `<text x="${cx}" y="${y}" fill="${color}" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">${compareLabel} ${change >= 0 ? '+' : ''}${change.toFixed(1)}%</text>`;
+      }
+
+      // X labels
+      if (i === 0 || i === series.length - 1 || i % labelStep === 0) {
+        const anchor = i === 0 ? 'start' : i === series.length - 1 ? 'end' : 'middle';
+        svg += `<text x="${cx}" y="${height - 16}" fill="#9aa0a6" font-size="11" text-anchor="${anchor}" font-family="Arial,sans-serif">${series[i].label}</text>`;
+      }
+    }
+
+    svg += '</svg>';
+    return svg;
   }
 
   /**
@@ -453,6 +669,62 @@ class ReportService {
       .join('');
 
     return `<div style="margin: 20px 0;">${cards}</div>`;
+  }
+
+  /**
+   * Build a per-metric-type comparison table between two windows of a full report
+   */
+  private buildRangeComparison(
+    currentByType: { [key: string]: any[] },
+    comparisonByType: { [key: string]: any[] },
+    currentLabel: string,
+    comparisonLabel: string
+  ): string {
+    const types = Array.from(
+      new Set([...Object.keys(currentByType), ...Object.keys(comparisonByType)])
+    ).sort();
+
+    if (types.length === 0) return '';
+
+    const sum = (metrics: any[] | undefined) =>
+      (metrics || []).reduce((total, m) => total + m.value, 0);
+
+    const rows = types
+      .map((type) => {
+        const current = sum(currentByType[type]);
+        const previous = sum(comparisonByType[type]);
+        const change = previous > 0 ? ((current - previous) / previous) * 100 : null;
+        const color = change === null ? '#666' : change > 0 ? '#4caf50' : change < 0 ? '#f44336' : '#ff9800';
+        const arrow = change === null ? '' : change > 0 ? '↑' : change < 0 ? '↓' : '→';
+        const changeText = change === null ? 'n/a' : `${arrow} ${Math.abs(change).toFixed(1)}%`;
+
+        return `
+          <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; text-transform: uppercase; font-size: 12px; color: #666;">${type}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold; color: #1a1a2e;">${current.toLocaleString()}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right; color: #1a1a2e;">${previous.toLocaleString()}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold; color: ${color};">${changeText}</td>
+          </tr>
+        `;
+      })
+      .join('');
+
+    return `
+      <div style="margin: 30px 0;">
+        <h2 style="font-size: 16px; color: #1a1a2e;">Period Comparison</h2>
+        <table style="width: 100%; border-collapse: collapse; font-family: inherit;">
+          <thead>
+            <tr>
+              <th style="padding: 10px; text-align: left; font-size: 12px; color: #999;">Metric</th>
+              <th style="padding: 10px; text-align: right; font-size: 12px; color: #999;">${currentLabel}</th>
+              <th style="padding: 10px; text-align: right; font-size: 12px; color: #999;">${comparisonLabel}</th>
+              <th style="padding: 10px; text-align: right; font-size: 12px; color: #999;">Change</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
   }
 
   /**

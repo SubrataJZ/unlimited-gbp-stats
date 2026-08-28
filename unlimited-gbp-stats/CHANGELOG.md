@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.24.0] - 2026-08-26
+- **Fixed: report export ignored the months you had selected.** The export asked the server for a report and the server had no way to be told a date range, so it always rendered every month it had ever recorded — and the comparison you had switched on was dropped entirely. The server now accepts the window (and an optional comparison period) and renders exactly that, so the exported report matches the picker.
+- The export prefers the server again, which is what produces the shareable report link; the link is logged to the console when the report downloads. If you are signed out, or the comparison is switched on without a month chosen for it, the report is still built locally from your own data rather than shipping one over the wrong period.
+- When a comparison period is included, the report gains a per-metric comparison table showing both periods and the change between them.
+- **Fixed: the exported report's trend chart showed the monthly totals but no percentage change.** Every month on the chart is now labelled with its change — year-on-year by default, or against whichever comparison you picked — in both the locally built and the server-rendered report. The chart was given headroom above the tallest point so that label is never clipped off the top.
+
 ## [1.23.0] - 2026-08-06
 - **New: "Reviews at risk" in the Reviews tab — your 1-2★ reviews with no reply from you, longest-waiting first.** These are the ones prospects actually read, and unlike the rating itself they can still be answered. Anything unanswered for more than 14 days is marked, and the list always covers your whole history rather than the selected month, because an unanswered review from March is not less urgent because the picker is showing August.
 - **Fixed: reply status was being thrown away.** The extension has always read "Response from the owner" off the review card, and the server has always stored it, but the browser's local copy dropped it on save — which is why nothing could ever tell you which reviews were still waiting. It is now kept, and carried across when data is pulled back from the server.

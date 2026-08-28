@@ -302,11 +302,13 @@ class MetricsService {
   }
 
   /**
-   * Get all metrics for a location (for report generation)
+   * Get all metrics for a location (for report generation).
+   * Optionally narrowed to a metric-type set and/or a date range.
    */
   async getAllMetricsForLocation(
     locationId: string,
-    metricTypes?: string[]
+    metricTypes?: string[],
+    dateRange?: { start: Date; end: Date }
   ): Promise<MetricData[]> {
     try {
       const metrics = await prisma.metric.findMany({
@@ -314,6 +316,9 @@ class MetricsService {
           locationId,
           ...(metricTypes && metricTypes.length > 0
             ? { metricType: { in: metricTypes } }
+            : {}),
+          ...(dateRange
+            ? { date: { gte: dateRange.start, lte: dateRange.end } }
             : {}),
         },
         orderBy: [{ date: 'desc' }],

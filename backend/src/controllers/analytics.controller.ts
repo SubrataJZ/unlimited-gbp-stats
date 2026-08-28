@@ -120,6 +120,21 @@ export const generateReport = asyncHandler(async (req: Request, res: Response) =
     throw new ValidationError('Period vs Period reports require period1 and period2 options');
   }
 
+  // Both 'full' (optional window + optional comparison) and 'pvp' take periods;
+  // reject malformed ones here so callers get a 400 rather than a 500.
+  for (const key of ['period1', 'period2'] as const) {
+    const period = options?.[key];
+    if (!period) continue;
+    const start = new Date(period.start);
+    const end = new Date(period.end);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new ValidationError(`options.${key} must have valid start and end dates`);
+    }
+    if (start > end) {
+      throw new ValidationError(`options.${key}.start must not be after options.${key}.end`);
+    }
+  }
+
   try {
     const result = await reportService.generateReport(
       locationId,
