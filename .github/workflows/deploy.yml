@@ -18,7 +18,10 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          # Best-effort: every ssh below passes -o StrictHostKeyChecking=no, so a
+          # missing known_hosts entry is harmless. Without `|| true` a failed or
+          # empty keyscan kills this step under `bash -e` and skips the whole deploy.
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts || true
 
       - name: Pull latest code on VPS
         run: |
