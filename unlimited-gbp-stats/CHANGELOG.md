@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.0] - 2026-08-30
+- **Fixed: the extension could silently lose its backend key and never recover.** The key was written in exactly one place — as a fire-and-forget side effect of signing in with Google — so if that single attempt failed, or you signed in before that code shipped, every backend call failed from then on. Nothing surfaced: review sync just queued forever and the pending count climbed with no explanation. The key now re-provisions itself in the background when it goes missing.
+- **Fixed: connecting to the backend could report success while storing no key.** If the server accepted the sign-in but the follow-up key request failed, the extension recorded a connection that did not exist. It now reports the real failure, and the reason is shown in the error instead of "sign in with Google" being suggested to someone who already has.
+- **Fixed: the review insights panel said the same thing in four different situations.** "No reviews analysed yet" appeared both before anything had been requested and when the backend had told us it holds no reviews at all — so a working feature and a broken review pipeline looked identical. Each case now reads differently.
+- The exported report draws the comparison period as a dashed second line with a legend, and each summary card carries its own change against that period. A month the comparison never covered is marked "pending" rather than left blank, which previously made an uncollected month look the same as one that had not changed.
+
 ## [1.24.0] - 2026-08-26
 - **Fixed: report export ignored the months you had selected.** The export asked the server for a report and the server had no way to be told a date range, so it always rendered every month it had ever recorded — and the comparison you had switched on was dropped entirely. The server now accepts the window (and an optional comparison period) and renders exactly that, so the exported report matches the picker.
 - The export prefers the server again, which is what produces the shareable report link; the link is logged to the console when the report downloads. If you are signed out, or the comparison is switched on without a month chosen for it, the report is still built locally from your own data rather than shipping one over the wrong period.
