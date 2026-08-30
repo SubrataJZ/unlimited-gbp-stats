@@ -1,7 +1,7 @@
-# build-zip.ps1 — package the extension for upload / Chrome Web Store.
+# build-zip.ps1 -- package the extension for upload / Chrome Web Store.
 #
 # Ships ONLY what the manifest actually loads. Tests, the frozen legacy
-# server/, *.bak, and the preview/dev HTML pages stay out — a store review
+# server/, *.bak, and the preview/dev HTML pages stay out -- a store review
 # rejects unused files, and shipping server/ would leak dead code.
 #
 # Usage:  powershell -ExecutionPolicy Bypass -File build-zip.ps1
@@ -9,7 +9,24 @@
 
 $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
-$version = (Get-Content (Join-Path $src 'manifest.json') -Raw | ConvertFrom-Json).version
+$manifest = Get-Content (Join-Path $src 'manifest.json') -Raw | ConvertFrom-Json
+$version = $manifest.version
+
+# -- Store-readiness checks -----------------------------------------------
+# Caught here rather than after a multi-day review turnaround. See
+# DISTRIBUTION.md for why the Web Store is the channel and update_url is not.
+
+# The Web Store rejects any manifest carrying update_url: a store-hosted
+# extension updates through the store, and a manifest that names its own update
+# server is refused at upload.
+if ($manifest.PSObject.Properties.Name -contains 'update_url') {
+  throw "manifest.json contains update_url -- the Chrome Web Store rejects this. Remove it (see DISTRIBUTION.md)."
+}
+
+# A version that is not strictly higher than the published one is refused too.
+if ($version -notmatch '^\d+\.\d+\.\d+$') {
+  throw "version '$version' is not SemVer x.y.z"
+}
 
 # Every file the manifest or an HTML page references, and nothing else.
 $files = @(

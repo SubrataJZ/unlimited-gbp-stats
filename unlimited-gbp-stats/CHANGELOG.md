@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.1] - 2026-08-30
+- No change to the extension itself. Records the decision to distribute through the Chrome Web Store rather than self-hosted updates (see `DISTRIBUTION.md`), and makes the packaging script refuse to build anything the store would reject.
+
 ## [1.25.0] - 2026-08-30
 - **Fixed: the extension could silently lose its backend key and never recover.** The key was written in exactly one place — as a fire-and-forget side effect of signing in with Google — so if that single attempt failed, or you signed in before that code shipped, every backend call failed from then on. Nothing surfaced: review sync just queued forever and the pending count climbed with no explanation. The key now re-provisions itself in the background when it goes missing.
 - **Fixed: connecting to the backend could report success while storing no key.** If the server accepted the sign-in but the follow-up key request failed, the extension recorded a connection that did not exist. It now reports the real failure, and the reason is shown in the error instead of "sign in with Google" being suggested to someone who already has.
