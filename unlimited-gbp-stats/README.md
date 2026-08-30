@@ -357,7 +357,10 @@ Status display shows:
 - [ ] **Multiple metric type charts** — currently shows one metric at a time; overlay option would help
 - [ ] **Goal tracking** — set monthly targets and show progress
 - [ ] **Competitor comparison** — placeholder idea; not technically feasible without a different data source
-- [ ] **Chrome Web Store submission** — needs privacy policy, screenshots, store listing
+- [ ] **Chrome Web Store submission** — needs privacy policy, screenshots, store listing.
+      See [DISTRIBUTION.md](DISTRIBUTION.md): the Web Store is the chosen channel,
+      and publishing changes the extension ID, which breaks Google sign-in until
+      the new redirect URI is registered.
 
 ---
 

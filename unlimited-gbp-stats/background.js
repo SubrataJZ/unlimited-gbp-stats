@@ -91,10 +91,105 @@ async function syncMetricToServer(locationCode, businessName, metric) {
 }
 
 /** Read the stored backend ingest key (zx_...). Null if not connected. */
-async function getBackendKey() {
+async function readStoredBackendKey() {
   return new Promise(resolve => {
     chrome.storage.local.get(['gbpBackendKey'], r => resolve(r.gbpBackendKey || null));
   });
+}
+
+/**
+ * Obtain a Google access token via launchWebAuthFlow.
+ *
+ * interactive:false reuses the browser's existing Google session and returns a
+ * token without showing any UI — which is what lets the backend key repair
+ * itself in the background. It fails (rather than prompting) when the user has
+ * no live Google session, and the caller then has to ask them to sign in.
+ */
+async function getGoogleAccessToken({ interactive = false } = {}) {
+  return new Promise(resolve => {
+    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    authUrl.searchParams.set('client_id', GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set('response_type', 'token');
+    authUrl.searchParams.set('redirect_uri', chrome.identity.getRedirectURL());
+    authUrl.searchParams.set('scope', 'email profile');
+    // Only force the account chooser when we are allowed to show UI at all.
+    if (interactive) authUrl.searchParams.set('prompt', 'select_account');
+
+    chrome.identity.launchWebAuthFlow({ url: authUrl.toString(), interactive }, responseUrl => {
+      if (chrome.runtime.lastError || !responseUrl) {
+        resolve({ ok: false, error: chrome.runtime.lastError?.message || 'Cancelled' });
+        return;
+      }
+      const token = new URLSearchParams(new URL(responseUrl).hash.slice(1)).get('access_token');
+      resolve(token ? { ok: true, token } : { ok: false, error: 'No access token returned' });
+    });
+  });
+}
+
+/** Why the last backend-connect attempt failed, for the UI to show. */
+async function setBackendKeyError(error) {
+  return new Promise(res => chrome.storage.local.set({ gbpBackendKeyError: error || '' }, res));
+}
+
+/**
+ * The message shown when there is no backend key. Carries the recorded reason
+ * when we have one — "sign in with Google" is misleading advice for a user who
+ * IS signed in and whose real problem is that the backend returned a 502.
+ */
+async function backendNotConnected(what) {
+  const reason = await new Promise(res => {
+    chrome.storage.local.get(['gbpBackendKeyError'], r => res(r.gbpBackendKeyError || ''));
+  });
+  const base = `Backend not connected — ${what}`;
+  return reason ? `${base} (${reason})` : base;
+}
+
+// Guards for the repair path below: one in-flight attempt at a time, and no
+// retry storms when the backend is simply down.
+let backendKeyRepair = null;
+let backendKeyRepairedAt = 0;
+const BACKEND_REPAIR_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
+ * The zx_ ingest key, repairing itself if it has gone missing.
+ *
+ * Every backend call routes through here. The key used to be written in exactly
+ * one place — as a fire-and-forget side effect of the Google login — so if that
+ * single attempt failed, or the user signed in before that code shipped, the
+ * extension ended up permanently unable to talk to the backend. Nothing
+ * surfaced: review sync just queued forever and the outbox count climbed with
+ * no explanation. Re-provisioning here means the common case (key lost, Google
+ * session still live) heals silently on the next sync tick.
+ */
+async function getBackendKey() {
+  const existing = await readStoredBackendKey();
+  if (existing) return existing;
+
+  if (backendKeyRepair) return backendKeyRepair;               // already trying
+  if (Date.now() - backendKeyRepairedAt < BACKEND_REPAIR_COOLDOWN_MS) return null;
+
+  backendKeyRepair = (async () => {
+    const tok = await getGoogleAccessToken({ interactive: false });
+    if (!tok.ok) {
+      await setBackendKeyError('Sign in with Google to connect the backend');
+      console.warn('[GBP BG] Backend key missing and silent re-auth failed:', tok.error);
+      return null;
+    }
+    const r = await connectBackend(tok.token);
+    if (!r.ok) {
+      await setBackendKeyError(r.error || 'Backend connect failed');
+      console.warn('[GBP BG] Backend key repair failed:', r.error);
+      return null;
+    }
+    await setBackendKeyError('');
+    console.log('[GBP BG] Backend key repaired automatically');
+    return readStoredBackendKey();
+  })().finally(() => {
+    backendKeyRepair = null;
+    backendKeyRepairedAt = Date.now();
+  });
+
+  return backendKeyRepair;
 }
 
 /**
@@ -131,23 +226,23 @@ async function connectBackend(googleAccessToken) {
 
     // alreadyProvisioned but we have no local key (e.g. reinstall): mint a fresh
     // named key so ingestion still works. The old one stays valid but unused.
-    const existing = await getBackendKey();
-    if (!existing) {
-      const r3 = await fetch(`${BACKEND_URL}/api/auth/api-keys`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body:    JSON.stringify({ name: `ext-${chrome.runtime.id}-${Date.now()}` }),
-      });
-      if (r3.ok) {
-        const d3 = await r3.json();
-        if (d3.apiKey) {
-          await new Promise(res => chrome.storage.local.set({ gbpBackendKey: d3.apiKey }, res));
-          console.log('[GBP BG] Backend re-connected — fresh zx_ key stored');
-          return { ok: true, key: d3.apiKey };
-        }
-      }
-    }
-    return { ok: true, alreadyProvisioned: true };
+    // readStoredBackendKey, not getBackendKey — the latter would call back into
+    // the repair path that is calling us, and recurse.
+    const existing = await readStoredBackendKey();
+    if (existing) return { ok: true, key: existing };
+
+    const r3 = await fetch(`${BACKEND_URL}/api/auth/api-keys`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body:    JSON.stringify({ name: `ext-${chrome.runtime.id}-${Date.now()}` }),
+    });
+    if (!r3.ok) return { ok: false, error: `mint key HTTP ${r3.status}` };
+    const d3 = await r3.json();
+    if (!d3.apiKey) return { ok: false, error: 'Server minted no key' };
+
+    await new Promise(res => chrome.storage.local.set({ gbpBackendKey: d3.apiKey }, res));
+    console.log('[GBP BG] Backend re-connected — fresh zx_ key stored');
+    return { ok: true, key: d3.apiKey };
   } catch (err) {
     console.warn('[GBP BG] Backend connect failed:', err.message);
     return { ok: false, error: err.message };
@@ -238,7 +333,7 @@ function buildIntelPayload(business, snapshot, reviews, isOwn = true, partial = 
  */
 async function syncReviewToBackend(business, snapshot, reviews, isOwn = true, partial = false) {
   const key = await getBackendKey();
-  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable review sync' };
+  if (!key) return { ok: false, error: await backendNotConnected('review sync is paused') };
 
   const payload = buildIntelPayload(business, snapshot, reviews, isOwn, partial);
   const b = payload.businesses[0];
@@ -786,7 +881,7 @@ async function resolveTrackedBusinessId(businessId) {
  */
 async function aiListUnrepliedReviews(businessId) {
   const key = await getBackendKey();
-  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable AI replies' };
+  if (!key) return { ok: false, error: await backendNotConnected('AI replies are unavailable') };
 
   const trackedBusinessId = await resolveTrackedBusinessId(businessId);
   if (!trackedBusinessId) return { ok: false, error: 'This business has not been synced to the backend yet. Fetch reviews first.' };
@@ -812,7 +907,7 @@ async function aiListUnrepliedReviews(businessId) {
  */
 async function aiBulkDraft(businessId, scrapedReviewIds, model) {
   const key = await getBackendKey();
-  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable AI replies' };
+  if (!key) return { ok: false, error: await backendNotConnected('AI replies are unavailable') };
 
   const trackedBusinessId = await resolveTrackedBusinessId(businessId);
   if (!trackedBusinessId) return { ok: false, error: 'This business has not been synced to the backend yet.' };
@@ -844,7 +939,7 @@ async function aiBulkDraft(businessId, scrapedReviewIds, model) {
  */
 async function aiGetConcepts(businessId, months) {
   const key = await getBackendKey();
-  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable review insights' };
+  if (!key) return { ok: false, error: await backendNotConnected('review insights are unavailable') };
 
   const trackedBusinessId = await resolveTrackedBusinessId(businessId);
   if (!trackedBusinessId) return { ok: false, error: 'This business has not been synced to the backend yet. Fetch reviews first.' };
@@ -877,7 +972,7 @@ async function aiGetConcepts(businessId, months) {
  */
 async function aiAnalyzeConcepts(businessId, months) {
   const key = await getBackendKey();
-  if (!key) return { ok: false, error: 'Backend not connected — sign in with Google to enable review insights' };
+  if (!key) return { ok: false, error: await backendNotConnected('review insights are unavailable') };
 
   const trackedBusinessId = await resolveTrackedBusinessId(businessId);
   if (!trackedBusinessId) return { ok: false, error: 'This business has not been synced to the backend yet. Fetch reviews first.' };
@@ -1211,8 +1306,13 @@ async function authGoogleLogin() {
           // Also connect the Postgres backend with the same Google token so
           // review sync works (best-effort — never blocks the primary login).
           connectBackend(accessToken)
-            .then(r => { if (!r.ok) console.warn('[GBP BG] Backend connect skipped:', r.error); })
-            .catch(() => {});
+            .then(r => {
+              // Record the reason. This used to warn into a console nobody
+              // opens, so a failure here was indistinguishable from success.
+              setBackendKeyError(r.ok ? '' : (r.error || 'Backend connect failed'));
+              if (!r.ok) console.warn('[GBP BG] Backend connect skipped:', r.error);
+            })
+            .catch(err => setBackendKeyError(err.message));
           resolve({ success: true, user: data.user });
         } catch (err) {
           resolve({ success: false, error: err.message });

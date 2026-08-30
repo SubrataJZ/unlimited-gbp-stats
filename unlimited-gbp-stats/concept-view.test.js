@@ -175,4 +175,43 @@ function concept(over) {
          'in the reviewers\' own scripts');
 }
 
+// 13. The four empty states must read differently. They were once a single
+//     sentence, which meant the panel looked exactly the same whether it had
+//     not asked the backend yet or the backend had told us it holds no reviews
+//     at all. The second case is a broken sync pipeline and needs saying.
+{
+  const els = {};
+  const el = () => ({ innerHTML: '', textContent: '', style: {} });
+  global.document = {
+    getElementById: (id) => (els[id] = els[id] || el()),
+  };
+  const { renderConceptPanel } = require('./dashboard.js');
+  const shown = (data) => {
+    renderConceptPanel(data);
+    return els.rvConceptList.innerHTML;
+  };
+  const base = { concepts: [], languages: [] };
+
+  const notAsked = shown(null);
+  const nothingUpstream = shown(Object.assign({}, base, { reviewsAnalyzed: 0, reviewsPending: 0 }));
+  const readyToRun = shown(Object.assign({}, base, { reviewsAnalyzed: 0, reviewsPending: 12 }));
+  const noThemes = shown(Object.assign({}, base, { reviewsAnalyzed: 40, reviewsPending: 0 }));
+
+  const all = [notAsked, nothingUpstream, readyToRun, noThemes];
+  eq(new Set(all).size, 4, 'each empty state says something different');
+
+  assert(/Loading/i.test(notAsked), 'no data yet reads as loading, not as a verdict');
+  assert(/reached the backend/i.test(nothingUpstream),
+         'zero analysed AND zero pending means nothing ever synced — say so');
+  assert(!/Loading/i.test(nothingUpstream), 'and it is not left looking like it is still working');
+  assert(/Analyse/.test(readyToRun), 'pending reviews point at the button');
+  assert(/repeated themes/i.test(noThemes), 'analysed but no concepts is a real, different answer');
+
+  // The button follows the same rule: only offered when it would do something.
+  renderConceptPanel(Object.assign({}, base, { reviewsAnalyzed: 0, reviewsPending: 0 }));
+  eq(els.rvConceptAnalyze.style.display, 'none', 'no Analyse button when there is nothing to analyse');
+  renderConceptPanel(Object.assign({}, base, { reviewsAnalyzed: 0, reviewsPending: 12 }));
+  eq(els.rvConceptAnalyze.style.display, '', 'button appears once reviews are waiting');
+}
+
 console.log(`ALL TESTS PASSED (${n} assertions)`);

@@ -6,6 +6,17 @@ import * as path from 'path';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+/** Human label for a metric type, for the chart heading. Mirrors the
+ * extension's own METRIC_INFO/METRIC_LABELS so the wording matches. */
+const METRIC_TYPE_LABELS: { [key: string]: string } = {
+  overview: 'Total Interactions',
+  calls: 'Phone Calls',
+  chat_clicks: 'Chat',
+  bookings: 'Bookings',
+  directions: 'Directions',
+  website_clicks: 'Website Clicks',
+};
+
 // ── Type Definitions ───────────────────────────────────────────────────────
 
 export interface GenerateReportOptions {
@@ -23,6 +34,13 @@ export interface GenerateReportOptions {
   customMonth?: string;
   recipientEmail?: string;
   expiresInDays?: number;
+  /**
+   * Which metric type the trend chart is built from. Without this,
+   * pickPrimaryMetricType() always preferred 'overview' when present, so a
+   * report exported while looking at Calls or Directions still charted
+   * Overview — the chart never reflected the tab the dashboard was on.
+   */
+  primaryMetricType?: string;
 }
 
 export interface DateRange {
@@ -94,7 +112,8 @@ class ReportService {
             location.businessName,
             period1,
             period2,
-            options.metricTypes
+            options.metricTypes,
+            options.primaryMetricType
           );
           break;
         case 'mvm':
@@ -167,7 +186,8 @@ class ReportService {
     businessName: string,
     range?: DateRange,
     comparison?: DateRange,
-    metricTypes?: string[]
+    metricTypes?: string[],
+    primaryMetricType?: string
   ): Promise<{ html: string; meta: ReportMeta }> {
     try {
       // Fetch metrics for the location, narrowed to the requested window
@@ -215,7 +235,7 @@ class ReportService {
 
       // Build main chart SVG (oldest → newest reads left to right), labelling
       // each month with its change against the comparison period
-      const primaryType = this.pickPrimaryMetricType(metricsByType);
+      const primaryType = this.pickPrimaryMetricType(metricsByType, primaryMetricType);
       const series = this.monthlySeries(metricsByType[primaryType] || []);
       const compareSeries = this.monthlySeries(
         this.groupMetricsByType(comparisonMetrics)[primaryType] || []
@@ -236,12 +256,15 @@ class ReportService {
         : `${oldest.toLocaleDateString()} to ${newest.toLocaleDateString()}`;
 
       // Load and render template
+      const trendHeading = `${METRIC_TYPE_LABELS[primaryType] || primaryType} Trend`;
+
       const templateData: TemplateData = {
         businessName,
         period,
         generatedAt: new Date().toLocaleString(),
         summaryCards,
         mainChart,
+        trendHeading,
         platformBreakdown,
         searchTerms: '<div class="section"><h2>Top Search Terms</h2><p>Data not available in this version</p></div>',
       };
@@ -304,8 +327,16 @@ class ReportService {
     return { start: shift(range.start), end: shift(range.end) };
   }
 
-  /** Chart the type the report is really about, falling back to the fullest series. */
-  private pickPrimaryMetricType(metricsByType: { [key: string]: any[] }): string {
+  /**
+   * Chart the type the report is really about: whatever the caller asked for
+   * (the extension sends the metric tab that was active when Export was
+   * clicked), falling back to 'overview', then to the fullest series.
+   */
+  private pickPrimaryMetricType(
+    metricsByType: { [key: string]: any[] },
+    requested?: string
+  ): string {
+    if (requested && metricsByType[requested]?.length) return requested;
     if (metricsByType['overview']?.length) return 'overview';
     return Object.keys(metricsByType).reduce(
       (best, type) =>

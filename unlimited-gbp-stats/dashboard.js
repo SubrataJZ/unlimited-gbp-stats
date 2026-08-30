@@ -1901,9 +1901,24 @@
     }
 
     if (!concepts.length) {
-      listEl.innerHTML = analyzed > 0
-        ? `<div class="rv-concept-empty">No repeated themes yet. Concepts appear once at least two reviews mention the same thing.</div>`
-        : `<div class="rv-concept-empty">No reviews analysed yet.${pending > 0 ? ' Click “Analyse” above to start.' : ''}</div>`;
+      // Four genuinely different situations, which an earlier version of this
+      // panel collapsed into one sentence. "No reviews analysed yet" was shown
+      // both before we had asked the backend anything and when the backend had
+      // told us it holds nothing — so the panel looked identical whether the
+      // feature was idle or the review pipeline was broken upstream.
+      let msg;
+      if (!data) {
+        msg = 'Loading review insights…';
+      } else if (analyzed === 0 && pending === 0) {
+        msg = 'No reviews have reached the backend yet. Open this business on '
+            + 'Google Maps and let a sync finish, then check back.';
+      } else if (analyzed === 0) {
+        msg = 'No reviews analysed yet. Click “Analyse” above to start.';
+      } else {
+        msg = 'No repeated themes yet. Concepts appear once at least two '
+            + 'reviews mention the same thing.';
+      }
+      listEl.innerHTML = `<div class="rv-concept-empty">${escHtml(msg)}</div>`;
       return;
     }
 
@@ -2033,6 +2048,9 @@
     module.exports.renderConceptPanel = renderConceptPanel;
     module.exports.selectReviewsAtRisk = selectReviewsAtRisk;
     module.exports.AT_RISK_STALE_DAYS = AT_RISK_STALE_DAYS;
+    module.exports.buildExportSpec = buildExportSpec;
+    module.exports.percentDelta = percentDelta;
+    module.exports.buildReportHtml = buildReportHtml;
   }
 
   function renderStarDistribution(latest, reviews) {
@@ -3857,6 +3875,12 @@
       .replace(/"/g, '&quot;');
   }
 
+  /** Percent change, or null when there is no baseline to divide by. */
+  function percentDelta(current, previous) {
+    if (!previous) return null;
+    return ((current - previous) / previous) * 100;
+  }
+
   function hexToRgba(hex, alpha) {
     const r = parseInt(hex.slice(1, 3), 16);
     const g = parseInt(hex.slice(3, 5), 16);
@@ -3882,7 +3906,9 @@
     const plotW = W - PAD.left - PAD.right;
     const plotH = H - PAD.top - PAD.bottom;
 
-    const maxVal = Math.max(...values, 1);
+    const cmpVals = showChange ? compareValues.filter(v => v != null) : [];
+    // Scaled to both series, or the baseline would be drawn off the top.
+    const maxVal = Math.max(...values, ...cmpVals, 1);
     const nMax   = niceNumber(maxVal);
     const ticks  = computeYTicks(nMax);
     const fill   = hexToRgba(color, 0.1);
@@ -3905,6 +3931,31 @@
       if (i === 0 || i === values.length - 1 || i % xStep === 0) {
         const anchor = i === 0 ? 'start' : i === values.length - 1 ? 'end' : 'middle';
         svg += `<text x="${toX(i)}" y="${H - 8}" fill="#9aa0a6" font-size="11" text-anchor="${anchor}" font-family="Arial,sans-serif">${labels[i]}</text>`;
+      }
+    }
+
+    // The comparison period as a dashed line, drawn first so the selected
+    // period sits on top of it. Percentages alone tell you the size of a
+    // change but not its shape; the second line is what makes a seasonal
+    // pattern visible rather than just a column of numbers.
+    if (showChange && cmpVals.length > 1) {
+      const CMP = '#9aa0a6';
+      // Months never collected are null: the line lifts over them instead of
+      // plotting zero, which would draw a collapse that never happened.
+      let d = '', pen = false;
+      for (let i = 0; i < values.length; i++) {
+        const v = compareValues[i];
+        if (v == null) { pen = false; continue; }
+        d += `${pen ? 'L' : 'M'}${toX(i)},${toY(v)}`;
+        pen = true;
+      }
+      if (d) {
+        svg += `<path d="${d}" fill="none" stroke="${CMP}" stroke-width="2" `
+             + `stroke-dasharray="6 4" stroke-linecap="round" stroke-linejoin="round"/>`;
+      }
+      for (let i = 0; i < values.length; i++) {
+        if (compareValues[i] == null) continue;
+        svg += `<circle cx="${toX(i)}" cy="${toY(compareValues[i])}" r="3.5" fill="#fff" stroke="${CMP}" stroke-width="2"/>`;
       }
     }
 
@@ -3934,13 +3985,23 @@
       // Percentage change vs the comparison period, above the value label
       if (showChange) {
         const cmp = compareValues[i];
-        if (cmp != null && cmp > 0) {
+        // Keep the label inside the viewBox even for the tallest point
+        const y = Math.max(14, cy - (showValue ? 26 : 12));
+        let txt = null, changeColor = '#9aa0a6';
+        if (cmp == null) {
+          // That month was never collected. Printing nothing here made a gap
+          // look identical to a month that simply did not change, so the
+          // absence is stated instead — matching the dashboard's own badge.
+          txt = `${escHtml(compareLabel || '')} pending`;
+        } else if (cmp > 0) {
           const pct = ((values[i] - cmp) / cmp) * 100;
           const sign = pct >= 0 ? '+' : '';
-          const changeColor = pct >= 0 ? '#0d904f' : '#d93025';
-          // Keep the label inside the viewBox even for the tallest point
-          const y = Math.max(14, cy - (showValue ? 26 : 12));
-          svg += `<text x="${cx}" y="${y}" fill="${changeColor}" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">${escHtml(compareLabel || '')} ${sign}${pct.toFixed(1)}%</text>`;
+          changeColor = pct >= 0 ? '#0d904f' : '#d93025';
+          txt = `${escHtml(compareLabel || '')} ${sign}${pct.toFixed(1)}%`;
+        }
+        // cmp === 0 is left blank: there is no percentage change from zero.
+        if (txt) {
+          svg += `<text x="${cx}" y="${y}" fill="${changeColor}" font-size="11" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">${txt}</text>`;
         }
       }
     }
@@ -4030,6 +4091,28 @@
         ? `vs ${MONTH_NAMES[s.compareMonth - 1]} ${s.compareYear}`
         : 'YoY';
 
+    // The baseline written out in full, for the header, the chart legend and
+    // the summary cards. compareLabel ("YoY") says which kind of comparison it
+    // is; this says which months it actually covers, which is what a client
+    // reading the report needs in order to check it.
+    const monthName = (y, m) => `${MONTH_FULL[m - 1]} ${y}`;
+    const rangeName = (sy, sm, ey, em) => {
+      const a = monthName(sy, sm), b = monthName(ey, em);
+      return a === b ? a : `${a} – ${b}`;
+    };
+    let comparePeriodLabel = null;
+    if (compareMode === 'yoy') {
+      comparePeriodLabel = rangeName(s.startYear - 1, s.startMonth, s.endYear - 1, s.endMonth);
+    } else if (compareMode === 'prev') {
+      let py = s.startYear, pm = s.startMonth - monthsCount;
+      while (pm < 1) { pm += 12; py--; }
+      let ey = s.startYear, em = s.startMonth - 1;
+      if (em < 1) { em += 12; ey--; }
+      comparePeriodLabel = rangeName(py, pm, ey, em);
+    } else if (compareMode === 'custom' && s.compareYear && s.compareMonth) {
+      comparePeriodLabel = monthName(s.compareYear, s.compareMonth);
+    }
+
     return {
       locationId: s.businessId,
       metricTypes: REPORT_METRIC_TYPES.slice(),
@@ -4038,9 +4121,15 @@
       canUseApi,
       startYear: s.startYear, startMonth: s.startMonth,
       endYear: s.endYear, endMonth: s.endMonth,
-      compareMode, compareLabel,
+      compareMode, compareLabel, comparePeriodLabel,
+      compareEnabled: !!s.compareEnabled,
       compareYear: s.compareYear, compareMonth: s.compareMonth,
       startLabel, endLabel, periodLabel, monthsCount,
+      // Which tab was open when Export was clicked. The trend chart is built
+      // from exactly this metric type — previously it was hardcoded to
+      // 'overview', so switching to Calls or Directions and exporting still
+      // produced an Overview chart with no indication of the substitution.
+      focusMetricType: s.metricType || 'overview',
     };
   }
 
@@ -4096,6 +4185,7 @@
       metricTypes: spec.metricTypes,
       period1: spec.range,
       ...(spec.comparison ? { period2: spec.comparison } : {}),
+      primaryMetricType: spec.focusMetricType,
     });
 
     if (!reportData || !reportData.reportId) return null;
@@ -4164,20 +4254,45 @@
       totals[mt] = (metricsData[mt] || []).reduce((s, m) => s + (m.total || 0), 0);
     }
 
-    // Latest overview records that have special data
+    // Latest overview records that have special data. These sections
+    // (breakdown, search terms, the search/views/actions funnel) only exist on
+    // the overview metric type, so they stay tied to it regardless of which
+    // tab was open — there is no "Calls funnel" to show instead.
     const ov = metricsData['overview'] || [];
     const latestBreakdown   = [...ov].reverse().find(m => m.breakdown);
     const latestSearchTerms = [...ov].reverse().find(m => m.searchTerms && m.searchTerms.length);
     const latestFunnel      = [...ov].reverse().find(m => m.searchImpressions || m.profileViews);
 
-    // Per-month percentage change for the trend chart (year-on-year unless the
-    // user picked another comparison)
-    const overviewCompare = await fetchReportCompareSeries(spec, 'overview', ov);
+    // The trend chart, in contrast, follows whichever tab was active when
+    // Export was clicked — that's the metric the user was actually looking at.
+    const focusMetricType = spec.focusMetricType || 'overview';
+    const focusSeries = metricsData[focusMetricType] || [];
+    const overviewCompare = await fetchReportCompareSeries(spec, focusMetricType, focusSeries);
+
+    // Baseline totals per metric, so every summary card can carry its own
+    // change rather than leaving the reader to work it out from the chart.
+    // Months with no collected baseline contribute nothing to either side, so
+    // the two figures always cover the same set of months.
+    const compareTotals = {};
+    for (const mt of MT) {
+      const rows = metricsData[mt] || [];
+      const series = await fetchReportCompareSeries(spec, mt, rows);
+      if (!series) { compareTotals[mt] = null; continue; }
+      let base = 0, cur = 0, seen = 0;
+      series.forEach((v, i) => {
+        if (v == null) return;
+        base += v;
+        cur  += (rows[i] && rows[i].total) || 0;
+        seen++;
+      });
+      compareTotals[mt] = seen ? { base, cur } : null;
+    }
 
     const html = buildReportHtml({
       bizName, periodLabel, startLabel, endLabel, allMonthsCount,
       totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
-      overviewCompare, compareLabel: spec.compareLabel,
+      overviewCompare, compareLabel: spec.compareLabel, focusMetricType,
+      compareTotals, comparePeriodLabel: spec.comparePeriodLabel,
     });
 
     downloadHTML(html, bizName);
@@ -4202,7 +4317,8 @@
 
   function buildReportHtml({ bizName, periodLabel, startLabel, endLabel, allMonthsCount,
                               totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
-                              overviewCompare, compareLabel }) {
+                              overviewCompare, compareLabel, focusMetricType = 'overview',
+                              compareTotals = {}, comparePeriodLabel = null }) {
     const now           = new Date();
     const dateGenerated = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -4220,21 +4336,51 @@
     const statsCards = MT_ORDER.map(mt => {
       const info = METRIC_INFO[mt];
       const val  = totals[mt] || 0;
+
+      // Each card carries its own change against the baseline. `cur` is used
+      // rather than `val` because the baseline only covers the months it
+      // actually holds — comparing the full-range total against a partial
+      // baseline would understate every metric.
+      let deltaHtml = '';
+      const ct = compareTotals[mt];
+      if (ct) {
+        const pct = percentDelta(ct.cur, ct.base);
+        if (pct === null) {
+          deltaHtml = `<div class="metric-delta metric-delta-flat">no baseline</div>`;
+        } else {
+          const dir = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+          const arrow = pct > 0 ? '▲' : pct < 0 ? '▼' : '·';
+          deltaHtml = `<div class="metric-delta metric-delta-${dir}">${arrow} ${
+            Math.abs(pct).toFixed(1)}% <span class="metric-delta-base">vs ${
+            ct.base.toLocaleString()}</span></div>`;
+        }
+      }
+
       return `
         <div class="metric-card">
           <div class="metric-icon">${info.icon}</div>
           <div class="metric-value">${val.toLocaleString()}</div>
           <div class="metric-label">${escHtml(info.label)}</div>
+          ${deltaHtml}
         </div>`;
     }).join('');
 
     // ── Trend Chart ──────────────────────────────────────────────────────
-    const ov = metricsData['overview'] || [];
-    const chartSvg = ov.length > 0
+    // Built from whichever tab was open when Export was clicked, not always
+    // 'overview' — that was the bug: switching to Calls or Directions and
+    // exporting still produced an Overview chart with nothing to say so.
+    // Falls back to overview if the requested metric is unrecognised or has
+    // no data at all — a report should never render a blank chart when there
+    // is other data on hand to show instead.
+    const hasFocusData = focusMetricType && (metricsData[focusMetricType] || []).length > 0;
+    const chartMetricType = hasFocusData ? focusMetricType : 'overview';
+    const focusInfo = METRIC_INFO[chartMetricType] || METRIC_INFO.overview;
+    const focus = metricsData[chartMetricType] || [];
+    const chartSvg = focus.length > 0
       ? buildReportChartSvg(
-          ov.map(m => m.total || 0),
-          ov.map(m => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
-          '#1a73e8',
+          focus.map(m => m.total || 0),
+          focus.map(m => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
+          focusInfo.color,
           overviewCompare,
           compareLabel
         )
@@ -4242,10 +4388,16 @@
     const changeNote = overviewCompare
       ? ` · ${escHtml(compareLabel === 'YoY' ? 'year-on-year' : compareLabel === 'PoP' ? 'vs the previous period' : compareLabel)} change shown above each month`
       : '';
+    const chartLegend = (overviewCompare && comparePeriodLabel) ? `
+      <div class="chart-legend">
+        <span class="legend-item"><span class="legend-swatch" style="background:${focusInfo.color}"></span>${escHtml(periodLabel)}</span>
+        <span class="legend-item"><span class="legend-swatch legend-dashed" style="border-color:#9aa0a6"></span>${escHtml(comparePeriodLabel)}</span>
+      </div>` : '';
     const chartSection = chartSvg ? `
       <div class="section">
-        <h2>Interaction Trend</h2>
-        <p class="section-note">${escHtml(periodLabel)} · monthly totals from Google Business Profile${changeNote}</p>
+        <h2>${escHtml(focusInfo.label)} Trend</h2>
+        <p class="section-note">${escHtml(periodLabel)} · monthly ${escHtml(focusInfo.label.toLowerCase())} from Google Business Profile${changeNote}</p>
+        ${chartLegend}
         <div class="chart-wrap">${chartSvg}</div>
       </div>` : '';
 
@@ -4416,6 +4568,16 @@
       .report-type   { font-size:12px; font-weight:600; color:#8ab4f8; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; }
       .report-biz    { font-size:34px; font-weight:700; color:#fff; margin-bottom:6px; line-height:1.2; }
       .report-period { font-size:19px; color:#aecbfa; font-weight:400; margin-bottom:28px; }
+      .report-vs     { color:#8ab4f8; font-size:15px; font-weight:600; }
+      .metric-delta  { margin-top:6px; font-size:12px; font-weight:700; }
+      .metric-delta-up   { color:#0d904f; }
+      .metric-delta-down { color:#c5221f; }
+      .metric-delta-flat { color:#9aa0a6; font-weight:600; }
+      .metric-delta-base { color:#9aa0a6; font-weight:500; }
+      .chart-legend  { display:flex; gap:20px; margin:4px 0 10px; font-size:12px; color:#5f6368; }
+      .legend-item   { display:flex; align-items:center; gap:7px; }
+      .legend-swatch { width:16px; height:3px; border-radius:2px; display:inline-block; }
+      .legend-dashed { height:0; border-top:3px dashed; background:none !important; }
       .report-meta   { display:flex; gap:24px; flex-wrap:wrap; font-size:12px; color:rgba(255,255,255,0.45); border-top:1px solid rgba(255,255,255,0.1); padding-top:18px; }
       .report-meta span { display:flex; align-items:center; gap:6px; }
 
@@ -4519,7 +4681,8 @@
   </div>
   <div class="report-type">Google Business Profile · Performance Report</div>
   <div class="report-biz">${escHtml(bizName)}</div>
-  <div class="report-period">${escHtml(periodLabel)}</div>
+  <div class="report-period">${escHtml(periodLabel)}${
+    comparePeriodLabel ? ` <span class="report-vs">vs ${escHtml(comparePeriodLabel)}</span>` : ''}</div>
   <div class="report-meta">
     <span>📅 Generated ${escHtml(dateGenerated)}</span>
     <span>📊 ${allMonthsCount} month${allMonthsCount !== 1 ? 's' : ''} of data</span>
