@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.26.0] - 2026-08-30
+- **Fixed: the exported report's trend chart always showed Overview, even when a different tab was open.** Switching to Calls or Directions and exporting still produced an Overview chart with no indication that the metric had been substituted. The report now charts whichever metric tab was active when Export was clicked, on both the server-generated report and the local fallback, and the chart heading names the metric ("Phone Calls Trend") so it is never ambiguous which one is shown.
+
 ## [1.25.1] - 2026-08-30
 - No change to the extension itself. Records the decision to distribute through the Chrome Web Store rather than self-hosted updates (see `DISTRIBUTION.md`), and makes the packaging script refuse to build anything the store would reject.
 

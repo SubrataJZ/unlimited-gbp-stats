@@ -4125,6 +4125,11 @@
       compareEnabled: !!s.compareEnabled,
       compareYear: s.compareYear, compareMonth: s.compareMonth,
       startLabel, endLabel, periodLabel, monthsCount,
+      // Which tab was open when Export was clicked. The trend chart is built
+      // from exactly this metric type — previously it was hardcoded to
+      // 'overview', so switching to Calls or Directions and exporting still
+      // produced an Overview chart with no indication of the substitution.
+      focusMetricType: s.metricType || 'overview',
     };
   }
 
@@ -4180,6 +4185,7 @@
       metricTypes: spec.metricTypes,
       period1: spec.range,
       ...(spec.comparison ? { period2: spec.comparison } : {}),
+      primaryMetricType: spec.focusMetricType,
     });
 
     if (!reportData || !reportData.reportId) return null;
@@ -4248,15 +4254,20 @@
       totals[mt] = (metricsData[mt] || []).reduce((s, m) => s + (m.total || 0), 0);
     }
 
-    // Latest overview records that have special data
+    // Latest overview records that have special data. These sections
+    // (breakdown, search terms, the search/views/actions funnel) only exist on
+    // the overview metric type, so they stay tied to it regardless of which
+    // tab was open — there is no "Calls funnel" to show instead.
     const ov = metricsData['overview'] || [];
     const latestBreakdown   = [...ov].reverse().find(m => m.breakdown);
     const latestSearchTerms = [...ov].reverse().find(m => m.searchTerms && m.searchTerms.length);
     const latestFunnel      = [...ov].reverse().find(m => m.searchImpressions || m.profileViews);
 
-    // Per-month percentage change for the trend chart (year-on-year unless the
-    // user picked another comparison)
-    const overviewCompare = await fetchReportCompareSeries(spec, 'overview', ov);
+    // The trend chart, in contrast, follows whichever tab was active when
+    // Export was clicked — that's the metric the user was actually looking at.
+    const focusMetricType = spec.focusMetricType || 'overview';
+    const focusSeries = metricsData[focusMetricType] || [];
+    const overviewCompare = await fetchReportCompareSeries(spec, focusMetricType, focusSeries);
 
     // Baseline totals per metric, so every summary card can carry its own
     // change rather than leaving the reader to work it out from the chart.
@@ -4280,7 +4291,7 @@
     const html = buildReportHtml({
       bizName, periodLabel, startLabel, endLabel, allMonthsCount,
       totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
-      overviewCompare, compareLabel: spec.compareLabel,
+      overviewCompare, compareLabel: spec.compareLabel, focusMetricType,
       compareTotals, comparePeriodLabel: spec.comparePeriodLabel,
     });
 
@@ -4306,7 +4317,7 @@
 
   function buildReportHtml({ bizName, periodLabel, startLabel, endLabel, allMonthsCount,
                               totals, metricsData, latestBreakdown, latestSearchTerms, latestFunnel,
-                              overviewCompare, compareLabel,
+                              overviewCompare, compareLabel, focusMetricType = 'overview',
                               compareTotals = {}, comparePeriodLabel = null }) {
     const now           = new Date();
     const dateGenerated = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -4355,12 +4366,21 @@
     }).join('');
 
     // ── Trend Chart ──────────────────────────────────────────────────────
-    const ov = metricsData['overview'] || [];
-    const chartSvg = ov.length > 0
+    // Built from whichever tab was open when Export was clicked, not always
+    // 'overview' — that was the bug: switching to Calls or Directions and
+    // exporting still produced an Overview chart with nothing to say so.
+    // Falls back to overview if the requested metric is unrecognised or has
+    // no data at all — a report should never render a blank chart when there
+    // is other data on hand to show instead.
+    const hasFocusData = focusMetricType && (metricsData[focusMetricType] || []).length > 0;
+    const chartMetricType = hasFocusData ? focusMetricType : 'overview';
+    const focusInfo = METRIC_INFO[chartMetricType] || METRIC_INFO.overview;
+    const focus = metricsData[chartMetricType] || [];
+    const chartSvg = focus.length > 0
       ? buildReportChartSvg(
-          ov.map(m => m.total || 0),
-          ov.map(m => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
-          '#1a73e8',
+          focus.map(m => m.total || 0),
+          focus.map(m => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
+          focusInfo.color,
           overviewCompare,
           compareLabel
         )
@@ -4370,13 +4390,13 @@
       : '';
     const chartLegend = (overviewCompare && comparePeriodLabel) ? `
       <div class="chart-legend">
-        <span class="legend-item"><span class="legend-swatch" style="background:#1a73e8"></span>${escHtml(periodLabel)}</span>
+        <span class="legend-item"><span class="legend-swatch" style="background:${focusInfo.color}"></span>${escHtml(periodLabel)}</span>
         <span class="legend-item"><span class="legend-swatch legend-dashed" style="border-color:#9aa0a6"></span>${escHtml(comparePeriodLabel)}</span>
       </div>` : '';
     const chartSection = chartSvg ? `
       <div class="section">
-        <h2>Interaction Trend</h2>
-        <p class="section-note">${escHtml(periodLabel)} · monthly totals from Google Business Profile${changeNote}</p>
+        <h2>${escHtml(focusInfo.label)} Trend</h2>
+        <p class="section-note">${escHtml(periodLabel)} · monthly ${escHtml(focusInfo.label.toLowerCase())} from Google Business Profile${changeNote}</p>
         ${chartLegend}
         <div class="chart-wrap">${chartSvg}</div>
       </div>` : '';

@@ -27,6 +27,9 @@ function assert(cond, msg) {
 function eq(a, b, msg) {
   assert(a === b, (msg || '') + ' (got ' + JSON.stringify(a) + ', expected ' + JSON.stringify(b) + ')');
 }
+function deepEqArr(a, b, msg) {
+  eq(JSON.stringify(a), JSON.stringify(b), msg);
+}
 
 /** The dashboard state, defaulting to a single selected month, no comparison. */
 const view = (over) => Object.assign({
@@ -131,16 +134,21 @@ const view = (over) => Object.assign({
 
 const MT = ['overview', 'calls', 'website_clicks', 'directions', 'bookings', 'chat_clicks'];
 
+// Distinct series per metric type, so a test can tell which one actually got
+// charted rather than merely noticing that a chart was drawn.
+const SERIES = {
+  overview: [200, 300, 400],
+  calls: [11, 22, 33],
+  directions: [55, 66, 77],
+};
+
 function render(over) {
   const metricsData = {}, totals = {}, compareTotals = {};
   for (const mt of MT) {
-    metricsData[mt] = [
-      { year: 2026, month: 1, total: 200 },
-      { year: 2026, month: 2, total: 300 },
-      { year: 2026, month: 3, total: 400 },
-    ];
-    totals[mt] = 900;
-    compareTotals[mt] = { cur: 900, base: 600 };
+    const vals = SERIES[mt] || [200, 300, 400];
+    metricsData[mt] = vals.map((total, i) => ({ year: 2026, month: i + 1, total }));
+    totals[mt] = vals.reduce((a, b) => a + b, 0);
+    compareTotals[mt] = { cur: totals[mt], base: 600 };
   }
   return buildReportHtml(Object.assign({
     bizName: 'Acme Ltd',
@@ -208,6 +216,46 @@ function render(over) {
   // Matched on the markup: the class names also appear in the report's inline
   // stylesheet whether or not any delta is rendered.
   assert(!/class="metric-delta/.test(html), 'and no deltas on the cards');
+}
+
+// 15. buildExportSpec carries the active tab through as focusMetricType, so a
+//     report built while looking at Calls says so, not just Overview.
+{
+  const s1 = buildExportSpec(view({ metricType: 'overview' }));
+  eq(s1.focusMetricType, 'overview', 'defaults to overview');
+  const s2 = buildExportSpec(view({ metricType: 'calls' }));
+  eq(s2.focusMetricType, 'calls', 'carries whichever tab is active');
+}
+
+// 16. The trend chart is built from the metric that was on screen, not always
+//     'overview'. This is the actual bug report: switching to Calls or
+//     Directions and exporting still produced an Overview chart, with nothing
+//     in the file to say the metric had been silently substituted.
+{
+  // The point-value labels drawn by buildReportChartSvg have a distinctive
+  // shape, so this looks only at what the CHART plots, not at the monthly
+  // breakdown table further down the page, which correctly still lists every
+  // metric type's raw numbers regardless of which one is charted.
+  const chartValues = (html) => (html.match(/font-weight="600">([\d,]+)<\/text>/g) || [])
+    .map(m => m.match(/>([\d,]+)</)[1]);
+
+  const overviewHtml   = render({ focusMetricType: 'overview' });
+  const callsHtml      = render({ focusMetricType: 'calls' });
+  const directionsHtml = render({ focusMetricType: 'directions' });
+
+  deepEqArr(chartValues(overviewHtml), ['200', '300', '400'], 'overview chart plots the overview series');
+  deepEqArr(chartValues(callsHtml), ['11', '22', '33'], 'switching to Calls charts the calls series, not what was there before');
+  assert(/Phone Calls Trend/.test(callsHtml), 'and the heading names the metric being charted');
+
+  deepEqArr(chartValues(directionsHtml), ['55', '66', '77'], 'Directions charts its own series');
+  assert(/Directions Trend/.test(directionsHtml), 'with its own heading');
+}
+
+// 17. An unrecognised or missing focus falls back to overview rather than
+//     rendering a blank chart — a report must always show something.
+{
+  const html = render({ focusMetricType: 'nonexistent_metric' });
+  assert(/>200<|>300<|>400</.test(html), 'an unknown metric type falls back to overview');
 }
 
 console.log(`ALL TESTS PASSED (${n} assertions)`);
