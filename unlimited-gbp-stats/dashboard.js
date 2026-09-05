@@ -34,6 +34,8 @@
     reviewSort: 'newest',         // 'newest' | 'oldest' | 'highest' | 'lowest'
     reviewListLimit: 50,
     conceptData: null,            // last GET /api/ai/concepts payload; cleared on business switch
+    metricLoadSeq: 0,              // bumped on every loadMetricData() call; see there for why
+    compareLoadSeq: 0,             // bumped on every loadComparePeriodData() call; see there for why
   };
 
   // ── API Helper Functions ──────────────────────────────────────────────────
@@ -2051,6 +2053,12 @@
     module.exports.buildExportSpec = buildExportSpec;
     module.exports.percentDelta = percentDelta;
     module.exports.buildReportHtml = buildReportHtml;
+    module.exports.state = state;
+    module.exports.loadComparePeriodData = loadComparePeriodData;
+    // Test-only: _authUser is otherwise private to this closure, and
+    // fetchPeriodComparison's API path (the one actually racing on the
+    // network in production) only runs when it is set.
+    module.exports.__setAuthUserForTests = (u) => { _authUser = u; };
   }
 
   function renderStarDistribution(latest, reviews) {
@@ -2166,12 +2174,23 @@
   async function loadMetricData() {
     if (!state.businessId) return;
 
+    // Tab switching fires this repeatedly, and the compare fetch below is a
+    // slow network call while everything before it is a fast local read. Click
+    // Directions then Calls quickly and the Directions call's compare fetch can
+    // still be in flight when Calls' finishes first, then land AFTER it and
+    // overwrite the chart with Directions' comparison data under a Calls
+    // heading. seq lets a call detect it has been superseded and stop touching
+    // shared state rather than racing the newer one to the screen.
+    const seq = ++state.metricLoadSeq;
+
     state.allMonths = await GBPStorage.getAvailableMonths(state.businessId, state.metricType);
+    if (seq !== state.metricLoadSeq) return;
 
     // If current metric has no data at all, auto-switch to first metric that does
     if (!state.allMonths.length) {
       for (const mt of GBPStorage.METRIC_TYPES) {
         const months = await GBPStorage.getAvailableMonths(state.businessId, mt);
+        if (seq !== state.metricLoadSeq) return;
         if (months.length) {
           state.metricType = mt;
           state.allMonths = months;
@@ -2189,6 +2208,7 @@
       state.startYear, state.startMonth,
       state.endYear, state.endMonth
     );
+    if (seq !== state.metricLoadSeq) return;
 
     updateDateLabel();
     updateStatsCard();
@@ -2199,24 +2219,46 @@
     if (state.compareEnabled) {
       if (state.compareMode === 'custom') populateCompareSelect();
       await loadComparePeriodData();
+      // A newer tab switch may have started and finished while the comparison
+      // fetch above was in flight — bail rather than draw its result on top of
+      // whatever that newer switch has already put on screen.
+      if (seq !== state.metricLoadSeq) return;
       updateCompareCard();
+      // Redraw: the chart drawn a few lines up used state.comparePeriodData as
+      // it stood BEFORE this fetch resolved — i.e. still the previous tab's
+      // comparison — because it is fetched from the network and is slow next
+      // to everything else here, which reads local storage. Without this
+      // second call the chart is stuck showing that stale comparison until
+      // something else (like toggling Compare off and back on) forces a
+      // redraw, which is exactly the bug this fixes.
+      renderChart();
     }
     generateInsights();
     renderDiscoverySection();
   }
 
   // ── Unified compare data loader ──────────────────────────────────────────
+  // Every caller races the same hazard: the API call below is slow next to
+  // everything else on this page, so two calls can be in flight together
+  // (fast tab switching, or clicking a compare-mode button before the last
+  // one finished) and resolve in either order. compareLoadSeq lets a call
+  // notice a newer one has since started and skip writing its now-outdated
+  // result over it — without this a slower, older response could land last
+  // and silently overwrite the chart with the wrong metric's comparison.
   async function loadComparePeriodData() {
+    const seq = ++state.compareLoadSeq;
     state.compareData = null;
     state.comparePeriodData = [];
     if (!state.businessId || !state.compareEnabled) return;
 
     if (state.compareMode === 'custom') {
       if (!state.compareYear || !state.compareMonth) return;
-      state.compareData = await GBPStorage.getMetric(
+      const metric = await GBPStorage.getMetric(
         state.businessId, state.metricType,
         state.compareYear, state.compareMonth
       );
+      if (seq !== state.compareLoadSeq) return;
+      state.compareData = metric;
       return;
     }
 
@@ -2231,6 +2273,7 @@
       state.compareMode,
       state.metricType
     );
+    if (seq !== state.compareLoadSeq) return;
 
     if (apiData && apiData.periods) {
       // Use API data - it includes YoY percentages
@@ -2243,10 +2286,12 @@
     } else {
       // Fallback to local storage if API unavailable
       const { cStartY, cStartM, cEndY, cEndM } = getComparePeriodBounds();
-      state.comparePeriodData = await GBPStorage.getMetricsForRange(
+      const rows = await GBPStorage.getMetricsForRange(
         state.businessId, state.metricType,
         cStartY, cStartM, cEndY, cEndM
       );
+      if (seq !== state.compareLoadSeq) return;
+      state.comparePeriodData = rows;
       state.apiYoYData = null;
     }
   }

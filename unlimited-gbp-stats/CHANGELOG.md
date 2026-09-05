@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.26.1] - 2026-09-05
+- **Fixed: switching the metric tab while Compare is on could leave the previous tab's comparison line on the chart.** The comparison fetch is a slow network call, so clicking Directions then Calls quickly could let the Calls tab load first and then have the older Directions response land after it, silently overwriting the correct comparison data with stale data for a tab already left. The chart looked valid, so nothing hinted anything was wrong — only toggling Compare off and back on forced a correct redraw. Each comparison load now recognises when a newer one has since started and discards its own result instead of writing over it, and switching tabs now redraws the chart again once the fresh comparison actually arrives (a second bug: it previously was drawn once, too early, and never redrawn).
+
 ## [1.26.0] - 2026-08-30
 - **Fixed: the exported report's trend chart always showed Overview, even when a different tab was open.** Switching to Calls or Directions and exporting still produced an Overview chart with no indication that the metric had been substituted. The report now charts whichever metric tab was active when Export was clicked, on both the server-generated report and the local fallback, and the chart heading names the metric ("Phone Calls Trend") so it is never ambiguous which one is shown.
 
