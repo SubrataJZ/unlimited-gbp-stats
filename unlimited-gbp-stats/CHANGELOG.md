@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.26.3] - 2026-09-05
+- **Fixed: "Error fetching period comparison: TypeError: Failed to fetch" in the extension's error log.** `API_BASE` — used for YoY comparison, the period-comparison API, and server-side report generation — was hardcoded to a local dev server (`http://localhost:3001/api`) that only ever existed on a developer's own machine. For every real user this failed outright with a network error, silently falling back to locally-computed data every time (which is why the dashboard kept working despite it). Now points at the production backend.
+
 ## [1.26.2] - 2026-09-05
 - **Fixed: the comparison line took 1-2 seconds to update after switching tabs, still showing the previous tab's comparison the whole time.** The 1.26.1 fix stopped stale data from landing permanently, but did nothing about the gap while the fresh fetch was in flight — the old comparison just sat there unchanged, which read as "showing me the wrong tab" rather than "loading". Switching the metric tab, the compare mode, or the custom comparison month now clears the comparison immediately and redraws (an honest, empty state) before the fetch starts, then redraws again once the real data arrives.
 

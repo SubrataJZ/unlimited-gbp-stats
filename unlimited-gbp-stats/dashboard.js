@@ -42,7 +42,14 @@
   // These functions call the backend analytics API endpoints
   // They include error handling and graceful fallback to local storage
 
-  const API_BASE = 'http://localhost:3001/api';
+  // Must match background.js's BACKEND_URL + '/api'. This was left pointing at
+  // a local dev server (http://localhost:3001/api), so every one of these
+  // calls — YoY comparison, period comparison, server-side report generation —
+  // has been failing with "TypeError: Failed to fetch" for every real user,
+  // silently falling back to the local-storage path every single time. The
+  // fallbacks made it invisible: nothing looked broken, it just never actually
+  // reached the backend.
+  const API_BASE = 'https://gbp.zixify.zixai.in/backend/api';
 
   /**
    * Fetch YoY comparison data from backend API
