@@ -228,6 +228,8 @@
       document.getElementById('compareModes').style.display = state.compareEnabled ? '' : 'none';
       document.getElementById('compareCard').style.display = state.compareEnabled ? '' : 'none';
       if (state.compareEnabled) {
+        showCompareLoading();
+        renderChart(); // drop the stale line immediately rather than leave it up during the fetch
         await loadComparePeriodData();
         updateCompareCard();
       } else {
@@ -248,6 +250,8 @@
       const customWrap = document.getElementById('customMonthWrap');
       customWrap.style.display = state.compareMode === 'custom' ? '' : 'none';
       if (state.compareMode === 'custom') populateCompareSelect();
+      showCompareLoading();
+      renderChart(); // switching YoY -> Previous Period, say, should not leave YoY's line up while the new one loads
       await loadComparePeriodData();
       renderChart();
       updateCompareCard();
@@ -260,6 +264,8 @@
       const [y, m] = val.split('-').map(Number);
       state.compareYear = y;
       state.compareMonth = m;
+      showCompareLoading();
+      renderChart();
       await loadComparePeriodData();
       renderChart();
       updateCompareCard();
@@ -2055,6 +2061,7 @@
     module.exports.buildReportHtml = buildReportHtml;
     module.exports.state = state;
     module.exports.loadComparePeriodData = loadComparePeriodData;
+    module.exports.showCompareLoading = showCompareLoading;
     // Test-only: _authUser is otherwise private to this closure, and
     // fetchPeriodComparison's API path (the one actually racing on the
     // network in production) only runs when it is set.
@@ -2209,6 +2216,15 @@
       state.endYear, state.endMonth
     );
     if (seq !== state.metricLoadSeq) return;
+
+    // Drop any comparison from the tab just left before the first paint, so
+    // that paint shows the new tab's own line with no comparison, rather than
+    // the new line paired with the OLD tab's comparison — which is what a user
+    // switching from Directions to Calls actually saw: a chart that looked
+    // complete and valid, but was quietly wrong, for as long as the fetch
+    // below took. An empty comparison reads as loading; a mismatched one does
+    // not read as anything being wrong at all.
+    if (state.compareEnabled) showCompareLoading();
 
     updateDateLabel();
     updateStatsCard();
@@ -2701,6 +2717,29 @@
     if (state.compareYear && state.compareMonth) {
       select.value = `${state.compareYear}-${state.compareMonth}`;
     }
+  }
+
+  /**
+   * Puts the compare card and chart into an honest "loading" state: no
+   * numbers, no dashed line. Call this — and re-render the chart — the
+   * instant a comparison-affecting change starts (a metric tab, the compare
+   * mode, or the custom month), BEFORE awaiting the slow network fetch.
+   *
+   * Without this, the stale comparison from before the change stays on screen
+   * for as long as the fetch takes (network requests are not instant), which
+   * reads as the tool showing the wrong data rather than as loading. An
+   * explicit gap that then fills in reads as normal loading.
+   */
+  function showCompareLoading() {
+    state.compareData = null;
+    state.comparePeriodData = [];
+    state.apiYoYData = null;
+    const v2 = document.getElementById('compareValue2');
+    const l2 = document.getElementById('compareLabel2');
+    const pct = document.getElementById('comparePercent');
+    if (v2) v2.textContent = '…';
+    if (l2) l2.textContent = 'Loading…';
+    if (pct) pct.innerHTML = '<span style="color:var(--text-muted)">Loading…</span>';
   }
 
   function updateCompareCard() {

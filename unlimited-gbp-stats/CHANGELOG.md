@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.26.2] - 2026-09-05
+- **Fixed: the comparison line took 1-2 seconds to update after switching tabs, still showing the previous tab's comparison the whole time.** The 1.26.1 fix stopped stale data from landing permanently, but did nothing about the gap while the fresh fetch was in flight — the old comparison just sat there unchanged, which read as "showing me the wrong tab" rather than "loading". Switching the metric tab, the compare mode, or the custom comparison month now clears the comparison immediately and redraws (an honest, empty state) before the fetch starts, then redraws again once the real data arrives.
+
 ## [1.26.1] - 2026-09-05
 - **Fixed: switching the metric tab while Compare is on could leave the previous tab's comparison line on the chart.** The comparison fetch is a slow network call, so clicking Directions then Calls quickly could let the Calls tab load first and then have the older Directions response land after it, silently overwriting the correct comparison data with stale data for a tab already left. The chart looked valid, so nothing hinted anything was wrong — only toggling Compare off and back on forced a correct redraw. Each comparison load now recognises when a newer one has since started and discards its own result instead of writing over it, and switching tabs now redraws the chart again once the fresh comparison actually arrives (a second bug: it previously was drawn once, too early, and never redrawn).
 

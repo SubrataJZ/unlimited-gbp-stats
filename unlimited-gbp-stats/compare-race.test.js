@@ -20,10 +20,24 @@
  * This file drives loadComparePeriodData() directly, controlling exactly when
  * each of two overlapping fetches resolves, to prove the write from the call
  * that loses the race is discarded rather than applied.
+ *
+ * A follow-up report after that fix landed: the wrong data no longer sticks,
+ * but the RIGHT data still takes the full 1-2s of the fetch to appear, and
+ * until it does the previous tab's comparison sits there unchanged — which
+ * reads as "still showing me the wrong tab", not as "loading". Case 6 below
+ * covers showCompareLoading(), which clears the stale comparison synchronously
+ * so callers can redraw an honest empty state before the fetch even starts.
  */
 'use strict';
 
-global.document = { querySelectorAll: () => [], addEventListener: () => {} };
+const domEls = {};
+global.document = {
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  // showCompareLoading() writes into a few compare-card elements; a generic
+  // fake per id is enough since the test only reads state, not the DOM back.
+  getElementById: (id) => (domEls[id] = domEls[id] || { textContent: '', innerHTML: '', style: {} }),
+};
 global.GBPStorage = {
   METRIC_TYPES: ['overview', 'calls', 'directions'],
   getAvailableMonths: async () => [{ year: 2026, month: 1 }],
@@ -45,7 +59,7 @@ global.fetch = (url) => {
   });
 };
 
-const { state, loadComparePeriodData, __setAuthUserForTests } = require('./dashboard.js');
+const { state, loadComparePeriodData, showCompareLoading, __setAuthUserForTests } = require('./dashboard.js');
 __setAuthUserForTests({ email: 'a@b.com', accessToken: 'tok' }); // routes through fetch, not the local fallback
 
 let n = 0;
@@ -125,6 +139,21 @@ Object.assign(state, {
   await c2;
   eq(state.comparePeriodData[0].metricType, 'calls',
      'the current call still lands its own data regardless of arrival order');
+
+  // 6. The correctness fix above stops the wrong tab's data from landing, but
+  //    on its own it still leaves the stale comparison ON SCREEN for the
+  //    entire ~1-2s the fetch takes, because nothing clears it until the fresh
+  //    data replaces it. That reads as "the tool is showing me the wrong
+  //    thing", not as "the tool is loading". showCompareLoading() is the fix
+  //    for that: called synchronously, no await, so callers can invoke it and
+  //    redraw with an honest empty state before the slow fetch even starts.
+  state.compareData = { total: 1, month: 1, year: 2025 };
+  state.comparePeriodData = [{ year: 2025, month: 1, total: 999, metricType: 'directions' }];
+  state.apiYoYData = { 1: 12.5 };
+  showCompareLoading();
+  eq(state.compareData, null, 'the stale single-month comparison is cleared immediately');
+  eq(state.comparePeriodData.length, 0, 'the stale period comparison is cleared immediately, not after any fetch');
+  eq(state.apiYoYData, null, 'and the cached YoY percentages, so a chart drawn right now shows no comparison line at all');
 
   console.log(`ALL TESTS PASSED (${n} assertions)`);
 })().catch(err => { console.error(err.stack || err.message); process.exit(1); });
