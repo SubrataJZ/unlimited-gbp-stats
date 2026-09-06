@@ -75,8 +75,12 @@ services:
     ports:
       - "${API_PORT:-3001}:3001"
     volumes:
+      # Live source for ts-node-dev. node_modules is NOT bind-mounted and must
+      # NOT be an anonymous volume: an anonymous /app/node_modules persists
+      # across `docker compose up -d` and masks the freshly built image's
+      # dependencies, so a newly added package (e.g. nodemailer) is missing at
+      # runtime even though the image has it. Let the image own /app/node_modules.
       - ./backend/src:/app/src
-      - /app/node_modules
       - ./logs:/app/logs
     networks:
       - gbp_network
