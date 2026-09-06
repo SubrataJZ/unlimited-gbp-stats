@@ -166,6 +166,120 @@ test_locations_endpoint() {
   fi
 }
 
+test_email_password_auth() {
+  print_header "Test 11: Email/Password Auth Flow"
+
+  local email="ci-$(date +%s)-$RANDOM@example.test"
+  local pass="correct-horse-9"
+  local body ; local status
+
+  # 1. Register
+  print_test "POST /api/auth/register (new account)"
+  body=$(curl -s -X POST "$API_URL/api/auth/register" -H "Content-Type: application/json" \
+    -d "{\"email\":\"$email\",\"password\":\"$pass\",\"name\":\"CI User\"}")
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/register" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"dup-$email\",\"password\":\"$pass\"}")
+  if echo "$body" | grep -q '"token"' ; then
+    print_success "register returned a token"
+  else
+    print_error "register did not return a token: $body"
+  fi
+
+  # 2. Duplicate registration → 409
+  print_test "POST /api/auth/register (same email again → 409)"
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/register" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$email\",\"password\":\"$pass\"}")
+  [ "$status" = "409" ] && print_success "duplicate rejected (409)" || print_error "expected 409, got $status"
+
+  # 3. Weak password → 400
+  print_test "POST /api/auth/register (weak password → 400)"
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/register" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"weak-$email\",\"password\":\"short\"}")
+  [ "$status" = "400" ] && print_success "weak password rejected (400)" || print_error "expected 400, got $status"
+
+  # 4. Login OK
+  print_test "POST /api/auth/login (correct credentials)"
+  body=$(curl -s -X POST "$API_URL/api/auth/login" -H "Content-Type: application/json" \
+    -d "{\"email\":\"$email\",\"password\":\"$pass\"}")
+  echo "$body" | grep -q '"token"' && print_success "login returned a token" || print_error "login failed: $body"
+
+  # 5. Login wrong password → 401
+  print_test "POST /api/auth/login (wrong password → 401)"
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$email\",\"password\":\"nope\"}")
+  [ "$status" = "401" ] && print_success "wrong password rejected (401)" || print_error "expected 401, got $status"
+
+  # 6. Login unknown email → 401 (same as wrong password — no enumeration)
+  print_test "POST /api/auth/login (unknown email → 401)"
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"nobody-$email\",\"password\":\"$pass\"}")
+  [ "$status" = "401" ] && print_success "unknown email rejected (401)" || print_error "expected 401, got $status"
+
+  # 7. forgot-password → always 200
+  print_test "POST /api/auth/forgot-password (known + unknown → both 200)"
+  s1=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/forgot-password" \
+    -H "Content-Type: application/json" -d "{\"email\":\"$email\"}")
+  s2=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/forgot-password" \
+    -H "Content-Type: application/json" -d "{\"email\":\"ghost-$email\"}")
+  [ "$s1" = "200" ] && [ "$s2" = "200" ] && print_success "forgot-password always 200 ($s1/$s2)" \
+    || print_error "expected 200/200, got $s1/$s2"
+
+  # 8. reset-password with a bogus token → 401
+  print_test "POST /api/auth/reset-password (bad token → 401)"
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/reset-password" \
+    -H "Content-Type: application/json" \
+    -d "{\"token\":\"deadbeef\",\"password\":\"$pass-new\"}")
+  [ "$status" = "401" ] && print_success "bogus reset token rejected (401)" || print_error "expected 401, got $status"
+
+  # 9. change-password without auth → 401
+  print_test "POST /api/auth/change-password (no auth → 401)"
+  status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/change-password" \
+    -H "Content-Type: application/json" -d '{"currentPassword":"x","newPassword":"yyyyyyyy"}')
+  [ "$status" = "401" ] && print_success "change-password requires auth (401)" || print_error "expected 401, got $status"
+}
+
+test_auth_pages() {
+  print_header "Test 12: Server-rendered Auth Pages"
+  for page in login signup forgot-password reset-password; do
+    print_test "GET /auth/$page"
+    ct=$(curl -s -o /dev/null -w "%{http_code} %{content_type}" "$API_URL/auth/$page")
+    case "$ct" in
+      "200 text/html"*) print_success "/auth/$page serves HTML" ;;
+      *) print_error "/auth/$page → $ct" ;;
+    esac
+  done
+  print_test "GET /auth/app.js"
+  ct=$(curl -s -o /dev/null -w "%{http_code} %{content_type}" "$API_URL/auth/app.js")
+  case "$ct" in
+    "200 application/javascript"*|"200 text/javascript"*) print_success "app.js served" ;;
+    *) print_error "app.js → $ct" ;;
+  esac
+}
+
+test_billing_endpoints() {
+  print_header "Test 13: Billing / Plan Endpoints (auth required)"
+
+  print_test "GET /api/billing/status (no auth → 401)"
+  s=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/billing/status")
+  [ "$s" = "401" ] && print_success "status requires auth (401)" || print_error "expected 401, got $s"
+
+  print_test "POST /api/billing/redeem (no auth → 401)"
+  s=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/billing/redeem" \
+    -H "Content-Type: application/json" -d '{"code":"ZX-PRO-AAAA-BBBB-CCCC"}')
+  [ "$s" = "401" ] && print_success "redeem requires auth (401)" || print_error "expected 401, got $s"
+
+  print_test "POST /api/billing/redeem (bad API key → 401)"
+  s=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/billing/redeem" \
+    -H "Content-Type: application/json" -H "Authorization: Bearer zx_deadbeef" \
+    -d '{"code":"ZX-PRO-AAAA-BBBB-CCCC"}')
+  [ "$s" = "401" ] && print_success "invalid key rejected (401)" || print_error "expected 401, got $s"
+}
+
 ###############################################################################
 # Main Test Execution
 ###############################################################################
@@ -204,6 +318,9 @@ main() {
   test_ingest_without_auth || true
   test_ingest_with_invalid_key || true
   test_locations_endpoint || true
+  test_email_password_auth || true
+  test_auth_pages || true
+  test_billing_endpoints || true
 
   print_header "Test Results Summary"
   echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"

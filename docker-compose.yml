@@ -55,6 +55,15 @@ services:
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-debug}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      AUTH_PAGES_URL: ${AUTH_PAGES_URL:-http://localhost:3001/auth}
+
+      # Transactional email (password-reset links). Unset in CI/local → emails
+      # are logged, not sent, and the app keeps working.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
 
       # AI Review Reply Copilot (OpenRouter) — key is set only in the server .env.
       # Empty default keeps CI/local boot working; the app returns 503 until set.

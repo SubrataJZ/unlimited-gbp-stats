@@ -43,6 +43,52 @@
   const API_BASE = 'http://localhost:3001/api';
 
   /**
+   * Ask the background worker for a valid backend JWT (it persists and
+   * self-repairs it — see getBackendJWT in background.js). Returns null when
+   * signed out or offline; callers then fall back to locally-computed data.
+   */
+  async function getBackendJWT(forceRefresh = false) {
+    return new Promise(resolve => {
+      chrome.runtime.sendMessage({ action: 'getBackendJWT', forceRefresh }, res => {
+        if (chrome.runtime.lastError) { resolve(null); return; }
+        resolve(res && res.token ? res.token : null);
+      });
+    });
+  }
+
+  /**
+   * fetch() a backend API path with a bearer JWT, retrying once with a
+   * force-refreshed token if the backend rejects the first one (expired /
+   * malformed). Returns the Response, or null when no token is available or the
+   * network call throws — the caller falls back to local data in that case.
+   */
+  async function backendApiFetch(path, init = {}) {
+    let token = await getBackendJWT(false);
+    if (!token) return null;
+
+    const call = (t) => fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init.headers || {}),
+        'Authorization': `Bearer ${t}`,
+      },
+    });
+
+    try {
+      let response = await call(token);
+      if (response.status === 401) {
+        const fresh = await getBackendJWT(true);
+        if (fresh && fresh !== token) response = await call(fresh);
+      }
+      return response;
+    } catch (error) {
+      console.warn('Backend API call failed:', error);
+      return null;
+    }
+  }
+
+  /**
    * Fetch YoY comparison data from backend API
    * Returns { current, priorYear, yoyPercent, trend }
    */
@@ -50,18 +96,12 @@
     try {
       if (!_authUser) return null;
 
-      const response = await fetch(
-        `${API_BASE}/analytics/locations/${locationId}/yoy?year=${year}&month=${month}&metricType=${metricType}`,
-        {
-          headers: {
-            'Authorization': `Bearer ${_authUser.accessToken || ''}`,
-            'Content-Type': 'application/json'
-          }
-        }
+      const response = await backendApiFetch(
+        `/analytics/locations/${locationId}/yoy?year=${year}&month=${month}&metricType=${metricType}`
       );
 
-      if (!response.ok) {
-        console.warn('YoY API failed:', response.status);
+      if (!response || !response.ok) {
+        if (response) console.warn('YoY API failed:', response.status);
         return null;
       }
 
@@ -81,24 +121,19 @@
     try {
       if (!_authUser) return null;
 
-      let url = `${API_BASE}/analytics/locations/${locationId}/period-comparison`;
       const params = new URLSearchParams({
         from: fromDate,
         to: toDate,
         compareMode: compareMode,
         metricType: metricType
       });
-      url += '?' + params.toString();
 
-      const response = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${_authUser.accessToken || ''}`,
-          'Content-Type': 'application/json'
-        }
-      });
+      const response = await backendApiFetch(
+        `/analytics/locations/${locationId}/period-comparison?${params.toString()}`
+      );
 
-      if (!response.ok) {
-        console.warn('Period comparison API failed:', response.status);
+      if (!response || !response.ok) {
+        if (response) console.warn('Period comparison API failed:', response.status);
         return null;
       }
 
@@ -124,23 +159,21 @@
         return null;
       }
 
-      const response = await fetch(`${API_BASE}/reports/generate`, {
+      const response = await backendApiFetch('/reports/generate', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${_authUser.accessToken || ''}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          locationId,
-          reportType,
-          options
-        })
+        body: JSON.stringify({ locationId, reportType, options })
       });
 
+      if (!response) {
+        showToast('❌ Report generation failed: backend unavailable');
+        return null;
+      }
+
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({}));
         console.error('Report generation failed:', error);
-        showToast(`❌ Report generation failed: ${error.message || 'Unknown error'}`);
+        const detail = error.error?.message || error.message || 'Unknown error';
+        showToast(`❌ Report generation failed: ${detail}`);
         return null;
       }
 
@@ -479,10 +512,64 @@
       statusText.textContent     = `Synced as ${_authUser.email}`;
       userInfo.innerHTML = `<strong>${_authUser.name || _authUser.email}</strong>` +
         `<br><span style="color:var(--text-muted);font-size:12px">${_authUser.email}</span>`;
+      loadPlanInfo();
     } else {
       loggedInView.style.display = 'none';
       authView.style.display     = '';
       switchAuthTab('login');
+    }
+  }
+
+  // ── Plan / license key ────────────────────────────────────────────────────
+  const PLAN_LABELS = { FREE: 'Free', PRO: 'Pro', AGENCY: 'Agency' };
+
+  function renderPlan(status) {
+    const labelEl  = document.getElementById('cloudPlanLabel');
+    const expiryEl = document.getElementById('cloudPlanExpiry');
+    if (!labelEl) return;
+    const plan = status?.effectivePlan || status?.plan || 'FREE';
+    labelEl.textContent = `Plan: ${PLAN_LABELS[plan] || plan}`;
+    if (status?.planExpiresAt && plan !== 'FREE') {
+      const d = new Date(status.planExpiresAt);
+      expiryEl.textContent = `renews / expires ${d.toISOString().slice(0, 10)}`;
+    } else if (status?.expired) {
+      expiryEl.textContent = 'expired — redeem a key to reactivate';
+    } else {
+      expiryEl.textContent = '';
+    }
+  }
+
+  async function loadPlanInfo() {
+    const r = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ action: 'getBillingStatus' }, resolve)
+    );
+    if (r?.ok) renderPlan(r.data);
+  }
+
+  async function redeemLicenseKey() {
+    const input  = document.getElementById('cloudRedeemInput');
+    const btn    = document.getElementById('cloudRedeemBtn');
+    const result = document.getElementById('cloudRedeemResult');
+    const code = (input.value || '').trim().toUpperCase();
+    if (!code) return;
+
+    btn.disabled = true;
+    result.className = 'cloud-redeem-result';
+    result.textContent = '';
+
+    const r = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ action: 'redeemLicenseKey', code }, resolve)
+    );
+    btn.disabled = false;
+
+    if (r?.ok) {
+      input.value = '';
+      result.className = 'cloud-redeem-result ok';
+      result.textContent = r.data?.message || 'Key redeemed.';
+      renderPlan(r.data);
+    } else {
+      result.className = 'cloud-redeem-result err';
+      result.textContent = r?.error || 'Could not redeem that key.';
     }
   }
 
@@ -505,6 +592,12 @@
 
     document.getElementById('cloudModal').addEventListener('click', (e) => {
       if (e.target === document.getElementById('cloudModal')) closeCloudModal();
+    });
+
+    // License-key redemption
+    document.getElementById('cloudRedeemBtn').addEventListener('click', redeemLicenseKey);
+    document.getElementById('cloudRedeemInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); redeemLicenseKey(); }
     });
 
     // Tab switching
@@ -598,7 +691,10 @@
     // Sign out
     document.getElementById('cloudSignOutBtn').addEventListener('click', async () => {
       await new Promise(resolve =>
-        chrome.storage.local.remove(['gbpAuthToken', 'gbpUser'], resolve)
+        chrome.storage.local.remove(
+          ['gbpAuthToken', 'gbpUser', 'gbpBackendJWT', 'gbpBackendRefresh', 'gbpBackendJWTExp'],
+          resolve
+        )
       );
       _authUser = null;
       updateCloudButton('login');

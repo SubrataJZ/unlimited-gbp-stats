@@ -11,6 +11,7 @@
 
 import { prisma } from '../index';
 import { generateChatCompletion } from './openrouter.service';
+import { aiMonthlyCapUsd } from './billing.service';
 import {
   AuthorizationError,
   NotFoundError,
@@ -223,7 +224,7 @@ export function buildPrompt(input: PromptInput): { system: string; user: string 
  * @throws RateLimitError (HTTP 429) when cap is reached or exceeded
  */
 export async function enforceCostCap(userId: string): Promise<void> {
-  const capUsd = Number(process.env.AI_MONTHLY_COST_CAP_USD) || 5;
+  const capUsd = await aiMonthlyCapUsd(userId);
 
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -545,7 +546,7 @@ export async function generateRepliesBulk(
 // ─── Monthly usage summary ────────────────────────────────────────────────────
 
 export async function getMonthlyUsage(userId: string): Promise<MonthlyUsageResult> {
-  const capUsd = Number(process.env.AI_MONTHLY_COST_CAP_USD) || 5;
+  const capUsd = await aiMonthlyCapUsd(userId);
 
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));

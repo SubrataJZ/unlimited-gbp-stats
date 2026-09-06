@@ -1,6 +1,6 @@
 {
   "name": "zixify-backend",
-  "version": "2.5.1",
+  "version": "2.7.0",
   "description": "Production backend for Zixify - Google Business Profile data archival platform",
   "main": "dist/index.js",
   "scripts": {
@@ -25,6 +25,7 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
+    "nodemailer": "^6.10.1",
     "uuid": "^9.0.1",
     "winston": "^3.11.0"
   },
@@ -36,6 +37,7 @@
     "@types/jsonwebtoken": "^9.0.5",
     "@types/morgan": "^1.9.10",
     "@types/node": "^20.10.5",
+    "@types/nodemailer": "^6.4.24",
     "@types/uuid": "^9.0.7",
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",

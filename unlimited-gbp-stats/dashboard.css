@@ -1371,6 +1371,35 @@ tr:hover td { background: var(--bg-hover); }
 .cloud-test-btn:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--accent); }
 .cloud-test-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* Plan / license-key redemption block in the cloud modal */
+.cloud-plan {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+}
+.cloud-plan-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.cloud-plan-label { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.cloud-plan-expiry { font-size: 12px; color: var(--text-muted); }
+.cloud-plan-redeem { display: flex; gap: 8px; margin-top: 8px; }
+.cloud-plan-redeem input {
+  flex: 1;
+  padding: 7px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.cloud-plan-redeem input:focus { outline: none; border-color: var(--accent); }
+.cloud-redeem-result { font-size: 12px; margin-top: 6px; display: none; }
+.cloud-redeem-result.ok  { color: #4ade80; display: block; }
+.cloud-redeem-result.err { color: #f87171; display: block; }
+
 .cloud-pull-btn {
   display: flex;
   align-items: center;

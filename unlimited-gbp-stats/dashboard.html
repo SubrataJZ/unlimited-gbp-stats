@@ -567,6 +567,19 @@
             <span id="cloudStatusText">Connected</span>
           </div>
           <div class="cloud-user-info" id="cloudUserInfo"></div>
+
+          <div class="cloud-plan" id="cloudPlan">
+            <div class="cloud-plan-row">
+              <span class="cloud-plan-label" id="cloudPlanLabel">Plan: —</span>
+              <span class="cloud-plan-expiry" id="cloudPlanExpiry"></span>
+            </div>
+            <div class="cloud-plan-redeem">
+              <input type="text" id="cloudRedeemInput" placeholder="ZX-PRO-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+              <button class="cloud-test-btn" id="cloudRedeemBtn">Redeem</button>
+            </div>
+            <div class="cloud-redeem-result" id="cloudRedeemResult"></div>
+          </div>
+
           <p style="color:var(--text-muted);font-size:13px;margin:8px 0 0">
             Data syncs automatically whenever you collect GBP stats and on browser startup. Use <strong>Force Sync</strong> to manually trigger an immediate bidirectional sync.
           </p>

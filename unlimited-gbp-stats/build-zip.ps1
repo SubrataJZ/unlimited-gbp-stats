@@ -31,7 +31,7 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') {
 # Every file the manifest or an HTML page references, and nothing else.
 $files = @(
   'manifest.json',
-  'background.js', 'storage.js', 'metrics-payload.js', 'review-date.js',
+  'background.js', 'storage.js', 'metrics-payload.js', 'backend-jwt.js', 'review-date.js',
   'content.js', 'content.css',
   'popup.html', 'popup.js',
   'auth.html', 'auth.js', 'auth.css',
