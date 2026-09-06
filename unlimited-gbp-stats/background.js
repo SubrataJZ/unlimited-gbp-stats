@@ -14,7 +14,7 @@
  * local save — local storage is always the source of truth.
  */
 
-importScripts('storage.js', 'metrics-payload.js');
+importScripts('storage.js', 'metrics-payload.js', 'backend-jwt.js');
 
 // Pre-warm the DB connection on startup
 GBPStorage.open().catch(e => console.error('[GBP BG] Storage init error:', e));
@@ -192,6 +192,108 @@ async function getBackendKey() {
   return backendKeyRepair;
 }
 
+// ── Backend JWT (short-lived access token) ───────────────────────────────────
+//
+// The zx_ ingest key (getBackendKey) authenticates the /api/ingest and /api/ai
+// routes, but the dashboard's analytics and report endpoints
+// (/api/analytics/*, /api/reports/generate) are guarded by validateJWT and
+// require a real 15-minute access token. connectBackend() mints one as a
+// byproduct of provisioning the zx_ key; we persist it here and refresh it the
+// same self-repairing way getBackendKey() re-provisions.
+//
+//   gbpBackendJWT      – the current access token
+//   gbpBackendRefresh  – its 30-day refresh token (single-use, rotated)
+//   gbpBackendJWTExp   – access-token expiry, epoch ms
+
+const JWT_KEYS = GBPBackendJWT.STORAGE_KEYS;
+
+async function readStoredBackendJWT() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(
+      [JWT_KEYS.jwt, JWT_KEYS.refresh, JWT_KEYS.exp],
+      r => resolve({
+        jwt:     r[JWT_KEYS.jwt] || null,
+        refresh: r[JWT_KEYS.refresh] || null,
+        exp:     r[JWT_KEYS.exp] || 0,
+      })
+    );
+  });
+}
+
+async function storeBackendJWT({ token, refreshToken, expiresIn }) {
+  const set = {
+    [JWT_KEYS.jwt]: token,
+    [JWT_KEYS.exp]: GBPBackendJWT.expiryFromExpiresIn(expiresIn),
+  };
+  if (refreshToken) set[JWT_KEYS.refresh] = refreshToken;
+  return new Promise(resolve => chrome.storage.local.set(set, resolve));
+}
+
+/** Exchange the stored refresh token for a fresh access token (rotation). */
+async function refreshBackendJWT(refreshToken) {
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/auth/refresh`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ refreshToken }),
+    });
+    if (!resp.ok) return { ok: false, error: `refresh HTTP ${resp.status}` };
+    const data = await resp.json();
+    if (!data.accessToken) return { ok: false, error: 'No access token from refresh' };
+    await storeBackendJWT({
+      token:        data.accessToken,
+      refreshToken: data.refreshToken,
+      expiresIn:    data.expiresIn,
+    });
+    return { ok: true, token: data.accessToken };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+let backendJWTRepair = null;
+
+/**
+ * A currently-valid backend JWT access token, or null when the user has no live
+ * Google session and nothing cached can be salvaged (callers then fall back to
+ * locally-computed data). Mirrors getBackendKey()'s self-repair:
+ *   1. use the cached token while it is fresh
+ *   2. otherwise rotate via /api/auth/refresh (cheap, no Google round-trip)
+ *   3. otherwise re-mint via a silent Google token + connectBackend()
+ *
+ * @param {boolean} forceRefresh  Ignore the cached token even if unexpired —
+ *                                used after the backend rejects it as expired.
+ */
+async function getBackendJWT({ forceRefresh = false } = {}) {
+  const { jwt, refresh, exp } = await readStoredBackendJWT();
+
+  const action = GBPBackendJWT.chooseJwtAction({ jwt, refresh, exp, forceRefresh });
+  if (action === 'use-cached') return jwt;
+
+  if (backendJWTRepair) return backendJWTRepair;
+
+  backendJWTRepair = (async () => {
+    if (action === 'refresh') {
+      const r = await refreshBackendJWT(refresh);
+      if (r.ok) return r.token;
+      console.warn('[GBP BG] Backend JWT refresh failed, re-minting:', r.error);
+    }
+    const tok = await getGoogleAccessToken({ interactive: false });
+    if (!tok.ok) {
+      console.warn('[GBP BG] Backend JWT unavailable — no Google session:', tok.error);
+      return null;
+    }
+    const c = await connectBackend(tok.token);
+    if (!c.ok) {
+      console.warn('[GBP BG] Backend JWT re-mint failed:', c.error);
+      return null;
+    }
+    return (await readStoredBackendJWT()).jwt;
+  })().finally(() => { backendJWTRepair = null; });
+
+  return backendJWTRepair;
+}
+
 /**
  * Connect this extension to the Postgres backend using the SAME Google access
  * token already obtained for the SQLite login. Exchanges it for a backend JWT,
@@ -206,8 +308,14 @@ async function connectBackend(googleAccessToken) {
       body:    JSON.stringify({ accessToken: googleAccessToken }),
     });
     if (!r1.ok) return { ok: false, error: `auth HTTP ${r1.status}` };
-    const { token } = await r1.json();
+    const { token, refreshToken, expiresIn } = await r1.json();
     if (!token) return { ok: false, error: 'No backend token returned' };
+
+    // Persist the short-lived backend JWT (+ its refresh token). The zx_ ingest
+    // key below is enough for the /api/ingest and /api/ai routes, but the
+    // dashboard's analytics/report endpoints are guarded by validateJWT and need
+    // this real access token. See getBackendJWT() below.
+    await storeBackendJWT({ token, refreshToken, expiresIn });
 
     // 2. Provision (or look up) the zx_ ingest key
     const r2 = await fetch(`${BACKEND_URL}/api/auth/provision-extension`, {
@@ -608,19 +716,20 @@ async function pushAllMetricsToBackend() {
 // that returns metrics AND reviews in one response, so "half a business" stops
 // being a representable state: either both arrive or neither does.
 //
-// Everything here is gated on the gbpSyncV2 flag, DEFAULT OFF. With the flag
-// off, every v1 code path above runs exactly as before — this is the rollback,
-// and it does not require reinstalling the extension.
+// Everything here is gated on the gbpSyncV2 flag, DEFAULT ON as of extension
+// 1.29.0 — the SQLite metrics server is being retired and Postgres is the sole
+// rail. Setting gbpSyncV2 to false in chrome.storage.local is the rollback: it
+// restores every v1 SQLite code path with no reinstall.
 
 /**
- * Master kill switch for all v2 sync behaviour. Defaults OFF (opt-in) so an
- * extension update can never change sync behaviour under a user who did not
- * ask for it. Mirrors metricsBackendSyncEnabled()'s storage-flag pattern.
+ * Master switch for the v2 (Postgres-only) sync path. DEFAULT ON — only an
+ * explicit stored `false` turns it off (the rollback lever). Mirrors
+ * metricsBackendSyncEnabled()'s storage-flag pattern.
  * @returns {Promise<boolean>}
  */
 async function syncV2Enabled() {
   return new Promise(resolve => {
-    chrome.storage.local.get(['gbpSyncV2'], r => resolve(r.gbpSyncV2 === true));
+    chrome.storage.local.get(['gbpSyncV2'], r => resolve(r.gbpSyncV2 !== false));
   });
 }
 
@@ -690,84 +799,133 @@ async function hydrateBusiness(businessId, full = false) {
       return { success: true, metrics: 0, reviews: 0, snapshots: 0, notOnServer: true };
     }
 
-    const canonicalId = String(match.googlePlaceId || businessId);
-
-    // Fold any records held under the id we asked about onto the canonical id.
-    if (canonicalId !== wanted) {
-      await GBPStorage.migrateBusinessData(wanted, canonicalId);
-      console.log(`[GBP BG] hydrate: folded ${wanted} → ${canonicalId} (server canonical)`);
-    }
-
-    await GBPStorage.saveBusiness({ id: canonicalId, name: match.name || canonicalId });
-
-    // ── Metrics ──
-    // Same merge rule as pullFromServer: a real local record is never
-    // overwritten by a derived server one, and a higher local total wins.
-    let metricsMerged = 0;
-    for (const m of match.metrics || []) {
-      const serverIsReal = !m.isDerived;
-      const existing = await GBPStorage.getMetric(canonicalId, m.metricType, m.year, m.month);
-      if (existing) {
-        const localIsReal = !existing.derived;
-        if (localIsReal && !serverIsReal) continue;
-        if (localIsReal && serverIsReal && existing.total >= m.total) continue;
-      }
-      const extra = {};
-      if (m.breakdown)   extra.breakdown   = m.breakdown;
-      if (m.searchTerms) extra.searchTerms = m.searchTerms;
-      await GBPStorage.saveMetric(
-        canonicalId, m.metricType, m.year, m.month,
-        m.total, Array.isArray(m.daily) ? m.daily : [],
-        m.yoyPercent ?? null,
-        { derived: !!m.isDerived, ...extra }
-      );
-      metricsMerged++;
-    }
-
-    // ── Review snapshots ──
-    let snapsMerged = 0;
-    for (const s of match.snapshots || []) {
-      // See pullReviewsFromServer: omit `stars` rather than sending {}, so a
-      // hydrate (which now runs after every scrape) cannot erase the histogram
-      // the scrape just read off the page.
-      await GBPStorage.saveReviewSnapshot(canonicalId, {
-        capturedOn:   String(s.capturedOn || '').slice(0, 10),
-        totalReviews: s.totalReviews,
-        avgRating:    s.displayRating ?? s.trueAverage ?? null,
-      });
-      snapsMerged++;
-    }
-
-    // ── Individual reviews ──
-    const mapped = (match.reviews || []).map(r => ({
-      externalId:   r.externalReviewId,
-      rating:       r.rating,
-      text:         r.text || '',
-      author:       r.authorName || '',
-      isLocalGuide: !!r.isLocalGuide,
-      hasPhoto:     !!r.hasPhoto,
-      // The backend has always returned this; dropping it here is why nothing
-      // could tell you which reviews are still unanswered.
-      ownerResponded: !!r.ownerResponded,
-      reviewedAt:   r.reviewedAt ? String(r.reviewedAt).slice(0, 10) : '',
-    }));
-    if (mapped.length) await GBPStorage.saveReviews(canonicalId, mapped);
+    const merged = await mergeServerBusiness(match, wanted);
 
     // Advance the cursor only after everything above committed. A crash
     // mid-merge therefore replays the window rather than skipping it.
-    if (data.syncedAt) await setSyncCursor(canonicalId, data.syncedAt);
+    if (data.syncedAt) await setSyncCursor(merged.canonicalId, data.syncedAt);
 
-    console.log(`[GBP BG] hydrated ${canonicalId}: ${metricsMerged} metrics, ${snapsMerged} snapshots, ${mapped.length} reviews`);
-    return {
-      success: true,
-      canonicalId,
-      metrics: metricsMerged,
-      snapshots: snapsMerged,
-      reviews: mapped.length,
-    };
+    console.log(`[GBP BG] hydrated ${merged.canonicalId}: ${merged.metrics} metrics, ${merged.snapshots} snapshots, ${merged.reviews} reviews`);
+    return { success: true, ...merged };
   } catch (err) {
     console.warn('[GBP BG] hydrateBusiness failed:', err.message);
     return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Merge one business object from GET /api/ingest/sync into local IndexedDB —
+ * metrics, review snapshots and individual reviews. Never deletes local data;
+ * a real local record is never overwritten by a derived server one, and a
+ * higher local total wins (same rule as the old pullFromServer).
+ *
+ * @param {object}  match       one entry from `data.businesses`
+ * @param {string} [foldFromId] when hydrating a specific local id, fold any
+ *                              rows under it onto the server's canonical id
+ * @returns {Promise<{canonicalId:string, metrics:number, snapshots:number, reviews:number}>}
+ */
+async function mergeServerBusiness(match, foldFromId) {
+  const canonicalId = String(match.googlePlaceId || match.id || foldFromId || '');
+
+  if (foldFromId && canonicalId && canonicalId !== String(foldFromId)) {
+    await GBPStorage.migrateBusinessData(String(foldFromId), canonicalId);
+    console.log(`[GBP BG] hydrate: folded ${foldFromId} → ${canonicalId} (server canonical)`);
+  }
+
+  await GBPStorage.saveBusiness({ id: canonicalId, name: match.name || canonicalId });
+
+  let metrics = 0;
+  for (const m of match.metrics || []) {
+    const serverIsReal = !m.isDerived;
+    const existing = await GBPStorage.getMetric(canonicalId, m.metricType, m.year, m.month);
+    if (existing) {
+      const localIsReal = !existing.derived;
+      if (localIsReal && !serverIsReal) continue;
+      if (localIsReal && serverIsReal && existing.total >= m.total) continue;
+    }
+    const extra = {};
+    if (m.breakdown)   extra.breakdown   = m.breakdown;
+    if (m.searchTerms) extra.searchTerms = m.searchTerms;
+    await GBPStorage.saveMetric(
+      canonicalId, m.metricType, m.year, m.month,
+      m.total, Array.isArray(m.daily) ? m.daily : [],
+      m.yoyPercent ?? null,
+      { derived: !!m.isDerived, ...extra }
+    );
+    metrics++;
+  }
+
+  let snapshots = 0;
+  for (const s of match.snapshots || []) {
+    // Omit `stars` rather than sending {} — a hydrate must not erase the
+    // histogram a scrape just read off the page.
+    await GBPStorage.saveReviewSnapshot(canonicalId, {
+      capturedOn:   String(s.capturedOn || '').slice(0, 10),
+      totalReviews: s.totalReviews,
+      avgRating:    s.displayRating ?? s.trueAverage ?? null,
+    });
+    snapshots++;
+  }
+
+  const mapped = (match.reviews || []).map(r => ({
+    externalId:   r.externalReviewId,
+    rating:       r.rating,
+    text:         r.text || '',
+    author:       r.authorName || '',
+    isLocalGuide: !!r.isLocalGuide,
+    hasPhoto:     !!r.hasPhoto,
+    ownerResponded: !!r.ownerResponded,
+    reviewedAt:   r.reviewedAt ? String(r.reviewedAt).slice(0, 10) : '',
+  }));
+  if (mapped.length) await GBPStorage.saveReviews(canonicalId, mapped);
+
+  return { canonicalId, metrics, snapshots, reviews: mapped.length };
+}
+
+/**
+ * Pull EVERY business's server state in one GET /api/ingest/sync and merge them
+ * all. This is the v2 replacement for pullAllBusinesses() — the "restore all my
+ * data" path used after sign-in and by Force Sync.
+ *
+ * Uses its own cursor (`__all__`) so it can run incrementally alongside the
+ * per-business hydrate without the two clobbering each other's `since`.
+ *
+ * @param {boolean} full  Ignore the cursor and refetch everything.
+ * @returns {Promise<{success:boolean, businesses:number, merged:number, error?:string}>}
+ */
+async function hydrateAllBusinesses(full = false) {
+  const key = await getBackendKey();
+  if (!key) return { success: false, businesses: 0, merged: 0, error: 'Backend not connected' };
+
+  const since = full ? null : await getSyncCursor('__all__');
+  try {
+    const url = `${BACKEND_URL}/api/ingest/sync${since ? `?since=${encodeURIComponent(since)}` : ''}`;
+    const resp = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${key}`, 'x-extension-id': chrome.runtime.id },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText);
+      return { success: false, businesses: 0, merged: 0, error: `HTTP ${resp.status}: ${text}`.slice(0, 200) };
+    }
+    const data = await resp.json();
+    const list = data.businesses || [];
+
+    let merged = 0;
+    for (const b of list) {
+      try {
+        const r = await mergeServerBusiness(b);
+        merged += r.metrics + r.snapshots + r.reviews;
+      } catch (e) {
+        console.warn('[GBP BG] hydrateAll: merge failed for a business:', e.message);
+      }
+    }
+
+    if (data.syncedAt) await setSyncCursor('__all__', data.syncedAt);
+    console.log(`[GBP BG] hydrateAll: ${list.length} businesses, ${merged} records merged (full=${full})`);
+    return { success: true, businesses: list.length, merged };
+  } catch (err) {
+    console.warn('[GBP BG] hydrateAllBusinesses failed:', err.message);
+    return { success: false, businesses: 0, merged: 0, error: err.message };
   }
 }
 
@@ -997,6 +1155,33 @@ async function aiAnalyzeConcepts(businessId, months) {
   }
 }
 
+/**
+ * Call a /api/billing/* endpoint with the zx_ ingest key (those routes accept
+ * validateJWTOrApiKey, so the extension does not need a fresh backend JWT here).
+ */
+async function billingRequest(method, path, body) {
+  const key = await getBackendKey();
+  if (!key) return { ok: false, error: await backendNotConnected('billing is unavailable') };
+  try {
+    const resp = await fetch(`${BACKEND_URL}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+        'x-extension-id': chrome.runtime.id,
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      return { ok: false, error: data?.error?.message || data?.message || `HTTP ${resp.status}` };
+    }
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 /** Return the calling user's monthly AI usage/cost-cap summary. */
 async function aiUsage() {
   const key = await getBackendKey();
@@ -1033,6 +1218,17 @@ async function aiUsage() {
  * @param {boolean} full  When true, fetch ALL records (since=0), ignoring lastPull cache.
  */
 async function pullFromServer(businessId, full = false) {
+  // v2: the SQLite read path is retired — one hydrate brings metrics + reviews.
+  if (await syncV2Enabled()) {
+    const r = await hydrateBusiness(businessId, full);
+    return {
+      success: r.success,
+      merged: (r.metrics || 0) + (r.reviews || 0) + (r.snapshots || 0),
+      canonicalId: r.canonicalId,
+      error: r.error,
+    };
+  }
+
   const token = await getAuthToken();
   if (!token) return { success: false, error: 'Not logged in' };
 
@@ -1111,8 +1307,7 @@ async function pullFromServer(businessId, full = false) {
  * @returns {Promise<{success:boolean, pushed:number, pulled:number, error?:string}>}
  */
 async function autoSync(force = false) {
-  const token = await getAuthToken();
-  if (!token) return { success: false, error: 'Not logged in' };
+  const v2 = await syncV2Enabled();
 
   // Debounce: don't auto-sync more than once every 5 minutes unless forced
   if (!force) {
@@ -1127,6 +1322,22 @@ async function autoSync(force = false) {
   }
 
   await GBPStorage.open();
+
+  // ── v2: Postgres only ──
+  if (v2) {
+    if (!(await getBackendKey())) return { success: false, error: 'Backend not connected' };
+    await drainSyncQueue().catch(() => {});
+    const push = await pushAllMetricsToBackend().catch(e => ({ success: false, error: e.message }));
+    const pull = await hydrateAllBusinesses(force);
+    await new Promise(resolve => chrome.storage.local.set({ gbpLastAutoSync: Date.now() }, resolve));
+    console.log(`[GBP BG] autoSync (v2) — pushed=${push.businesses || 0} pulled=${pull.merged || 0}`);
+    return { success: pull.success, pushed: push.businesses || 0, pulled: pull.merged || 0, error: pull.error };
+  }
+
+  // ── v1: SQLite ──
+  const token = await getAuthToken();
+  if (!token) return { success: false, error: 'Not logged in' };
+
   const pushResult = await pushAllToServer();
   // force=true → full pull (since=0) so we compare ALL records, not just recent ones
   const pullResult = await pullAllBusinesses(force);
@@ -1151,6 +1362,14 @@ async function autoSync(force = false) {
  * @returns {Promise<{success:boolean, saved:number, skipped:number, businesses:number, error?:string}>}
  */
 async function pushAllToServer() {
+  // v2: the SQLite bulk endpoint is retired. Drain the outbox and bulk-push
+  // metrics to Postgres instead.
+  if (await syncV2Enabled()) {
+    await drainSyncQueue().catch(() => {});
+    const r = await pushAllMetricsToBackend();
+    return { success: !!r.success, saved: r.businesses || 0, skipped: 0, businesses: r.businesses || 0, error: r.error };
+  }
+
   const token = await getAuthToken();
   if (!token) return { success: false, error: 'Not logged in' };
 
@@ -1219,6 +1438,9 @@ async function pushAllToServer() {
  *                        force-sync and sign-in scenarios.
  */
 async function pullAllBusinesses(full = false) {
+  // v2: one unified hydrate replaces the SQLite list + per-business pull.
+  if (await syncV2Enabled()) return hydrateAllBusinesses(full);
+
   const token = await getAuthToken();
   if (!token) return { success: false, error: 'Not logged in' };
 
@@ -1335,6 +1557,9 @@ async function authRegister(email, password, name) {
     const data = await resp.json();
     if (!resp.ok) return { success: false, error: data.error || `HTTP ${resp.status}` };
     await saveAuthSession(data.token, data.user);
+    // Mirror the account onto the Postgres backend and keep its JWT, so the
+    // dashboard's analytics/report calls work without a separate Google connect.
+    await postgresPasswordAuth('register', { email, password, name }).catch(() => {});
     return { success: true, user: data.user };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1354,9 +1579,48 @@ async function authLogin(email, password) {
     const data = await resp.json();
     if (!resp.ok) return { success: false, error: data.error || `HTTP ${resp.status}` };
     await saveAuthSession(data.token, data.user);
+    // Also obtain a Postgres backend session (JWT + refresh) for the dashboard's
+    // analytics/report endpoints. Best-effort: a user not yet migrated to
+    // Postgres just falls back to locally-computed data, as before.
+    await postgresPasswordAuth('login', { email, password }).catch(() => {});
     return { success: true, user: data.user };
   } catch (err) {
     return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Email/password auth against the Postgres backend (the source-of-truth backend
+ * for reviews / analytics / AI). On success, persists the backend JWT the same
+ * way connectBackend() does, so getBackendJWT() can serve and refresh it.
+ *
+ * @param {'login'|'register'} kind
+ * @returns {Promise<{ok:boolean, user?:object, error?:string}>}
+ */
+async function postgresPasswordAuth(kind, body) {
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/auth/${kind}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const reason = data?.error?.message || data?.message || `HTTP ${resp.status}`;
+      console.warn(`[GBP BG] Postgres ${kind} not completed:`, reason);
+      return { ok: false, error: reason };
+    }
+    if (data.token) {
+      await storeBackendJWT({
+        token:        data.token,
+        refreshToken: data.refreshToken,
+        expiresIn:    data.expiresIn,
+      });
+    }
+    return { ok: true, user: data.user };
+  } catch (err) {
+    console.warn(`[GBP BG] Postgres ${kind} failed (offline?):`, err.message);
+    return { ok: false, error: err.message };
   }
 }
 
@@ -1367,6 +1631,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'openDashboard') {
     chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
     return;
+  }
+
+  // ── Open a backend-hosted auth page (forgot / reset / manage) in a tab ────
+  if (msg.action === 'openAuthPage') {
+    const allowed = ['login', 'signup', 'forgot-password', 'reset-password'];
+    const page = allowed.includes(msg.page) ? msg.page : 'login';
+    chrome.tabs.create({ url: `${BACKEND_URL}/auth/${page}` });
+    sendResponse({ success: true });
+    return true;
   }
 
   // ── Save a single metric record (called from content script iframe) ────────
@@ -1400,19 +1673,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               );
               console.log(`[GBP BG] Derived ${m.metricType} ${prevYear}-${m.month}: ${prevTotal}`);
 
-              // Also push the derived record to the server
-              syncMetricToServer(m.businessId, msg.business?.name || m.businessId, {
-                businessId: m.businessId,
-                metricType: m.metricType,
-                year:       prevYear,
-                month:      m.month,
-                total:      prevTotal,
-                daily:      [],
-                yoyPercent: null,
-                derived:    true,
-                derivedFrom: { year: m.year, month: m.month, yoyPercent: m.yoyPercent },
-                collectedAt: Date.now(),
-              }).catch(() => {});
+              // Also push the derived record to the SQLite server — v1 only
+              // (rollback path); retired under the default v2.
+              syncV2Enabled().then(on => {
+                if (on) return;
+                syncMetricToServer(m.businessId, msg.business?.name || m.businessId, {
+                  businessId: m.businessId,
+                  metricType: m.metricType,
+                  year:       prevYear,
+                  month:      m.month,
+                  total:      prevTotal,
+                  daily:      [],
+                  yoyPercent: null,
+                  derived:    true,
+                  derivedFrom: { year: m.year, month: m.month, yoyPercent: m.yoyPercent },
+                  collectedAt: Date.now(),
+                }).catch(() => {});
+              });
 
               // Also push the derived record to the Postgres backend
               // (fire-and-forget, gated by the kill switch — see
@@ -1446,19 +1723,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           collectedAt: Date.now(),
           ...(m.extra || {}),
         };
-        syncMetricToServer(
-          m.businessId,
-          msg.business?.name || m.businessId,
-          metricForServer
-        ).catch(() => {});   // never fail the local save because of server issues
-
-        // ── Also push the real record to the Postgres backend ────────────
-        // v2: enqueue to the durable outbox and immediately hydrate, so this
-        // business ends up with its reviews too — the scrape button chose what
-        // to read off Google, not what the dashboard is allowed to show.
-        // v1 (flag off): unchanged fire-and-forget.
+        // ── Push the real record ────────────────────────────────────────
+        // v2 (default): durable outbox → Postgres, then hydrate so this
+        // business also gets its reviews. v1 (gbpSyncV2=false, rollback):
+        // fire-and-forget to BOTH the SQLite server and Postgres.
         syncV2Enabled().then(on => {
           if (!on) {
+            syncMetricToServer(
+              m.businessId, msg.business?.name || m.businessId, metricForServer
+            ).catch(() => {});
             syncMetricsToBackend(msg.business, [metricForServer]).catch(() => {});
             return;
           }
@@ -1671,6 +1944,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // ── Auth: get current user ────────────────────────────────────────────────
   if (msg.action === 'getAuthUser') {
     chrome.storage.local.get(['gbpUser'], r => sendResponse({ user: r.gbpUser || null }));
+    return true;
+  }
+
+  // ── Auth: a valid backend JWT for the dashboard's analytics/report calls ──
+  if (msg.action === 'getBackendJWT') {
+    getBackendJWT({ forceRefresh: !!msg.forceRefresh })
+      .then(token => sendResponse({ success: !!token, token: token || null }))
+      .catch(e => sendResponse({ success: false, token: null, error: e.message }));
+    return true;
+  }
+
+  // ── Billing: current plan status ──────────────────────────────────────────
+  if (msg.action === 'getBillingStatus') {
+    billingRequest('GET', '/api/billing/status')
+      .then(r => sendResponse(r))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // ── Billing: redeem a license key ────────────────────────────────────────
+  if (msg.action === 'redeemLicenseKey') {
+    billingRequest('POST', '/api/billing/redeem', { code: msg.code })
+      .then(r => sendResponse(r))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
   }
 

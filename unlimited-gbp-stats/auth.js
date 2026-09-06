@@ -13,6 +13,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('toggleSignupPw').addEventListener('click', () => togglePw('signupPassword'));
   document.getElementById('googleLoginBtn').addEventListener('click', handleGoogleSignIn);
   document.getElementById('googleSignupBtn').addEventListener('click', handleGoogleSignIn);
+  document.getElementById('forgotPwLink').addEventListener('click', () => {
+    // Reset happens on the web (needs the emailed link), not in the extension.
+    chrome.runtime.sendMessage({ action: 'openAuthPage', page: 'forgot-password' });
+  });
 });
 
 // ── Switch between Login / Signup tabs ────────────────────────────────────────

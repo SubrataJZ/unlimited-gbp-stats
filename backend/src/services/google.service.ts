@@ -53,6 +53,59 @@ class GoogleService {
    * @param authCode Authorization code from Google OAuth callback
    * @returns User object with linked locations
    */
+  /**
+   * Find-or-create the user for a verified Google profile, tolerating a
+   * pre-existing password account under the same email (account linking).
+   *
+   * upsert-on-googleId alone is not safe here: a user who registered with
+   * email/password first has googleId=null, so the upsert would fall through to
+   * create() and hit the unique-email constraint. Match on googleId, then email.
+   */
+  private async upsertGoogleUser(googleUser: {
+    id: string;
+    email: string;
+    name?: string;
+    picture?: string;
+  }, tokens?: { access_token?: string; refresh_token?: string }) {
+    const byGoogle = await prisma.user.findUnique({ where: { googleId: googleUser.id } });
+    const existing =
+      byGoogle || (await prisma.user.findUnique({ where: { email: googleUser.email } }));
+
+    const tokenData = tokens
+      ? {
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token || undefined,
+        }
+      : {};
+
+    if (existing) {
+      return prisma.user.update({
+        where: { id: existing.id },
+        data: {
+          googleId: googleUser.id,
+          email: googleUser.email,
+          name: existing.name || googleUser.name,
+          avatarUrl: googleUser.picture || existing.avatarUrl,
+          emailVerifiedAt: existing.emailVerifiedAt ?? new Date(),
+          lastLoginAt: new Date(),
+          ...tokenData,
+        },
+      });
+    }
+
+    return prisma.user.create({
+      data: {
+        googleId: googleUser.id,
+        email: googleUser.email,
+        name: googleUser.name,
+        avatarUrl: googleUser.picture,
+        emailVerifiedAt: new Date(),
+        lastLoginAt: new Date(),
+        ...tokenData,
+      },
+    });
+  }
+
   async handleOAuthCallback(authCode: string) {
     try {
       logger.info('Processing Google OAuth callback');
@@ -65,26 +118,9 @@ class GoogleService {
       const googleUser = await this.fetchGoogleUserInfo(tokens.access_token);
       logger.debug(`Fetched user info for: ${googleUser.email}`);
 
-      // Step 3: Create or update user in database
-      const user = await prisma.user.upsert({
-        where: { googleId: googleUser.id },
-        update: {
-          email: googleUser.email,
-          name: googleUser.name,
-          avatarUrl: googleUser.picture,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token || undefined,
-          updatedAt: new Date(),
-        },
-        create: {
-          googleId: googleUser.id,
-          email: googleUser.email,
-          name: googleUser.name,
-          avatarUrl: googleUser.picture,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-        },
-      });
+      // Step 3: Create or update user in database (links to a password account
+      // under the same email if one exists)
+      const user = await this.upsertGoogleUser(googleUser, tokens);
 
       logger.info(`User ${user.id} authenticated successfully`);
 
@@ -135,23 +171,7 @@ class GoogleService {
     const googleUser = await this.fetchGoogleUserInfo(accessToken);
     logger.info(`Extension login for: ${googleUser.email}`);
 
-    const user = await prisma.user.upsert({
-      where: { googleId: googleUser.id },
-      update: {
-        email: googleUser.email,
-        name: googleUser.name,
-        avatarUrl: googleUser.picture,
-        updatedAt: new Date(),
-      },
-      create: {
-        googleId: googleUser.id,
-        email: googleUser.email,
-        name: googleUser.name,
-        avatarUrl: googleUser.picture,
-      },
-    });
-
-    return user;
+    return this.upsertGoogleUser(googleUser);
   }
 
   /**

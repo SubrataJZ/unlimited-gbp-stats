@@ -1,9 +1,18 @@
 import { Router, Request, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import googleService from '../services/google.service';
 import { asyncHandler } from '../middlewares/error.middleware';
 import { validateJWT } from '../middlewares/auth.middleware';
 import { issueTokenPair, rotateRefreshToken, revokeAllRefreshTokens } from '../utils/tokens';
-import { auditEvents } from '../middlewares/audit.middleware';
+import { auditEvents, logAudit } from '../middlewares/audit.middleware';
+import {
+  registerWithPassword,
+  loginWithPassword,
+  requestPasswordReset,
+  resetPassword,
+  changePassword,
+} from '../services/auth.service';
+import { getPlanForUser } from '../services/billing.service';
 import { prisma } from '../index';
 import { AuthenticationError, ValidationError } from '../utils/errors';
 import logger from '../utils/logger';
@@ -11,6 +20,23 @@ import logger from '../utils/logger';
 const router = Router();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://zixify.zixai.in';
+
+// Where the server-rendered auth pages live (see auth-pages.routes.ts). Behind
+// the production /backend/ proxy this is https://gbp.zixify.zixai.in/backend/auth;
+// set AUTH_PAGES_URL in the environment to match. Used to build reset links.
+const AUTH_PAGES_URL = (process.env.AUTH_PAGES_URL || 'http://localhost:3001/auth').replace(/\/+$/, '');
+
+/**
+ * Tight limiter for the credential endpoints — brute-force / enumeration guard,
+ * on top of the app-wide generalLimiter. Keyed by IP.
+ */
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { message: 'Too many attempts. Try again in a few minutes.', statusCode: 429 } },
+});
 
 // Cookie options for the httpOnly refresh token
 const REFRESH_COOKIE_OPTIONS = {
@@ -226,7 +252,114 @@ router.get(
       throw new AuthenticationError('User not found');
     }
 
-    res.json({ user });
+    const plan = await getPlanForUser(req.user!.id);
+    res.json({
+      user,
+      plan: {
+        plan: plan.plan,
+        effectivePlan: plan.effectivePlan,
+        planExpiresAt: plan.planExpiresAt,
+        active: plan.active,
+        limits: plan.limits,
+      },
+    });
+  })
+);
+
+/**
+ * POST /api/auth/register
+ * Body: { email, password, name? }
+ * Creates a password account (or attaches a password to a Google-only account),
+ * returns an access/refresh token pair and sets the refresh cookie.
+ */
+router.post(
+  '/register',
+  authLimiter,
+  asyncHandler(async (req: Request, res: Response) => {
+    const result = await registerWithPassword(req.body || {});
+    res.cookie('gbp_refresh', result.refreshToken, REFRESH_COOKIE_OPTIONS);
+    await auditEvents.login(req, result.user.id, 'password_register');
+    res.status(201).json({
+      token: result.accessToken,
+      refreshToken: result.refreshToken,
+      expiresIn: result.expiresIn,
+      user: result.user,
+    });
+  })
+);
+
+/**
+ * POST /api/auth/login
+ * Body: { email, password }
+ */
+router.post(
+  '/login',
+  authLimiter,
+  asyncHandler(async (req: Request, res: Response) => {
+    const result = await loginWithPassword(req.body || {});
+    res.cookie('gbp_refresh', result.refreshToken, REFRESH_COOKIE_OPTIONS);
+    await auditEvents.login(req, result.user.id, 'password');
+    res.json({
+      token: result.accessToken,
+      refreshToken: result.refreshToken,
+      expiresIn: result.expiresIn,
+      user: result.user,
+    });
+  })
+);
+
+/**
+ * POST /api/auth/forgot-password
+ * Body: { email }
+ * Always responds 200 with the same body — never reveals whether the account
+ * exists. Emails a one-time reset link when it does.
+ */
+router.post(
+  '/forgot-password',
+  authLimiter,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { emailed } = await requestPasswordReset((req.body || {}).email, AUTH_PAGES_URL);
+    await logAudit(req, {
+      action: 'PASSWORD_RESET_REQUESTED',
+      status: 'success',
+      metadata: { emailed },
+    });
+    res.json({ message: 'If an account exists for that address, a reset link is on its way.' });
+  })
+);
+
+/**
+ * POST /api/auth/reset-password
+ * Body: { token, password }
+ * Consumes the one-time token, sets the new password, revokes all sessions.
+ */
+router.post(
+  '/reset-password',
+  authLimiter,
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = req.body || {};
+    await resetPassword({ token: body.token, password: body.password });
+    await logAudit(req, { action: 'PASSWORD_RESET_COMPLETED', status: 'success' });
+    res.json({ message: 'Password updated. You can now sign in with your new password.' });
+  })
+);
+
+/**
+ * POST /api/auth/change-password  (authenticated)
+ * Body: { currentPassword, newPassword }
+ */
+router.post(
+  '/change-password',
+  validateJWT,
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = req.body || {};
+    await changePassword(req.user!.id, {
+      currentPassword: body.currentPassword,
+      newPassword: body.newPassword,
+    });
+    res.clearCookie('gbp_refresh', { path: '/api/auth' });
+    await logAudit(req, { action: 'PASSWORD_CHANGED', status: 'success', userId: req.user!.id });
+    res.json({ message: 'Password changed. Please sign in again.' });
   })
 );
 

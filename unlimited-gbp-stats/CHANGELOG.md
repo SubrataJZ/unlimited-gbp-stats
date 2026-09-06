@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.30.0] - 2026-09-06
+- **New: redeem a license key from Cloud Sync settings.** The settings panel now shows your current plan and lets you paste a `ZX-…` key to activate Pro or Agency. Everyone starts on Free; nothing you already use is taken away.
+- Pro and Agency raise the monthly AI budget for review replies and concept analysis.
+
+## [1.29.0] - 2026-09-06
+- **Cloud sync now runs entirely through the analytics backend.** The old metrics server is being retired: performance data, review data and snapshots all sync over a single connection now, so you can no longer end up with "half a business" (performance loaded but reviews missing, or the reverse). Your local data is untouched and stays the source of truth — this only changes where it syncs to and from. Signing in restores everything in one pass.
+- If anything goes wrong, setting `gbpSyncV2` to `false` in the extension's storage restores the previous behaviour with no reinstall.
+
+## [1.28.0] - 2026-09-06
+- **New: "Forgot password?" on the sign-in screen.** It opens a web page where you request a reset link by email and set a new password — the reset has to happen over the web because it's the emailed link that proves it's you.
+- **Signing in now also connects you to the analytics backend.** Previously only "Continue with Google" did that; an email/password sign-in left the Compare tab and server report generation falling back to locally-computed data. Both now get a real backend session that renews itself. Your existing cloud sync is unchanged, and signed-out/offline use still works from local data.
+
+## [1.27.0] - 2026-09-05
+- **Fixed: the "Compare" tab and server report generation never actually reached the backend.** Both sent `_authUser.accessToken` as the bearer token, but that field has never existed — the stored user record is only `{ id, email, name }` — so every call to the year-on-year, period-comparison and report-generation endpoints came back 401 and silently fell back to data computed from your own browser storage. The extension already exchanges your Google sign-in for a real backend token when it connects; it now keeps that token (and its refresh token), hands it to those three calls, and renews it automatically — rotating it when it expires, or re-minting it from your Google session if the rotation fails. Signed out or offline, the local-data fallback still works exactly as before.
+
 ## [1.26.0] - 2026-08-30
 - **Fixed: the exported report's trend chart always showed Overview, even when a different tab was open.** Switching to Calls or Directions and exporting still produced an Overview chart with no indication that the metric had been substituted. The report now charts whichever metric tab was active when Export was clicked, on both the server-generated report and the local fallback, and the chart heading names the metric ("Phone Calls Trend") so it is never ambiguous which one is shown.
 

@@ -8,25 +8,50 @@ datasource db {
 }
 
 model User {
-  id           String  @id @default(uuid())
-  googleId     String  @unique @map("google_id")
-  email        String  @unique
-  name         String?
-  avatarUrl    String? @map("avatar_url")
+  id        String  @id @default(uuid())
+  // Nullable: password-only accounts have no Google identity. Postgres allows
+  // many NULLs under a UNIQUE index, so this still enforces one row per googleId.
+  googleId  String? @unique @map("google_id")
+  email     String  @unique
+  name      String?
+  avatarUrl String? @map("avatar_url")
+
+  // Email/password auth. Null for Google-only accounts.
+  passwordHash    String?   @map("password_hash")
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  lastLoginAt     DateTime? @map("last_login_at")
+
   accessToken  String? @map("access_token")
   refreshToken String? @map("refresh_token")
 
-  locations     Location[]
-  businesses    Business[]
-  apiKeys       ApiKey[]
-  refreshTokens RefreshToken[]
-  auditLogs     AuditLog[]
-  memberships   Membership[]
-  aiUsage       AiUsage[]
-  createdAt     DateTime       @default(now()) @map("created_at")
-  updatedAt     DateTime       @updatedAt @map("updated_at")
+  locations      Location[]
+  businesses     Business[]
+  apiKeys        ApiKey[]
+  refreshTokens  RefreshToken[]
+  passwordResets PasswordReset[]
+  auditLogs      AuditLog[]
+  memberships    Membership[]
+  aiUsage        AiUsage[]
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
 
   @@map("users")
+}
+
+// ── Password reset tokens ─────────────────────────────────────────────────────
+// A single-use, short-lived token. Only the SHA-256 hash of the token is stored,
+// so a DB read cannot be used to reset anyone's password.
+model PasswordReset {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("password_resets")
 }
 
 model ApiKey {
@@ -202,17 +227,44 @@ enum Role {
   OWNER_READONLY
 }
 
+enum Plan {
+  FREE
+  PRO
+  AGENCY
+}
+
 model Organization {
-  id        String   @id @default(cuid())
-  name      String
-  plan      String?
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id            String    @id @default(cuid())
+  name          String
+  plan          Plan      @default(FREE)
+  planExpiresAt DateTime? @map("plan_expires_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   memberships       Membership[]
   trackedBusinesses TrackedBusiness[]
+  licenseKeys       LicenseKey[]
 
   @@map("organizations")
+}
+
+// ── License keys ──────────────────────────────────────────────────────────────
+// Sold on a marketplace / handed out manually, redeemed via POST /api/billing/
+// redeem which sets Organization.plan + planExpiresAt. Single-use.
+model LicenseKey {
+  id              String        @id @default(cuid())
+  code            String        @unique
+  plan            Plan
+  durationDays    Int           @default(365) @map("duration_days")
+  note            String?
+  redeemedByOrgId String?       @map("redeemed_by_org_id")
+  redeemedBy      Organization? @relation(fields: [redeemedByOrgId], references: [id], onDelete: SetNull)
+  redeemedAt      DateTime?     @map("redeemed_at")
+  revokedAt       DateTime?     @map("revoked_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  @@index([redeemedByOrgId])
+  @@map("license_keys")
 }
 
 model Membership {

@@ -133,6 +133,19 @@ body {
 
 .btn-loader.hidden { display: none; }
 
+/* Text link button (Forgot password) */
+.link-btn {
+  background: none;
+  border: none;
+  color: #93b4fb;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px;
+  align-self: center;
+  font-family: inherit;
+}
+.link-btn:hover { text-decoration: underline; }
+
 /* Divider */
 .auth-divider {
   display: flex;

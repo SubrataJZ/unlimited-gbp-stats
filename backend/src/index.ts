@@ -16,6 +16,8 @@ import apiKeyRoutes from './routes/api-keys.routes';
 import locationsRoutes from './routes/locations.routes';
 import aiRoutes from './routes/ai.routes';
 import { analyticsRouter, reportsRouter } from './routes/analytics.routes';
+import authPagesRoutes from './routes/auth-pages.routes';
+import billingRoutes from './routes/billing.routes';
 import { errorHandler } from './middlewares/error.middleware';
 
 // Load environment variables
@@ -147,6 +149,10 @@ app.use('/api/locations', locationsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/reports', reportsRouter);
+app.use('/api/billing', billingRoutes);
+
+// Server-rendered auth pages (login / signup / forgot / reset)
+app.use('/auth', authPagesRoutes);
 
 /**
  * =========================================
