@@ -32,6 +32,13 @@
   // Tries ?cid= / ?ludcid= param first, then !1s0x...:0x<hex> feature-id.
   // Regexes directly on the raw string — tolerant of relative URLs.
   // Returns decimal CID string or null.
+  // Reviews are collected from Google Maps only. Google rebuilt the Search
+  // reviews panel twice (iframe, then side sheet), and it hides owner replies.
+  function isMapsPage() {
+    return location.pathname.startsWith('/maps') || location.hostname.startsWith('maps.');
+  }
+  const MAPS_ONLY = { success: false, reason: 'Reviews are collected from Google Maps — open this business on Maps and fetch there.' };
+
   function extractCidFromUrl(url) {
     if (!url) return null;
     try {
@@ -1128,6 +1135,7 @@
 
   // Scrape reviews + snapshot, then persist via the background worker.
   async function collectReviews(progressCb) {
+    if (!isMapsPage()) return MAPS_ONLY;
     const businessId = extractBusinessId();
     const businessName = extractBusinessName();
     if (!businessId) return { success: false, reason: 'Could not detect business ID on this page.' };
@@ -1272,6 +1280,7 @@
    *                    reason?:string}>}
    */
   async function collectNewReviews(progressCb) {
+    if (!isMapsPage()) return MAPS_ONLY;
     const businessId = extractBusinessId();
     const businessName = extractBusinessName();
     if (!businessId) return { success: false, reason: 'Could not detect business ID on this page.' };
@@ -1866,7 +1875,9 @@
       bar.querySelector('.gbp-zx-open').addEventListener('click', (e) => {
         e.preventDefault(); e.stopPropagation();
         const d = extractCardData(card);
-        if (d.placeUrl) openReviewTab(d.placeUrl, d.name);
+        const cid = extractCidFromUrl(d.placeUrl);
+        if (cid) openReviewTab(cid, d.name);
+        else flashBtn(e.currentTarget, '⚠ open in Maps');
       });
 
       // Place the bar safely: never inside an <a> (would nest interactive els
@@ -1908,8 +1919,8 @@
       flashBtn(btn, resp && resp.success ? `✓ ${d.count ?? ''}★${d.rating ?? ''}` : '⚠');
     });
 
-    // Best-effort: open the place's reviews to scrape individual reviews
-    if (d.placeUrl) openReviewTab(d.placeUrl, d.name);
+    // Open the place on Maps to scrape its individual reviews
+    openReviewTab(businessId, d.name);
   }
 
   function flashBtn(btn, label) {
@@ -1919,23 +1930,15 @@
     setTimeout(() => { btn.textContent = orig; }, 2500);
   }
 
-  // Ask the background worker to open the place URL in a new tab flagged for
-  // auto-scrape. The content script on that tab (see auto-scrape hook in init)
-  // detects the flag, scrapes reviews, and sends them.
-  function openReviewTab(placeUrl, name) {
-    try {
-      const u = new URL(placeUrl, location.href);
-      u.hash = 'gbpx-scrape=' + encodeURIComponent(name || '');
-      chrome.runtime.sendMessage({ action: 'openReviewTab', url: u.toString() });
-    } catch (e) { console.warn('[GBP] openReviewTab failed:', e); }
+  // Open the business on Maps in a background tab for auto-scrape. The
+  // background worker remembers the tab (a #flag would not survive: Maps'
+  // ?cid= redirect drops the hash); that tab claims it in init().
+  function openReviewTab(cid, name) {
+    chrome.runtime.sendMessage({ action: 'openReviewTab', url: `https://www.google.com/maps?cid=${cid}`, name });
   }
 
-  // Auto-scrape hook: if THIS page was opened with the #gbpx-scrape flag, wait
-  // for the reviews panel and scrape individual reviews for that business.
-  async function maybeAutoScrapeReviews() {
-    const m = (location.hash || '').match(/gbpx-scrape=([^&]*)/);
-    if (!m) return;
-    const name = decodeURIComponent(m[1] || '');
+  // Auto-scrape: wait for the reviews panel and scrape this business's reviews.
+  async function maybeAutoScrapeReviews(name) {
     console.log('[GBP] Auto-scrape reviews flagged for:', name);
     // Let the place panel render, then try to open the reviews list
     await sleep(2500);
@@ -2639,8 +2642,11 @@
     new MutationObserver(debouncedCheck).observe(document.documentElement, { childList: true, subtree: true });
 
     // If this tab was opened by an "Open reviews"/Review click, auto-scrape.
-    if (location.hash.includes('gbpx-scrape=')) {
-      maybeAutoScrapeReviews().catch(e => console.warn('[GBP] auto-scrape error:', e));
+    if (isMapsPage()) {
+      chrome.runtime.sendMessage({ action: 'claimAutoScrape' }, (res) => {
+        if (chrome.runtime.lastError || !res || res.name == null) return;
+        maybeAutoScrapeReviews(res.name).catch(e => console.warn('[GBP] auto-scrape error:', e));
+      });
     }
   }
 
