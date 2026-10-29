@@ -822,8 +822,11 @@
   // ══════════════════════════════════════════════════════════════════════════
 
   // Stable-ish id for an individual review when Google gives us no data-review-id.
-  function hashReview(author, date, text) {
-    const s = `${author}|${date}|${(text || '').slice(0, 120)}`;
+  // Fallback id for a card with no data-review-id. Must NOT include the date:
+  // Google shows it relative ("a day ago"), so it changed between scrapes and the
+  // same review was stored again under a new id each time (29 reviews → 62 ids).
+  function hashReview(author, rating, text) {
+    const s = `${author}|${rating}|${(text || '').slice(0, 120)}`;
     let h = 0;
     for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
     return 'h' + (h >>> 0).toString(36);
@@ -1777,10 +1780,6 @@
   const GBP_ACTIONS_CLASS = 'gbp-zx-actions';
   const GBP_DONE_ATTR     = 'data-gbp-zx';
 
-  function slugifyName(name) {
-    return 'gbpx-' + (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
-  }
-
   // Pull {name, rating, count, placeUrl} out of a result card, with fallbacks.
   function extractCardData(card) {
     const text = card.innerText || '';
@@ -1888,8 +1887,10 @@
     console.log('[GBP] Listing review click:', d);
     if (!d.name) { flashBtn(btn, '⚠ no name'); return; }
 
-    const cid = extractCidFromUrl(d.placeUrl);
-    const businessId = cid || slugifyName(d.name);
+    // No name-based fallback: branches often share one name (two "RecoverEX"
+    // profiles), and a slug id would merge their data into a single record.
+    const businessId = extractCidFromUrl(d.placeUrl);
+    if (!businessId) { flashBtn(btn, '⚠ open in Maps'); return; }
     const snapshot = {
       totalReviews: d.count || 0,
       avgRating:    d.rating != null ? d.rating : null,
@@ -1942,9 +1943,11 @@
     const reviews = await extractIndividualReviews().catch(() => []);
     const snap = extractReviewSnapshot();
     if (!reviews.length && !snap) { console.log('[GBP] Auto-scrape: nothing found'); return; }
+    const id = extractBusinessId();
+    if (!id) { console.warn('[GBP] Auto-scrape: no place id; not saving under a name-based id'); return; }
     chrome.runtime.sendMessage({
       action: 'saveReviewData',
-      business: { id: extractBusinessId() || slugifyName(name), name },
+      business: { id, name },
       isOwn: false,
       snapshot: snap,
       reviews,
@@ -2096,7 +2099,7 @@
     const externalId =
       card.getAttribute('data-review-id') ||
       card.querySelector('[data-review-id]')?.getAttribute('data-review-id') ||
-      hashReview(author, dateRaw, text);
+      hashReview(author, rating, text);
 
     return {
       externalId,

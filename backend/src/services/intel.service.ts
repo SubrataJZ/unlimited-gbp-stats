@@ -584,6 +584,20 @@ export async function ingestIntel(
         } else {
           summary.reviewsCreated++;
         }
+
+        // Older extension builds hashed the relative date ("a day ago") into
+        // fallback ids ("h…"), storing one review again on every scrape. Drop
+        // any other hash-id copy of this same review (same author + text).
+        if (rev.authorName) {
+          await tx.scrapedReview.deleteMany({
+            where: {
+              trackedBusinessId,
+              authorName: rev.authorName,
+              externalReviewId: { startsWith: 'h', not: rev.externalReviewId },
+              text: rev.text ? { startsWith: rev.text.slice(0, 120) } : null,
+            },
+          });
+        }
       }
     });
   }

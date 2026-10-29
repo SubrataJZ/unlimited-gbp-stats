@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.30.2] - 2026-10-30
+- **Fixed: reviews were counted twice (or more).** When a review card had no readable Google id, the extension made one from the author, text and the *relative* date ("a day ago"). That date changes daily, so each scrape stored the same review again under a new id — RecoverEX showed 62 stored for 29 real reviews. The fallback id no longer uses the date, and saving a review now removes any older duplicate of it, on the device and on the server (backend 2.7.1). Existing duplicates clear the next time that business's reviews are fetched.
+- **Fixed: two branches with the same name could merge into one record.** The listing "Review" button and review auto-scrape fell back to an id made from the business *name* when no Maps place id was found. Branches often share a name (two RecoverEX profiles), so their data landed in one record. Without a place id the button now asks you to open the business in Maps instead.
+
 ## [1.30.1] - 2026-10-30
 - **Fixed: the YoY, Compare and server-report requests never reached the backend.** `API_BASE` still pointed at a developer's `http://localhost:3001`, so every call failed with "Failed to fetch" and quietly fell back to local data — which also meant the backend login added in 1.27–1.30 had nothing to talk to. It now points at the production backend.
 - **Fixed: switching the metric tab with Compare on could leave the previous tab's comparison on the chart.** An older, slower comparison response could land after the new one and overwrite it, and the chart was never redrawn once the fresh data arrived. Superseded responses are now discarded, and the comparison clears immediately on a tab, mode or month change so a stale line is never shown while the new one loads.
