@@ -46,7 +46,10 @@ export const errorHandler = (
   };
 
   if (statusCode >= 500) {
-    logger.error(`Server Error: ${message}`, errorLog);
+    // The response stays generic, but the log needs the real cause and stack.
+    // No errorLog here: winston merges its `message` field over this text,
+    // which is how every production 500 was logged as just "Internal Server Error".
+    logger.error(`Server Error on ${req.method} ${req.path}: ${error.stack || error.message}`);
   } else {
     logger.warn(`Client Error (${statusCode}): ${message}`, errorLog);
   }
