@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.30.1] - 2026-10-30
+- **Fixed: the YoY, Compare and server-report requests never reached the backend.** `API_BASE` still pointed at a developer's `http://localhost:3001`, so every call failed with "Failed to fetch" and quietly fell back to local data — which also meant the backend login added in 1.27–1.30 had nothing to talk to. It now points at the production backend.
+- **Fixed: switching the metric tab with Compare on could leave the previous tab's comparison on the chart.** An older, slower comparison response could land after the new one and overwrite it, and the chart was never redrawn once the fresh data arrived. Superseded responses are now discarded, and the comparison clears immediately on a tab, mode or month change so a stale line is never shown while the new one loads.
+
 ## [1.30.0] - 2026-09-06
 - **New: redeem a license key from Cloud Sync settings.** The settings panel now shows your current plan and lets you paste a `ZX-…` key to activate Pro or Agency. Everyone starts on Free; nothing you already use is taken away.
 - Pro and Agency raise the monthly AI budget for review replies and concept analysis.
