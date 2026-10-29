@@ -88,5 +88,22 @@ const CID   = '7677681795290275669';    // RecoverEX's Maps CID
   eq((await S.getMetric(CID, 'directions', 2021, 1)).total, 7, 'alias-only months are moved');
   eq((await S.getAllMetricsForBusiness(ALIAS)).length, 0, 'nothing is left under the alias');
 
+  // 6. Business names. Search pages offered headings like "People also ask"
+  //    questions or the rating "5.0(29)"; each capture overwrote the stored
+  //    name, so the dashboard listed businesses by those.
+  const junk = ['What is the largest Chinese restaurant?', '5', '5.0(29)', 'Google review summary', '', ' '];
+  for (const j of junk) assert(S.isJunkBusinessName(j), `"${j}" is recognised as junk`);
+  for (const ok of ['RecoverEX - Trusted Data Recovery Kolkata', 'Chowman (Kalyani)', '7-Eleven', 'রিকভারএক্স'])
+    assert(!S.isJunkBusinessName(ok), `"${ok}" is a real name`);
+
+  await S.saveBusiness({ id: CID, name: 'RecoverEX - Trusted Data Recovery Kolkata' });
+  await S.saveBusiness({ id: CID, name: '5.0(29)' });
+  eq((await S.getBusiness(CID)).name, 'RecoverEX - Trusted Data Recovery Kolkata', 'a junk name never overwrites a real one');
+  await S.saveBusiness({ id: CID, name: 'RecoverEX Dum Dum' });
+  eq((await S.getBusiness(CID)).name, 'RecoverEX Dum Dum', 'a real new name still replaces the old one');
+  await S.saveBusiness({ id: 'b-new', name: 'Which is the best Chinese restaurant?' });
+  await S.saveBusiness({ id: 'b-new', name: 'Chowman (Kalyani)' });
+  eq((await S.getBusiness('b-new')).name, 'Chowman (Kalyani)', 'a stored junk name is repaired by the next real one');
+
   console.log(`ALL TESTS PASSED (${n} assertions)`);
 })().catch(e => { console.error(e.message); process.exit(1); });

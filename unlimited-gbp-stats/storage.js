@@ -79,8 +79,21 @@ const GBPStorage = (() => {
 
   // ── Business operations ──
 
+  // Scraped names sometimes catch the wrong heading on Google pages: "People
+  // also ask" questions, a rating like "5.0(29)", or a section title.
+  const JUNK_NAMES = new Set(['google review summary', 'reviews', 'people also ask',
+    'businesses', 'places', 'results', 'unknown business']);
+  function isJunkBusinessName(name) {
+    const t = String(name || '').trim();
+    return t.length < 2 || t.endsWith('?') || !/\p{L}/u.test(t) || JUNK_NAMES.has(t.toLowerCase());
+  }
+
   async function saveBusiness(business) {
     const { store } = await tx('businesses', 'readwrite');
+    if (isJunkBusinessName(business.name)) {
+      const existing = await promisifyRequest(store.get(business.id));
+      if (existing && !isJunkBusinessName(existing.name)) business.name = existing.name;
+    }
     business.lastUpdated = Date.now();
     return promisifyRequest(store.put(business));
   }
@@ -620,6 +633,7 @@ const GBPStorage = (() => {
   return {
     open,
     saveBusiness,
+    isJunkBusinessName,
     getBusiness,
     getAllBusinesses,
     deleteBusiness,
