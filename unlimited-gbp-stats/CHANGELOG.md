@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.31.0] - 2026-10-30
+- **Changed: reviews are collected from Google Maps only.** Fetch Reviews and Fetch New Reviews now run on a business's Maps page; on Google Search they say to open the business on Maps instead. Tested side by side, both surfaces carry the same review ids, but Google has rebuilt the Search reviews panel twice (the collector stopped working on it each time) and it hides owner replies, while Maps has stayed stable and shows them. AI auto-draft replies on Search are unchanged.
+- **Fixed: the Review / Open reviews buttons on search results opened a tab that never collected anything.** They tagged the tab's URL with a marker, and Google drops it while redirecting. They now open the business on Maps and the extension tracks the tab itself, so collection starts automatically.
+
 ## [1.30.2] - 2026-10-30
 - **Fixed: reviews were counted twice (or more).** When a review card had no readable Google id, the extension made one from the author, text and the *relative* date ("a day ago"). That date changes daily, so each scrape stored the same review again under a new id — RecoverEX showed 62 stored for 29 real reviews. The fallback id no longer uses the date, and saving a review now removes any older duplicate of it, on the device and on the server (backend 2.7.1). Existing duplicates clear the next time that business's reviews are fetched.
 - **Fixed: two branches with the same name could merge into one record.** The listing "Review" button and review auto-scrape fell back to an id made from the business *name* when no Maps place id was found. Branches often share a name (two RecoverEX profiles), so their data landed in one record. Without a place id the button now asks you to open the business in Maps instead.

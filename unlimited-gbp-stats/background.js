@@ -1817,8 +1817,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ── Open a place's reviews in a new tab flagged for auto-scrape ───────────
   if (msg.action === 'openReviewTab') {
-    if (msg.url) chrome.tabs.create({ url: msg.url, active: false });
+    // Remember the tab rather than flag the URL: Maps' ?cid= redirect drops
+    // any #hash. Session storage survives this worker being suspended.
+    if (msg.url) chrome.tabs.create({ url: msg.url, active: false }, (tab) => {
+      if (tab) chrome.storage.session.set({ [`autoScrape_${tab.id}`]: msg.name || '' });
+    });
     sendResponse({ success: true });
+    return true;
+  }
+
+  // ── A Maps tab asks whether it was opened for auto-scrape (one-shot) ──────
+  if (msg.action === 'claimAutoScrape') {
+    const key = `autoScrape_${sender.tab && sender.tab.id}`;
+    chrome.storage.session.get(key, (r) => {
+      const name = key in r ? r[key] : null;
+      if (name !== null) chrome.storage.session.remove(key);
+      sendResponse({ name });
+    });
     return true;
   }
 
