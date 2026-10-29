@@ -206,6 +206,16 @@ test_email_password_auth() {
     -d "{\"email\":\"$email\",\"password\":\"$pass\"}")
   echo "$body" | grep -q '"token"' && print_success "login returned a token" || print_error "login failed: $body"
 
+  # 4b. Same user, two logins in the same second: refresh tokens used to be
+  # identical and collide on refresh_tokens_token_key → 500.
+  print_test "POST /api/auth/login x3 back-to-back (no 500)"
+  local codes=""
+  for _ in 1 2 3; do
+    codes="$codes $(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/login" \
+      -H "Content-Type: application/json" -d "{\"email\":\"$email\",\"password\":\"$pass\"}")"
+  done
+  [ "$codes" = " 200 200 200" ] && print_success "repeat logins all 200" || print_error "expected 200 x3, got$codes"
+
   # 5. Login wrong password → 401
   print_test "POST /api/auth/login (wrong password → 401)"
   status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/login" \

@@ -36,7 +36,9 @@ export function signRefreshToken(userId: string, email: string): string {
   return jwt.sign(
     { userId, email, type: 'refresh' } as TokenPayload,
     REFRESH_SECRET,
-    { expiresIn: '30d' }
+    // jwtid: two logins in the same second otherwise produced the same token,
+    // tripping refresh_tokens_token_key's unique constraint → login 500.
+    { expiresIn: '30d', jwtid: crypto.randomUUID() }
   );
 }
 
