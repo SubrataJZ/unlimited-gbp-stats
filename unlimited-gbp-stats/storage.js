@@ -343,14 +343,19 @@ const GBPStorage = (() => {
     let moved = 0;
 
     // Metrics: id embeds businessId_metricType_YYYY-MM — recompute under toId.
-    // Never clobber an existing canonical record; alias data is the stale copy.
+    // When both ids hold the month, keep the better copy (same rule as hydrate):
+    // a real capture beats a YoY-derived estimate, then the higher total wins.
+    // Blindly keeping the canonical copy deleted real months (RecoverEX 440→355).
     {
       const { store } = await tx('metrics', 'readwrite');
       const rows = await promisifyRequest(store.index('businessId').getAll(fromId));
       for (const r of rows) {
         const newId = makeMetricId(toId, r.metricType, r.year, r.month);
         const existing = await promisifyRequest(store.get(newId));
-        if (!existing) { await promisifyRequest(store.put({ ...r, id: newId, businessId: toId })); moved++; }
+        const aliasWins = !existing ||
+          (existing.derived && !r.derived) ||
+          (!!existing.derived === !!r.derived && (r.total || 0) > (existing.total || 0));
+        if (aliasWins) { await promisifyRequest(store.put({ ...r, id: newId, businessId: toId })); moved++; }
         await promisifyRequest(store.delete(r.id));
       }
     }
