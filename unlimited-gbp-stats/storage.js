@@ -275,6 +275,19 @@ const GBPStorage = (() => {
   async function saveReviews(businessId, reviews) {
     if (!Array.isArray(reviews) || !reviews.length) return 0;
     const { store } = await tx('reviews', 'readwrite');
+
+    // Older builds hashed the relative date into fallback ids ("h…"), storing one
+    // review many times. Drop any hash-id copy of a review we are saving now.
+    const dupKey = (author, text) => `${stripIconLigature(author)}|${(text || '').slice(0, 120)}`;
+    const incoming = new Map(reviews.filter(r => r && r.externalId)
+      .map(r => [dupKey(r.author, r.text), String(r.externalId)]));
+    for (const old of await promisifyRequest(store.index('businessId').getAll(businessId))) {
+      const keep = incoming.get(dupKey(old.author, old.text));
+      if (keep && keep !== String(old.externalId) && /^h[0-9a-z]+$/.test(old.externalId)) {
+        await promisifyRequest(store.delete(old.id));
+      }
+    }
+
     let n = 0;
     for (const r of reviews) {
       if (!r || !r.externalId) continue;

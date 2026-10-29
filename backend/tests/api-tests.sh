@@ -280,6 +280,37 @@ test_billing_endpoints() {
   [ "$s" = "401" ] && print_success "invalid key rejected (401)" || print_error "expected 401, got $s"
 }
 
+test_review_dedupe() {
+  print_header "Test 14: Review ingest drops hash-id duplicates"
+
+  # Older extension builds put the relative date ("a day ago") into fallback
+  # review ids, so one review was stored again on every scrape.
+  local email="ci-dedupe-$(date +%s)-$RANDOM@example.test"
+  local token ; local key ; local body ; local n
+  token=$(curl -s -X POST "$API_URL/api/auth/register" -H "Content-Type: application/json" \
+    -d "{\"email\":\"$email\",\"password\":\"correct-horse-9\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  key=$(curl -s -X POST "$API_URL/api/auth/provision-extension" \
+    -H "Authorization: Bearer $token" -H "x-extension-id: $EXTENSION_ID" | sed -n 's/.*"apiKey":"\([^"]*\)".*/\1/p')
+  if [ -z "$key" ]; then print_error "could not provision an extension key"; return; fi
+
+  local biz='"name":"Dedupe Test","googlePlaceId":"999000111","snapshot":{"totalReviews":1}'
+  local rev='"rating":5,"authorName":"Amit","text":"Recovered my SSD"'
+  for id in h1abc h2xyz ChdDSUhNMG9nS0VJQ0FnSU; do
+    curl -s -o /dev/null -X POST "$API_URL/api/ingest/intel" -H "Authorization: Bearer $key" \
+      -H "x-extension-id: $EXTENSION_ID" -H "Content-Type: application/json" \
+      -d "{\"businesses\":[{$biz,\"reviews\":[{\"externalReviewId\":\"$id\",$rev}]}]}"
+  done
+
+  print_test "GET /api/ingest/intel (one review left, under Google's real id)"
+  body=$(curl -s "$API_URL/api/ingest/intel" -H "Authorization: Bearer $key" -H "x-extension-id: $EXTENSION_ID")
+  n=$(echo "$body" | grep -o '"externalReviewId"' | wc -l | tr -d ' ')
+  if [ "$n" = "1" ] && echo "$body" | grep -q 'ChdDSUhNMG9nS0VJQ0FnSU'; then
+    print_success "hash-id copies were removed (1 review)"
+  else
+    print_error "expected 1 review under the real id, got $n: $body"
+  fi
+}
+
 ###############################################################################
 # Main Test Execution
 ###############################################################################
@@ -321,6 +352,7 @@ main() {
   test_email_password_auth || true
   test_auth_pages || true
   test_billing_endpoints || true
+  test_review_dedupe || true
 
   print_header "Test Results Summary"
   echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"

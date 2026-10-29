@@ -36,6 +36,7 @@ function makeStore() {
     rows,
     get:   (key) => fakeRequest(() => rows.get(key)),
     put:   (val) => fakeRequest(() => { rows.set(val.id, JSON.parse(JSON.stringify(val))); return val.id; }),
+    delete: (key) => fakeRequest(() => { rows.delete(key); }),
     index: (name) => ({
       getAll: (q) => fakeRequest(() => [...rows.values()].filter(r => r[name] === q)),
     }),
@@ -158,6 +159,27 @@ const one = async (biz) => (await GBPStorage.getReviews(biz))[0];
     const biz = 'biz-ligature';
     await GBPStorage.saveReviews(biz, [scraped({ author: 'Priya Sharmaopen_in_new' })]);
     eq((await one(biz)).author, 'Priya Sharma', 'icon ligature still stripped on write');
+  }
+
+  // 9. Duplicate clean-up. Older builds hashed the RELATIVE date into the
+  //    fallback id, so one review was stored again each time "a day ago"
+  //    became "2 days ago" (live: 29 reviews → 62 stored ids).
+  {
+    const biz = 'biz-dupes';
+    const same = { author: 'Amit', text: 'Recovered my SSD', rating: 5 };
+    await GBPStorage.saveReviews(biz, [scraped({ ...same, externalId: 'h1abc' })]);   // drifting hash, scrape 1
+    await GBPStorage.saveReviews(biz, [scraped({ ...same, externalId: 'h2xyz' })]);   // drifting hash, scrape 2
+    await GBPStorage.saveReviews(biz, [scraped({ author: 'Other', text: 'Different', externalId: 'hother' })]);
+    eq((await GBPStorage.getReviews(biz)).length, 2, 'the older hash copy is replaced, not kept beside the new one');
+
+    await GBPStorage.saveReviews(biz, [scraped({ ...same, externalId: 'ChdDSUhNMG9nS0VJQ0FnSU' })]); // Google's real id
+    const left = await GBPStorage.getReviews(biz);
+    eq(left.length, 2, 'the real Google id replaces every hash copy of that review');
+    assert(left.some(r => r.externalId === 'ChdDSUhNMG9nS0VJQ0FnSU'), 'the real id is the one kept');
+    assert(left.some(r => r.externalId === 'hother'), "a different reviewer's hash row is untouched");
+
+    await GBPStorage.saveReviews(biz, [scraped({ ...same, externalId: 'ChdDSUhNMG9nS0VJQ0FnSU' })]);
+    eq((await GBPStorage.getReviews(biz)).length, 2, 'a real id is never deleted by its own re-save');
   }
 
   console.log(`ALL TESTS PASSED (${n} assertions)`);
