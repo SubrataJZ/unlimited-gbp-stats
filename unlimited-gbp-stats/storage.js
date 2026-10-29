@@ -79,8 +79,21 @@ const GBPStorage = (() => {
 
   // ── Business operations ──
 
+  // Scraped names sometimes catch the wrong heading on Google pages: "People
+  // also ask" questions, a rating like "5.0(29)", or a section title.
+  const JUNK_NAMES = new Set(['google review summary', 'reviews', 'people also ask',
+    'businesses', 'places', 'results', 'unknown business']);
+  function isJunkBusinessName(name) {
+    const t = String(name || '').trim();
+    return t.length < 2 || t.endsWith('?') || !/\p{L}/u.test(t) || JUNK_NAMES.has(t.toLowerCase());
+  }
+
   async function saveBusiness(business) {
     const { store } = await tx('businesses', 'readwrite');
+    if (isJunkBusinessName(business.name)) {
+      const existing = await promisifyRequest(store.get(business.id));
+      if (existing && !isJunkBusinessName(existing.name)) business.name = existing.name;
+    }
     business.lastUpdated = Date.now();
     return promisifyRequest(store.put(business));
   }
@@ -343,14 +356,19 @@ const GBPStorage = (() => {
     let moved = 0;
 
     // Metrics: id embeds businessId_metricType_YYYY-MM — recompute under toId.
-    // Never clobber an existing canonical record; alias data is the stale copy.
+    // When both ids hold the month, keep the better copy (same rule as hydrate):
+    // a real capture beats a YoY-derived estimate, then the higher total wins.
+    // Blindly keeping the canonical copy deleted real months (RecoverEX 440→355).
     {
       const { store } = await tx('metrics', 'readwrite');
       const rows = await promisifyRequest(store.index('businessId').getAll(fromId));
       for (const r of rows) {
         const newId = makeMetricId(toId, r.metricType, r.year, r.month);
         const existing = await promisifyRequest(store.get(newId));
-        if (!existing) { await promisifyRequest(store.put({ ...r, id: newId, businessId: toId })); moved++; }
+        const aliasWins = !existing ||
+          (existing.derived && !r.derived) ||
+          (!!existing.derived === !!r.derived && (r.total || 0) > (existing.total || 0));
+        if (aliasWins) { await promisifyRequest(store.put({ ...r, id: newId, businessId: toId })); moved++; }
         await promisifyRequest(store.delete(r.id));
       }
     }
@@ -615,6 +633,7 @@ const GBPStorage = (() => {
   return {
     open,
     saveBusiness,
+    isJunkBusinessName,
     getBusiness,
     getAllBusinesses,
     deleteBusiness,

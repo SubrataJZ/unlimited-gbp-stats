@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.31.2] - 2026-10-30
+- **Fixed: businesses showed up in the dashboard under the wrong name** — a "People also ask" question ("What is the largest Chinese restaurant?"), a rating ("5", "5.0(29)") or a section title ("Google review summary"). On Google Search pages the name was guessed from page headings, and every capture overwrote the stored name, junk included. Those headings are now skipped, and a junk name never replaces a real one. Names already wrong are corrected by the next capture of that business, or fix them now with the ✏️ rename button.
+
+## [1.31.1] - 2026-10-30
+- **Fixed: real performance data could be deleted when a business's two ids were merged.** Each business is stored under its Maps id, and older data under its Search id is folded into it. Where both held the same month, the Maps-id copy was always kept and the other deleted — even when the kept copy was only an estimate calculated from Google's year-over-year %, and the deleted one was the real number you captured. RecoverEX lost 85 records this way (440 → 355). The better copy is now kept: a real capture beats an estimate, then the higher total wins. Records already deleted on this device can only be restored from the server copy.
+
 ## [1.31.0] - 2026-10-30
 - **Changed: reviews are collected from Google Maps only.** Fetch Reviews and Fetch New Reviews now run on a business's Maps page; on Google Search they say to open the business on Maps instead. Tested side by side, both surfaces carry the same review ids, but Google has rebuilt the Search reviews panel twice (the collector stopped working on it each time) and it hides owner replies, while Maps has stayed stable and shows them. AI auto-draft replies on Search are unchanged.
 - **Fixed: the Review / Open reviews buttons on search results opened a tab that never collected anything.** They tagged the tab's URL with a marker, and Google drops it while redirecting. They now open the business on Maps and the extension tracks the tab itself, so collection starts automatically.

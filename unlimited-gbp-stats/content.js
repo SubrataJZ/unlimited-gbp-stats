@@ -173,7 +173,7 @@
     for (const sel of GBP_SELECTORS) {
       const text = document.querySelector(sel)?.textContent?.trim();
       if (!text || text.length < 2 || text.length > 120) continue;
-      if (REJECT.has(text.toLowerCase())) continue;
+      if (REJECT.has(text.toLowerCase()) || GBPStorage.isJunkBusinessName(text)) continue;
       return text;
     }
 
@@ -182,7 +182,7 @@
     for (const part of titleParts) {
       const t = part.trim();
       if (!t || t.length < 2 || t.length > 80) continue;
-      if (REJECT.has(t.toLowerCase())) continue;
+      if (REJECT.has(t.toLowerCase()) || GBPStorage.isJunkBusinessName(t)) continue;
       if (/^(google|performance|overview)$/i.test(t)) continue;
       return t;
     }
@@ -1896,7 +1896,7 @@
   function onListingReviewClick(card, btn) {
     const d = extractCardData(card);
     console.log('[GBP] Listing review click:', d);
-    if (!d.name) { flashBtn(btn, '⚠ no name'); return; }
+    if (!d.name || GBPStorage.isJunkBusinessName(d.name)) { flashBtn(btn, '⚠ no name'); return; }
 
     // No name-based fallback: branches often share one name (two "RecoverEX"
     // profiles), and a slug id would merge their data into a single record.
