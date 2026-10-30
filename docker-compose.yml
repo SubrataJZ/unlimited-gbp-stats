@@ -88,7 +88,9 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:3001/health", "||", "exit", "1"]
+      # wget, not curl: node:18-alpine ships busybox wget but no curl, so the
+      # curl check could never pass (the "||" was also passed to curl as args).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3001/health"]
       interval: 10s
       timeout: 5s
       retries: 10
