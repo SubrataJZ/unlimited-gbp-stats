@@ -22,6 +22,7 @@ function makeStore() {
   const rows = new Map();
   return {
     get: (k) => fakeRequest(() => rows.get(k)),
+    getAll: () => fakeRequest(() => [...rows.values()].map(v => JSON.parse(JSON.stringify(v)))),
     put: (v) => fakeRequest(() => { rows.set(v.id, JSON.parse(JSON.stringify(v))); return v.id; }),
     delete: (k) => fakeRequest(() => { rows.delete(k); }),
     index: (name) => ({ getAll: (q) => fakeRequest(() => [...rows.values()].filter(r => r[name] === q)) }),
@@ -104,6 +105,43 @@ const CID   = '7677681795290275669';    // RecoverEX's Maps CID
   await S.saveBusiness({ id: 'b-new', name: 'Which is the best Chinese restaurant?' });
   await S.saveBusiness({ id: 'b-new', name: 'Chowman (Kalyani)' });
   eq((await S.getBusiness('b-new')).name, 'Chowman (Kalyani)', 'a stored junk name is repaired by the next real one');
+
+
+  // 7. Duplicate entries. The entry that was renamed ("Dhakeswasri") held the
+  //    old ID's months; the real entry held the same months plus later ones.
+  //    Different businesses can have similar-looking numbers, but not the same ones.
+  const months = (n) => Array.from({ length: n }, (_, i) => ({ y: 2025, m: i + 1 }));
+  for (const { y, m } of months(12)) {
+    const total = 100 + m * 13;
+    await S.saveMetric('dup-old', 'overview', y, m, total, []);
+    await S.saveMetric('dup-real', 'overview', y, m, total, []);
+  }
+  for (let m = 1; m <= 6; m++) await S.saveMetric('dup-real', 'overview', 2026, m, 500 + m, []);
+  for (const { y, m } of months(12)) await S.saveMetric('other-biz', 'overview', y, m, 90 + m * 17, []);
+  await S.saveBusiness({ id: 'dup-old', name: 'Dhakeswasri' });
+  await S.saveBusiness({ id: 'dup-real', name: 'Which is the best Chinese restaurant?' });
+  await S.saveBusiness({ id: 'other-biz', name: 'Chowman (Kalyani)' });
+
+  const merged = await S.mergeDuplicateBusinesses();
+  eq(merged.length, 1, 'one duplicate is folded in');
+  eq(merged[0].from, 'dup-old', 'the renamed entry is the one folded away');
+  eq(merged[0].into, 'dup-real', 'the entry with more months is kept');
+  eq((await S.getAllMetricsForBusiness('dup-old')).length, 0, 'the old entry has no months left');
+  eq((await S.getAllMetricsForBusiness('dup-real')).length, 18, 'the kept entry has every month');
+  eq((await S.getAllMetricsForBusiness('other-biz')).length, 12, 'a different business is not touched');
+  eq(!!(await S.getBusiness('other-biz')), true, 'and keeps its own entry');
+  eq((await S.mergeDuplicateBusinesses()).length, 0, 'running again changes nothing');
+
+
+  // 8. A month far below both neighbours is held back; normal months are not.
+  await S.saveMetric('susp', 'calls', 2026, 6, 550, []);
+  await S.saveMetric('susp', 'calls', 2026, 7, 54, []);   // partial
+  await S.saveMetric('susp', 'calls', 2026, 8, 562, []);
+  await S.saveMetric('susp', 'calls', 2026, 9, 499, []);  // normal dip
+  eq(await S.isSuspectMonth('susp', 'calls', 2026, 7, 54), true, 'a partial month is held back');
+  eq(await S.isSuspectMonth('susp', 'calls', 2026, 9, 499), false, 'a normal month is uploaded');
+  eq(await S.isSuspectMonth('susp', 'calls', 2026, 10, 30), false, 'no neighbours means nothing to compare, so uploaded');
+  eq(await S.isSuspectMonth('susp', 'calls', 2026, 7, 300), false, 'a month that is half its neighbours is not held back');
 
   console.log(`ALL TESTS PASSED (${n} assertions)`);
 })().catch(e => { console.error(e.message); process.exit(1); });

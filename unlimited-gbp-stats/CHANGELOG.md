@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.31.4] - 2026-10-31
+- **Fixed: one business split across two entries on the device.** Captures from a Search page could store data under the Search ID while the Maps entry held the rest. Duplicate entries are now found by their matching months (not by name, since an entry may have been renamed) and merged on browser startup and on every sync.
+- **Fixed: a month captured before it finished was uploaded as complete.** A month far below both neighbouring months (for example July at 54 calls against about 550 either side) is held back from the server until a full capture replaces it.
+- **Added: delivery check** (backend/scripts/delivery-check.sql): a read-only check for duplicate businesses, partial months and bad names, to run before any customer report.
+
 ## [1.31.3] - 2026-10-30
 - **Fixed: September data was saved without a month.** Google labels the month "Sept" in Indian/British English, which the date reader didn't recognise. Both ends of the range then read as "no month", passed the single-month check, and the capture was stored with no month — invisible in the dashboard and rejected by the server. Month names are now matched on their first three letters, and a capture whose month can't be read is refused instead of saved.
 - **Fixed: one bad record blocked a whole upload forever.** Records without a valid month are now left out of uploads instead of failing the batch.
