@@ -21,6 +21,14 @@
   };
   if (sub && SUBTITLES[mode]) sub.textContent = SUBTITLES[mode];
 
+  // Set by the Google web sign-in callback when it sends the user back here.
+  var OAUTH_ERRORS = {
+    google_cancelled: 'Google sign-in was cancelled.',
+    session_expired: 'That sign-in attempt expired. Please try again.',
+    no_user: 'Google did not return an account. Please try again.',
+  };
+  var oauthError = params.get('error');
+
   function show(name) {
     var el = document.querySelector('[data-form="' + name + '"]');
     if (el) el.hidden = false;
@@ -94,6 +102,7 @@
   // ── Wire the active form ────────────────────────────────────────────────────
   if (mode === 'login') {
     show('login');
+    if (oauthError) setBanner(OAUTH_ERRORS[oauthError] || 'Sign-in failed. Please try again.');
     setNav([
       { pre: 'New here?', href: './signup', text: 'Create an account' },
       { href: './forgot-password', text: 'Forgot your password?' },
@@ -108,7 +117,11 @@
       });
       busy(lf, false);
       if (r.ok) {
+        // Back to the web dashboard. Only this fixed value — never a URL from
+        // the query string, which would make this an open redirect.
+        if (params.get('next') === 'app') { location.replace('../app/'); return; }
         succeed('Signed in', 'You can close this tab and open the extension.', [
+          { href: '../app/', text: 'Open your dashboard' },
           { href: './login', text: 'Back to sign in' },
         ]);
       } else if (r.status === 429) {

@@ -96,3 +96,12 @@ button.primary:disabled { background: #334; opacity: 0.6; cursor: not-allowed; }
 .done .big { font-size: 34px; }
 .done h2 { font-size: 18px; color: #fff; margin: 12px 0 8px; }
 .done p { font-size: 13px; color: #8b92a5; }
+
+/* "Continue with Google" — a plain link to ../api/auth/google/web */
+.or { display: flex; align-items: center; gap: 10px; margin: 16px 0; color: #4a5068; font-size: 12px; }
+.or::before, .or::after { content: ''; flex: 1; border-top: 1px solid #2d3140; }
+.google {
+  display: block; text-align: center; text-decoration: none; color: #e8eaed;
+  border: 1px solid #2d3140; border-radius: 10px; padding: 11px; font-weight: 600; font-size: 14px;
+}
+.google:hover { border-color: #4a5068; }
