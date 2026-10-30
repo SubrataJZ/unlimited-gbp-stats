@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.31.5] - 2026-10-31
+- **Fixed: a business's name changed after each fetch, sync or restore.** Captures and sync pulls wrote back the name Google or the server showed. A name you set in the dashboard is now locked and kept through all of them, and uploads send that name. Businesses already named need one rename in the dashboard to lock their name.
+
 ## [1.31.4] - 2026-10-31
 - **Fixed: one business split across two entries on the device.** Captures from a Search page could store data under the Search ID while the Maps entry held the rest. Duplicate entries are now found by their matching months (not by name, since an entry may have been renamed) and merged on browser startup and on every sync.
 - **Fixed: a month captured before it finished was uploaded as complete.** A month far below both neighbouring months (for example July at 54 calls against about 550 either side) is held back from the server until a full capture replaces it.

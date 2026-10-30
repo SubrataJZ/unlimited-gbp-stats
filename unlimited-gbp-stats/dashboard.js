@@ -3977,7 +3977,7 @@
 
     const id = _editingBizId || rawId || `manual_${Date.now()}`;
 
-    await GBPStorage.saveBusiness({ id, name });
+    await GBPStorage.saveBusiness({ id, name, nameLocked: true });
     closeBizModal();
     await loadBusinesses();
     // Select and show the newly added/edited business

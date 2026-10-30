@@ -943,6 +943,12 @@ async function hydrateAllBusinesses(full = false) {
  * a false return keeps the job queued for a later attempt.
  * @param {{kind:string, payload:object}} job
  */
+// The name a business was given by the user wins over the name a scrape carried.
+async function withLockedName(business) {
+  const local = business && (await GBPStorage.getBusiness(String(business.id)));
+  return local?.nameLocked && local.name ? { ...business, name: local.name } : business;
+}
+
 async function sendSyncJob(job) {
   if (job.kind === 'metrics') {
     // Older builds saved some months as undefined; the server 400s the whole
@@ -958,7 +964,7 @@ async function sendSyncJob(job) {
       metrics.push(m);
     }
     if (!metrics.length) return { ok: true, dropped: true };
-    const r = await syncMetricsToBackend(job.payload.business, metrics);
+    const r = await syncMetricsToBackend(await withLockedName(job.payload.business), metrics);
     if (r.ok) return { ok: true };
     // 'disabled' and 'Nothing to sync' are terminal, not transient: retrying
     // cannot change the outcome, so drop rather than retry forever.
@@ -967,7 +973,7 @@ async function sendSyncJob(job) {
   }
   if (job.kind === 'intel') {
     const p = job.payload;
-    const r = await syncReviewToBackend(p.business, p.snapshot, p.reviews, p.isOwn !== false, !!p.partial);
+    const r = await syncReviewToBackend(await withLockedName(p.business), p.snapshot, p.reviews, p.isOwn !== false, !!p.partial);
     if (r.ok) return { ok: true };
     if (r.error === 'Nothing to sync') return { ok: true, dropped: true };
     return { ok: false, error: r.error };

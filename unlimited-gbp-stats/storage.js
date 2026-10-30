@@ -90,9 +90,14 @@ const GBPStorage = (() => {
 
   async function saveBusiness(business) {
     const { store } = await tx('businesses', 'readwrite');
-    if (isJunkBusinessName(business.name)) {
-      const existing = await promisifyRequest(store.get(business.id));
-      if (existing && !isJunkBusinessName(existing.name)) business.name = existing.name;
+    const existing = await promisifyRequest(store.get(business.id));
+    // A name the user set (rename) is locked: fetches, captures, syncs and
+    // restores must not change it. Junk names never replace a real one either.
+    if (existing?.nameLocked && !business.nameLocked) {
+      business.name = existing.name;
+      business.nameLocked = true;
+    } else if (isJunkBusinessName(business.name) && existing && !isJunkBusinessName(existing.name)) {
+      business.name = existing.name;
     }
     business.lastUpdated = Date.now();
     return promisifyRequest(store.put(business));
