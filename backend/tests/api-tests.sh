@@ -321,6 +321,25 @@ test_review_dedupe() {
   fi
 }
 
+test_extension_origin() {
+  print_header "Test 15: Requests from the extension's Origin are not rejected by CORS"
+
+  # Chrome sends Origin: chrome-extension://<id> on every extension request.
+  # curl sends none, which is why CORS rejecting it (a 500) went unnoticed.
+  local origin="Origin: chrome-extension://mijkelehhdboakkcekamkmcpahnppldh"
+  local s
+
+  print_test "POST /api/auth/google/extension from the extension (bad token → 401, not 500)"
+  s=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/google/extension" \
+    -H "$origin" -H "Content-Type: application/json" -d '{"accessToken":"ya29.invalid"}')
+  [ "$s" = "401" ] && print_success "extension origin accepted (401 for the bad token)" || print_error "expected 401, got $s"
+
+  print_test "POST /api/ingest/intel from the extension (bad key → 401, not 500)"
+  s=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/ingest/intel" \
+    -H "$origin" -H "Authorization: Bearer zx_deadbeef" -H "Content-Type: application/json" -d '{"businesses":[]}')
+  [ "$s" = "401" ] && print_success "extension origin accepted (401 for the bad key)" || print_error "expected 401, got $s"
+}
+
 ###############################################################################
 # Main Test Execution
 ###############################################################################
@@ -363,6 +382,7 @@ main() {
   test_auth_pages || true
   test_billing_endpoints || true
   test_review_dedupe || true
+  test_extension_origin || true
 
   print_header "Test Results Summary"
   echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"

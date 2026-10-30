@@ -56,10 +56,16 @@ app.use(
         'http://localhost:3000', // Next.js frontend
         'http://localhost:3001', // Same domain API
         process.env.FRONTEND_URL || 'http://localhost:3000',
-        // Chrome extensions bypass CORS but we validate Extension-ID header
       ];
 
-      if (!origin || allowedOrigins.includes(origin)) {
+      // The extension's requests carry Origin: chrome-extension://<id> — they do
+      // NOT bypass this check, and rejecting them made every extension sign-in
+      // and upload fail with a 500. Any id is allowed so the Web Store id (which
+      // differs from the unpacked one) works too; auth is the bearer token/key,
+      // and an extension with host permission can read responses regardless.
+      const isExtension = !!origin && /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
+
+      if (!origin || isExtension || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));
