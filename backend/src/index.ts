@@ -30,6 +30,10 @@ export const prisma = new PrismaClient({
 
 // Initialize Express app
 const app: Express = express();
+// One proxy hop (nginx) sits in front. Without this every client's IP is the
+// proxy's, so the rate limiters count all users as one visitor and a large
+// sync can be throttled by everyone else's uploads.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 /**
