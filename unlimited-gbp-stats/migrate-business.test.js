@@ -143,5 +143,19 @@ const CID   = '7677681795290275669';    // RecoverEX's Maps CID
   eq(await S.isSuspectMonth('susp', 'calls', 2026, 10, 30), false, 'no neighbours means nothing to compare, so uploaded');
   eq(await S.isSuspectMonth('susp', 'calls', 2026, 7, 300), false, 'a month that is half its neighbours is not held back');
 
+
+  // 9. Names. A name the user set stays through fetches, syncs and restores;
+  //    a rename still changes it; an unlocked name is still updated by a capture.
+  await S.saveBusiness({ id: 'named', name: 'Dhakeswasri', nameLocked: true });
+  await S.saveBusiness({ id: 'named', name: 'Which is the best Chinese restaurant?' });
+  eq((await S.getBusiness('named')).name, 'Dhakeswasri', 'a scraped name does not replace a locked name');
+  await S.saveBusiness({ id: 'named', name: 'Server old name' });
+  eq((await S.getBusiness('named')).name, 'Dhakeswasri', 'a server pull does not replace a locked name');
+  await S.saveBusiness({ id: 'named', name: 'Dhakeswasri Dum Dum', nameLocked: true });
+  eq((await S.getBusiness('named')).name, 'Dhakeswasri Dum Dum', 'a new rename still changes it');
+  await S.saveBusiness({ id: 'plain', name: 'Old scraped' });
+  await S.saveBusiness({ id: 'plain', name: 'New scraped' });
+  eq((await S.getBusiness('plain')).name, 'New scraped', 'an unlocked name is still updated by a capture');
+
   console.log(`ALL TESTS PASSED (${n} assertions)`);
 })().catch(e => { console.error(e.message); process.exit(1); });
