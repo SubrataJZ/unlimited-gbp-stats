@@ -947,8 +947,16 @@ async function sendSyncJob(job) {
   if (job.kind === 'metrics') {
     // Older builds saved some months as undefined; the server 400s the whole
     // batch for one, so drop those rather than block the job forever.
-    const metrics = (job.payload.metrics || [])
-      .filter(m => Number.isInteger(m.month) && m.month >= 1 && m.month <= 12);
+    const metrics = [];
+    for (const m of job.payload.metrics || []) {
+      if (!(Number.isInteger(m.month) && m.month >= 1 && m.month <= 12)) continue;
+      // Hold back a capture taken before its month ended; it uploads once a full capture replaces it.
+      if (await GBPStorage.isSuspectMonth(m.businessId, m.metricType, m.year, m.month, m.total)) {
+        console.warn(`[GBP BG] held back ${m.metricType} ${m.year}-${m.month}: far below neighbouring months`);
+        continue;
+      }
+      metrics.push(m);
+    }
     if (!metrics.length) return { ok: true, dropped: true };
     const r = await syncMetricsToBackend(job.payload.business, metrics);
     if (r.ok) return { ok: true };
@@ -1012,7 +1020,12 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name !== SYNC_ALARM) return;
   syncV2Enabled().then(on => {
     if (!on) return;
-    GBPStorage.open().then(() => drainSyncQueue()).catch(() => {});
+    // Fold duplicate entries of one business first, so uploads go under one id.
+    GBPStorage.open()
+      .then(() => GBPStorage.mergeDuplicateBusinesses())
+      .then(m => m.length && console.log('[GBP BG] merged duplicate businesses:', m))
+      .then(() => drainSyncQueue())
+      .catch(() => {});
   });
 });
 
@@ -2098,6 +2111,8 @@ chrome.runtime.onInstalled.addListener((details) => {
 // On browser startup, silently sync in the background (debounced to once per 5 min)
 chrome.runtime.onStartup.addListener(() => {
   GBPStorage.open()
+    .then(() => GBPStorage.mergeDuplicateBusinesses())
+    .then(m => m.length && console.log('[GBP BG] merged duplicate businesses:', m))
     .then(() => autoSync(false))
     .then(r => {
       if (!r.skipped) console.log('[GBP BG] Startup auto-sync:', r);

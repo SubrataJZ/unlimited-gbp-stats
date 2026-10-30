@@ -630,10 +630,63 @@ const GBPStorage = (() => {
     };
   }
 
+  // A month far below BOTH neighbours is almost always a capture taken before
+  // the month ended (July at 54 calls against ~550 either side reached the
+  // server that way). Such a month stays on the device until it is captured
+  // again in full.
+  async function isSuspectMonth(businessId, metricType, year, month, total) {
+    const prevY = month === 1 ? year - 1 : year, prevM = month === 1 ? 12 : month - 1;
+    const nextY = month === 12 ? year + 1 : year, nextM = month === 12 ? 1 : month + 1;
+    const prev = await getMetric(businessId, metricType, prevY, prevM);
+    const next = await getMetric(businessId, metricType, nextY, nextM);
+    if (!prev || !next || !(prev.total > 0) || !(next.total > 0)) return false;
+    return total < 0.25 * Math.min(prev.total, next.total);
+  }
+
+  // Two entries are the same business when their months agree: same metric,
+  // month and non-zero total. The name can't tell them apart (an old entry may
+  // have been renamed). Thresholds from live data: the same business agrees on
+  // 80-90% of shared months, different businesses on 20-30%.
+  function isSameBusinessRows(a, b) {
+    const key = r => `${r.metricType}|${r.year}-${r.month}`;
+    const ma = new Map(a.filter(r => r.total > 0).map(r => [key(r), r.total]));
+    let overlap = 0, same = 0;
+    for (const r of b) {
+      if (!(r.total > 0) || !ma.has(key(r))) continue;
+      overlap++;
+      if (ma.get(key(r)) === r.total) same++;
+    }
+    return same >= 12 && same / overlap >= 0.6;
+  }
+
+  /** Fold every entry that is the same business as another into it. */
+  async function mergeDuplicateBusinesses() {
+    const businesses = await getAllBusinesses();
+    const rows = new Map();
+    for (const b of businesses) rows.set(b.id, await getAllMetricsForBusiness(b.id));
+    const gone = new Set(), merged = [];
+    for (let i = 0; i < businesses.length; i++) {
+      for (let j = i + 1; j < businesses.length; j++) {
+        const a = businesses[i], b = businesses[j];
+        if (gone.has(a.id) || gone.has(b.id)) continue;
+        const ra = rows.get(a.id), rb = rows.get(b.id);
+        if (!ra.length || !rb.length || !isSameBusinessRows(ra, rb)) continue;
+        // Keep the entry with more months; fold the other into it.
+        const [keep, drop] = ra.length >= rb.length ? [a, b] : [b, a];
+        await migrateBusinessData(drop.id, keep.id);
+        gone.add(drop.id);
+        merged.push({ from: drop.id, into: keep.id });
+      }
+    }
+    return merged;
+  }
+
   return {
     open,
     saveBusiness,
     isJunkBusinessName,
+    mergeDuplicateBusinesses,
+    isSuspectMonth,
     getBusiness,
     getAllBusinesses,
     deleteBusiness,
