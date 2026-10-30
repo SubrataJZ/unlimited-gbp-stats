@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const { buildMetricsPayload } = require('./metrics-payload.js');
+const { buildMetricsPayload, chunkIntelPayload } = require('./metrics-payload.js');
 
 let n = 0;
 function assert(cond, msg) {
@@ -119,6 +119,23 @@ const business = { id: 123456789, name: 'Test Business' };
   assert(!('profileViews' in m), 'unknown extra key profileViews must not be present');
   assert(!('derivedFrom' in m), 'unknown extra key derivedFrom must not be present');
   assert(!('source' in m), 'source must never be sent — A3 does not accept it');
+}
+
+
+// chunkIntelPayload — the server rejects more than 1000 reviews per business
+// per request; DC Chinese restaurant had 3100 stored, so its upload 400'd forever.
+{
+  const reviews = Array.from({ length: 2500 }, (_, i) => ({ externalReviewId: 'r' + i, rating: 5 }));
+  const payload = { businesses: [{ name: 'DC', googlePlaceId: '1', isOwn: true, snapshot: { totalReviews: 2500 }, reviews }] };
+  const bodies = chunkIntelPayload(payload, 1000);
+  eq(bodies.length, 3, '2500 reviews → 3 requests');
+  eq(bodies.map(x => x.businesses[0].reviews.length).join(','), '1000,1000,500', 'no request over 1000');
+  eq(bodies.reduce((a, x) => a + x.businesses[0].reviews.length, 0), 2500, 'every review is sent once');
+  assert(bodies[0].businesses[0].snapshot, 'the first request carries the snapshot');
+  assert(!('snapshot' in bodies[1].businesses[0]) && !('snapshot' in bodies[2].businesses[0]), 'later ones do not');
+  eq(bodies[2].businesses[0].googlePlaceId, '1', 'every request names the business');
+  const noReviews = { businesses: [{ name: 'X', googlePlaceId: '2', snapshot: { totalReviews: 3 } }] };
+  assert(chunkIntelPayload(noReviews, 1000)[0] === noReviews, 'a snapshot-only payload is sent as is');
 }
 
 console.log('ALL TESTS PASSED (' + n + ' assertions)');

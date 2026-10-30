@@ -222,9 +222,11 @@
       const months = {Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12};
       const matches = [...label.textContent.matchAll(/([A-Z][a-z]+)\s+(\d{4})/g)];
       if (matches.length >= 1) {
+        // First 3 letters: Google writes "Sept" (en-IN/en-GB), "June", "September"…
+        const mon = (name) => months[name.slice(0, 3)];
         return {
-          startMonth: months[matches[0][1]], startYear: parseInt(matches[0][2]),
-          endMonth:   months[matches[matches.length-1][1]], endYear: parseInt(matches[matches.length-1][2]),
+          startMonth: mon(matches[0][1]), startYear: parseInt(matches[0][2]),
+          endMonth:   mon(matches[matches.length-1][1]), endYear: parseInt(matches[matches.length-1][2]),
         };
       }
     }
@@ -540,6 +542,10 @@
       return { success: false, reason: `Missing: ${!d.businessId?'businessId ':''} ${!d.metricType?'metricType ':''} ${!d.dateRange?'dateRange ':''} ${!d.daily.length?'daily data':''}`.trim(), data: d };
 
     const { startYear, startMonth, endYear, endMonth } = d.dateRange;
+    // An unreadable month is undefined on both ends, which would pass the
+    // single-month check below and save a record with no month.
+    if (!startMonth || !endMonth)
+      return { success: false, reason: "Couldn't read the month from Google's date label", data: d };
     if (startYear !== endYear || startMonth !== endMonth)
       return { success: false, reason: 'Multi-month view — select a single month', data: d };
 
