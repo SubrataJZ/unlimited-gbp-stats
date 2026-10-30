@@ -439,6 +439,8 @@ function buildIntelPayload(business, snapshot, reviews, isOwn = true, partial = 
  * Push a review snapshot + individual reviews to the Postgres backend's
  * /api/ingest/intel. Never throws — local storage stays source of truth.
  */
+const INTEL_REVIEW_CHUNK = 1000; // backend cap per business per request
+
 async function syncReviewToBackend(business, snapshot, reviews, isOwn = true, partial = false) {
   const key = await getBackendKey();
   if (!key) return { ok: false, error: await backendNotConnected('review sync is paused') };
@@ -447,22 +449,29 @@ async function syncReviewToBackend(business, snapshot, reviews, isOwn = true, pa
   const b = payload.businesses[0];
   if (!b.snapshot && !(b.reviews && b.reviews.length)) return { ok: false, error: 'Nothing to sync' };
 
+  // Over 1000 reviews goes up in several requests. Re-sending a chunk after a
+  // partial failure is safe: the server upserts by review id.
+  const bodies = GBPMetricsPayload.chunkIntelPayload(payload, INTEL_REVIEW_CHUNK);
+
   try {
-    const resp = await fetch(`${BACKEND_URL}/api/ingest/intel`, {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${key}`,
-        'x-extension-id': chrome.runtime.id,
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => resp.statusText);
-      console.warn(`[GBP BG] Intel sync HTTP ${resp.status}:`, text);
-      return { ok: false, error: `HTTP ${resp.status}` };
+    let data;
+    for (const body of bodies) {
+      const resp = await fetch(`${BACKEND_URL}/api/ingest/intel`, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${key}`,
+          'x-extension-id': chrome.runtime.id,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => resp.statusText);
+        console.warn(`[GBP BG] Intel sync HTTP ${resp.status}:`, text);
+        return { ok: false, error: `HTTP ${resp.status}` };
+      }
+      data = await resp.json();
     }
-    const data = await resp.json();
     console.log('[GBP BG] Reviews synced to backend:', data.summary);
     return { ok: true, summary: data.summary };
   } catch (err) {
@@ -936,7 +945,12 @@ async function hydrateAllBusinesses(full = false) {
  */
 async function sendSyncJob(job) {
   if (job.kind === 'metrics') {
-    const r = await syncMetricsToBackend(job.payload.business, job.payload.metrics);
+    // Older builds saved some months as undefined; the server 400s the whole
+    // batch for one, so drop those rather than block the job forever.
+    const metrics = (job.payload.metrics || [])
+      .filter(m => Number.isInteger(m.month) && m.month >= 1 && m.month <= 12);
+    if (!metrics.length) return { ok: true, dropped: true };
+    const r = await syncMetricsToBackend(job.payload.business, metrics);
     if (r.ok) return { ok: true };
     // 'disabled' and 'Nothing to sync' are terminal, not transient: retrying
     // cannot change the outcome, so drop rather than retry forever.
@@ -1645,6 +1659,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // ── Save a single metric record (called from content script iframe) ────────
   if (msg.action === 'saveMetricData') {
     const m = msg.metric;
+    // A record without a real month is unusable and the server rejects it.
+    if (!Number.isInteger(m?.month) || m.month < 1 || m.month > 12) {
+      sendResponse({ success: false, reason: `Invalid month: ${m?.month}` });
+      return true;
+    }
 
     GBPStorage.open()
       // Fold any records stored under the GBP local id into the canonical CID

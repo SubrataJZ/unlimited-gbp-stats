@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.31.3] - 2026-10-30
+- **Fixed: September data was saved without a month.** Google labels the month "Sept" in Indian/British English, which the date reader didn't recognise. Both ends of the range then read as "no month", passed the single-month check, and the capture was stored with no month — invisible in the dashboard and rejected by the server. Month names are now matched on their first three letters, and a capture whose month can't be read is refused instead of saved.
+- **Fixed: one bad record blocked a whole upload forever.** Records without a valid month are now left out of uploads instead of failing the batch.
+- **Fixed: businesses with more than 1,000 stored reviews never uploaded them.** The server takes 1,000 per request; larger sets now go up in several requests.
+
 ## [1.31.2] - 2026-10-30
 - **Fixed: businesses showed up in the dashboard under the wrong name** — a "People also ask" question ("What is the largest Chinese restaurant?"), a rating ("5", "5.0(29)") or a section title ("Google review summary"). On Google Search pages the name was guessed from page headings, and every capture overwrote the stored name, junk included. Those headings are now skipped, and a junk name never replaces a real one. Names already wrong are corrected by the next capture of that business, or fix them now with the ✏️ rename button.
 

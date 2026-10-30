@@ -91,8 +91,28 @@
     return { businesses: [b] };
   }
 
+  /**
+   * Split a one-business /api/ingest/intel payload into request bodies of at
+   * most `size` reviews — the server rejects more than 1000 per business per
+   * request. Only the first body carries the snapshot. A payload with no
+   * reviews comes back unchanged as the single body.
+   */
+  function chunkIntelPayload(payload, size) {
+    var b = payload.businesses[0];
+    var reviews = b.reviews || [];
+    if (!reviews.length) return [payload];
+    var bodies = [];
+    for (var i = 0; i < reviews.length; i += size) {
+      var part = Object.assign({}, b, { reviews: reviews.slice(i, i + size) });
+      if (i) delete part.snapshot;
+      bodies.push({ businesses: [part] });
+    }
+    return bodies;
+  }
+
   var GBPMetricsPayload = {
     buildMetricsPayload: buildMetricsPayload,
+    chunkIntelPayload: chunkIntelPayload,
     buildMetricEntry: buildMetricEntry,
     VALID_METRIC_TYPES: VALID_METRIC_TYPES,
   };
