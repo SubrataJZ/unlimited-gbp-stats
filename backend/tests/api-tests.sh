@@ -340,6 +340,47 @@ test_extension_origin() {
   [ "$s" = "401" ] && print_success "extension origin accepted (401 for the bad key)" || print_error "expected 401, got $s"
 }
 
+test_web_dashboard() {
+  print_header "Test 16: Web dashboard pages and data endpoint"
+  local s ; local ct ; local token ; local body
+
+  print_test "GET /app (no trailing slash → redirect to app/)"
+  s=$(curl -s -o /dev/null -w "%{http_code} %{redirect_url}" "$API_URL/app")
+  case "$s" in 301*app/) print_success "redirects to app/" ;; *) print_error "expected 301 → app/, got $s" ;; esac
+
+  print_test "GET /app/ serves the dashboard page"
+  ct=$(curl -s -o /dev/null -w "%{http_code} %{content_type}" "$API_URL/app/")
+  case "$ct" in 200*text/html*) print_success "dashboard HTML served" ;; *) print_error "expected 200 text/html, got $ct" ;; esac
+
+  for f in app.js styles.css manifest.webmanifest icon.svg; do
+    s=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/app/$f")
+    [ "$s" = "200" ] && print_success "/app/$f served" || print_error "/app/$f expected 200, got $s"
+  done
+
+  print_test "GET /api/app/overview without a token → 401"
+  s=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/app/overview")
+  [ "$s" = "401" ] && print_success "requires sign-in (401)" || print_error "expected 401, got $s"
+
+  print_test "GET /api/app/overview signed in → 200 with a businesses list"
+  token=$(curl -s -X POST "$API_URL/api/auth/register" -H "Content-Type: application/json" \
+    -d "{\"email\":\"ci-web-$(date +%s)-$RANDOM@example.test\",\"password\":\"correct-horse-9\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  body=$(curl -s "$API_URL/api/app/overview" -H "Authorization: Bearer $token")
+  echo "$body" | grep -q '"businesses":\[' && print_success "overview returned businesses" || print_error "unexpected overview: $body"
+
+  print_test "GET /api/auth/google/web → Google, minimal scope, with a state cookie"
+  local hdr
+  hdr=$(curl -s -o /dev/null -D - "$API_URL/api/auth/google/web")
+  if echo "$hdr" | grep -qi '^location: https://accounts.google.com/'      && echo "$hdr" | grep -qi 'scope=openid+email+profile&'      && echo "$hdr" | grep -qi 'state=[0-9a-f]\{32\}'      && echo "$hdr" | grep -qi '^set-cookie: gbp_oauth_state='; then
+    print_success "redirects to Google with openid/email/profile and a state cookie"
+  else
+    print_error "unexpected Google redirect: $(echo "$hdr" | grep -i '^location\|^set-cookie')"
+  fi
+
+  print_test "GET /api/auth/google/web/callback with a forged state → back to login"
+  s=$(curl -s -o /dev/null -w "%{http_code} %{redirect_url}" "$API_URL/api/auth/google/web/callback?code=x&state=forged")
+  case "$s" in 302*auth/login*error=session_expired*) print_success "forged state rejected" ;; *) print_error "expected redirect to login with error, got $s" ;; esac
+}
+
 ###############################################################################
 # Main Test Execution
 ###############################################################################
@@ -383,6 +424,7 @@ main() {
   test_billing_endpoints || true
   test_review_dedupe || true
   test_extension_origin || true
+  test_web_dashboard || true
 
   print_header "Test Results Summary"
   echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"

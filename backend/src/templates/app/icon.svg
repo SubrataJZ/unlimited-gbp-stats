@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="16" fill="#1a1a2e"/>
+  <polyline points="20,90 40,70 55,80 75,40 95,55 110,30" fill="none" stroke="#8ab4f8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="75" cy="40" r="5" fill="#8ab4f8"/>
+  <circle cx="110" cy="30" r="5" fill="#8ab4f8"/>
+  <text x="64" y="118" text-anchor="middle" font-family="Arial" font-size="20" font-weight="bold" fill="#8ab4f8">GBP</text>
+</svg>

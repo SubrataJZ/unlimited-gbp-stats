@@ -18,6 +18,7 @@ import aiRoutes from './routes/ai.routes';
 import { analyticsRouter, reportsRouter } from './routes/analytics.routes';
 import authPagesRoutes from './routes/auth-pages.routes';
 import billingRoutes from './routes/billing.routes';
+import { appApiRouter, appPagesRouter } from './routes/app.routes';
 import { errorHandler } from './middlewares/error.middleware';
 
 // Load environment variables
@@ -163,6 +164,10 @@ app.use('/api/billing', billingRoutes);
 
 // Server-rendered auth pages (login / signup / forgot / reset)
 app.use('/auth', authPagesRoutes);
+
+// Web dashboard (read-only, any browser / phone) and its data endpoint
+app.use('/api/app', appApiRouter);
+app.use('/app', appPagesRouter);
 
 /**
  * =========================================

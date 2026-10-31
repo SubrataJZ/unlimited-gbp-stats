@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1117">
+  <title>Dashboard — Unlimited GBP Stats</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">📊 <span>Unlimited GBP Stats</span></div>
+    <button id="signOut" class="ghost" type="button" hidden>Sign out</button>
+  </header>
+
+  <main>
+    <p id="status" class="status">Loading your dashboard…</p>
+
+    <section id="dash" hidden>
+      <label class="sr" for="biz">Business</label>
+      <select id="biz"></select>
+
+      <nav id="metrics" class="tabs" aria-label="Metric"></nav>
+      <nav id="ranges" class="tabs small" aria-label="Period"></nav>
+
+      <div id="perf">
+        <div class="kpis">
+          <div class="kpi"><div class="label" id="kpiLabel">This period</div><div class="value" id="kpiNow">–</div></div>
+          <div class="kpi"><div class="label">Same months last year</div><div class="value" id="kpiPrev">–</div></div>
+          <div class="kpi"><div class="label">Change</div><div class="value" id="kpiPct">–</div></div>
+        </div>
+
+        <div class="card">
+          <div class="legend"><span class="sw now"></span><span id="legendNow">This period</span><span class="sw prev"></span>Last year</div>
+          <svg id="chart" viewBox="0 0 640 240" role="img" aria-label="Monthly trend"></svg>
+          <p class="note">Hollow dots are estimates calculated from Google's year-over-year %.</p>
+        </div>
+
+        <div class="card">
+          <table id="months">
+            <thead><tr><th>Month</th><th>Value</th><th>Last year</th><th>Change</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <p id="noPerf" class="status" hidden>No performance data captured for this business yet.</p>
+
+      <div class="card" id="reviewsCard">
+        <h2>Reviews</h2>
+        <p class="rating"><span id="rating">–</span> <span id="ratingCount" class="muted"></span></p>
+        <ul id="reviews"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

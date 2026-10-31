@@ -167,6 +167,17 @@ class GoogleService {
    * @param accessToken Google OAuth access token from the extension
    * @returns The upserted user record
    */
+  /**
+   * Web dashboard sign-in: exchange the code from /api/auth/google/web, then
+   * reuse the extension path (fetch profile, upsert user). Asks only for
+   * openid/email/profile, so — unlike handleOAuthCallback — it does not touch
+   * the Business Profile API.
+   */
+  async handleWebLogin(code: string, redirectUri: string) {
+    const tokens = await this.exchangeAuthCodeForTokens(code, redirectUri);
+    return this.handleExtensionAccessToken(tokens.access_token);
+  }
+
   async handleExtensionAccessToken(accessToken: string) {
     const googleUser = await this.fetchGoogleUserInfo(accessToken);
     logger.info(`Extension login for: ${googleUser.email}`);
@@ -185,7 +196,8 @@ class GoogleService {
    * @returns Object containing access_token and refresh_token
    */
   private async exchangeAuthCodeForTokens(
-    authCode: string
+    authCode: string,
+    redirectUri: string | undefined = process.env.GOOGLE_REDIRECT_URI
   ): Promise<{ access_token: string; refresh_token?: string }> {
     try {
       const response = await axios.post(
@@ -195,7 +207,7 @@ class GoogleService {
           client_secret: process.env.GOOGLE_CLIENT_SECRET,
           code: authCode,
           grant_type: 'authorization_code',
-          redirect_uri: process.env.GOOGLE_REDIRECT_URI,
+          redirect_uri: redirectUri,
         }
       );
 

@@ -24,6 +24,30 @@ https://gbp.zixify.zixai.in/backend/health            -> 200 {"status":"ok",...}
 https://gbp.zixify.zixai.in/backend/api/ingest/intel  -> 401 (needs zx_ key)
 ```
 
+### Cookies and redirects behind the prefix (added 2026-10-30)
+
+The `location ^~ /backend/` block in
+`/www/server/panel/vhost/nginx/proxy/gbp.zixify.zixai.in/backend-api.conf`
+also carries:
+
+```nginx
+proxy_cookie_path  /api/ /backend/api/;
+proxy_set_header   X-Forwarded-Prefix /backend;
+```
+
+- **`proxy_cookie_path`** — the backend sets the `gbp_refresh` and
+  `gbp_oauth_state` cookies with `Path=/api/auth`, but the browser reaches that
+  path as `/backend/api/auth`. Without the rewrite the browser stores the cookie
+  under a path it never requests, so web sign-in (login page, web dashboard)
+  cannot stay signed in.
+- **`X-Forwarded-Prefix`** — lets the backend build public URLs (Google web
+  sign-in redirect URI, return to `/backend/app/`) without hard-coding the prefix.
+
+Web dashboard: `https://gbp.zixify.zixai.in/backend/app/`. Its Google sign-in
+callback, `https://gbp.zixify.zixai.in/backend/api/auth/google/web/callback`,
+must be listed as an authorised redirect URI on the backend's OAuth client
+(`GOOGLE_CLIENT_ID` in the VPS `.env`).
+
 The existing SQLite sync server keeps serving `https://gbp.zixify.zixai.in/`
 (`/health`, `/api/sync`, `/api/auth/*`) on `:3005` — untouched.
 
@@ -51,6 +75,9 @@ location ^~ /backend/ {
     proxy_set_header   X-Real-IP $remote_addr;
     proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $scheme;
+    # Backend sets cookies for /api/...; the browser sees them under /backend/api/...
+    proxy_cookie_path  /api/ /backend/api/;
+    proxy_set_header   X-Forwarded-Prefix /backend;
 }
 ```
 

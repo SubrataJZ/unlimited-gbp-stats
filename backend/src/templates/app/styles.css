@@ -1,0 +1,73 @@
+/* Web dashboard — served by app.routes.ts. Same palette as the auth pages. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0f1117; color: #e8eaed; line-height: 1.5;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+[hidden] { display: none !important; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid #2d3140; background: #161820;
+  position: sticky; top: 0; z-index: 2;
+}
+.brand { font-weight: 700; font-size: 16px; }
+main { max-width: 860px; margin: 0 auto; padding: 16px; }
+
+button, select { font: inherit; color: inherit; }
+.ghost { background: none; border: 1px solid #2d3140; border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.ghost:hover { border-color: #4a5068; }
+
+select {
+  width: 100%; background: #1e2028; border: 1px solid #2d3140; border-radius: 10px;
+  padding: 10px 12px; font-size: 15px; margin-bottom: 12px;
+}
+
+.tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 10px; scrollbar-width: none; }
+.tabs button {
+  flex: 0 0 auto; background: #1e2028; border: 1px solid #2d3140; border-radius: 999px;
+  padding: 7px 14px; font-size: 14px; cursor: pointer; white-space: nowrap;
+}
+.tabs button[aria-pressed="true"] { background: #2d6df6; border-color: #2d6df6; color: #fff; }
+.tabs.small button { padding: 5px 12px; font-size: 13px; }
+
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.kpi { background: #1e2028; border: 1px solid #2d3140; border-radius: 12px; padding: 12px; }
+.kpi .label { font-size: 12px; color: #8b92a5; }
+.kpi .value { font-size: 20px; font-weight: 700; margin-top: 2px; }
+.up { color: #4ade80; } .down { color: #f87171; } .muted { color: #8b92a5; }
+
+.card { background: #1e2028; border: 1px solid #2d3140; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+.card h2 { font-size: 16px; margin-bottom: 6px; }
+.legend { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8b92a5; margin-bottom: 6px; }
+.sw { display: inline-block; width: 16px; height: 3px; border-radius: 2px; margin-left: 8px; }
+.sw.now { background: #4f8ef7; margin-left: 0; }
+.sw.prev { background: none; border-top: 2px dashed #8b92a5; height: 0; }
+#chart { width: 100%; height: auto; display: block; }
+#chart text { fill: #8b92a5; font-size: 11px; }
+.note { font-size: 11px; color: #6b7280; margin-top: 6px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: right; font-weight: 600; color: #8b92a5; font-size: 12px; padding: 6px 4px; }
+td { text-align: right; padding: 7px 4px; border-top: 1px solid #262a36; }
+th:first-child, td:first-child { text-align: left; }
+.est { color: #8b92a5; font-style: italic; }
+
+.rating { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+.rating .muted { font-size: 13px; font-weight: 400; }
+#reviews { list-style: none; }
+#reviews li { border-top: 1px solid #262a36; padding: 10px 0; font-size: 14px; }
+#reviews .meta { font-size: 12px; color: #8b92a5; margin-bottom: 2px; }
+#reviews .stars { color: #fbbf24; margin-right: 6px; }
+.tag { font-size: 11px; border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
+.tag.ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+.tag.no { background: rgba(220, 53, 53, 0.15); color: #f87171; }
+
+.status { color: #8b92a5; text-align: center; padding: 32px 8px; }
+
+@media (max-width: 480px) {
+  .kpi { padding: 10px; } .kpi .value { font-size: 17px; }
+  th:nth-child(3), td:nth-child(3) { display: none; } /* keep Month · Value · Change */
+}

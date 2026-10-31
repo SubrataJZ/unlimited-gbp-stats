@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import googleService from '../services/google.service';
 import { asyncHandler } from '../middlewares/error.middleware';
@@ -68,6 +69,68 @@ router.get('/google', (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to initialize Google OAuth' });
   }
 });
+
+/**
+ * Web dashboard Google sign-in (GET /api/auth/google/web → /web/callback).
+ *
+ * Separate from /google above, which asks for business.manage (an unverified,
+ * sensitive scope) and redirects to a FRONTEND_URL with the token in the URL.
+ * This one asks only for openid/email/profile, sets the refresh cookie and
+ * returns to the dashboard. A random `state` (cookie-bound) blocks login CSRF.
+ */
+const OAUTH_STATE_COOKIE = 'gbp_oauth_state';
+
+// Base URL as the browser sees it. nginx strips /backend and passes it back as
+// X-Forwarded-Prefix, so redirects survive the proxy (locally the prefix is '').
+function publicBase(req: Request): string {
+  const proto = (req.get('x-forwarded-proto') || req.protocol).split(',')[0].trim();
+  return `${proto}://${req.get('host')}${req.get('x-forwarded-prefix') || ''}`;
+}
+
+router.get('/google/web', (req: Request, res: Response) => {
+  const state = crypto.randomBytes(16).toString('hex');
+  res.cookie(OAUTH_STATE_COOKIE, state, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax', // must survive the top-level redirect back from Google
+    maxAge: 10 * 60 * 1000,
+    path: '/api/auth',
+  });
+  const params = new URLSearchParams({
+    client_id: process.env.GOOGLE_CLIENT_ID || '',
+    redirect_uri: `${publicBase(req)}/api/auth/google/web/callback`,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    prompt: 'select_account',
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+});
+
+router.get(
+  '/google/web/callback',
+  asyncHandler(async (req: Request, res: Response) => {
+    const base = publicBase(req);
+    const fail = (why: string) => res.redirect(`${base}/auth/login?next=app&error=${encodeURIComponent(why)}`);
+    const { code, state, error } = req.query;
+    const expected = req.cookies?.[OAUTH_STATE_COOKIE];
+    res.clearCookie(OAUTH_STATE_COOKIE, { path: '/api/auth' });
+
+    if (error) return fail('google_cancelled');
+    if (typeof code !== 'string' || typeof state !== 'string' || !expected || state !== expected) {
+      return fail('session_expired');
+    }
+
+    const user = await googleService.handleWebLogin(code, `${base}/api/auth/google/web/callback`);
+    if (!user) return fail('no_user');
+
+    const { refreshToken } = await issueTokenPair(user.id, user.email);
+    res.cookie('gbp_refresh', refreshToken, REFRESH_COOKIE_OPTIONS);
+    await auditEvents.login(req, user.id, 'oauth');
+    logger.info(`User ${user.id} signed in to the web dashboard via Google`);
+    res.redirect(`${base}/app/`);
+  })
+);
 
 /**
  * GET /api/auth/google/callback
