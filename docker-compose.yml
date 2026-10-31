@@ -50,7 +50,7 @@ services:
 
       # Session & Security
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
-      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-12345}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set}
 
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-debug}
