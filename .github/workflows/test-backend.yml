@@ -16,6 +16,7 @@ jobs:
     # never used in prod, where .env supplies a real 64-char secret.
     env:
       JWT_SECRET: ci-dummy-secret-not-used-in-prod
+      SESSION_SECRET: ci-dummy-session-secret-not-used-in-prod
 
     steps:
       - uses: actions/checkout@v4

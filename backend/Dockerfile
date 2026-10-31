@@ -26,6 +26,9 @@ RUN chmod +x ./entrypoint.sh
 # Generate Prisma Client
 RUN npx prisma generate
 
+# Compile to dist/ (production runs this; NODE_ENV=development still uses ts-node-dev)
+RUN npm run build
+
 # Expose port
 EXPOSE 3001
 

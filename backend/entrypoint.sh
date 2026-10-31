@@ -162,18 +162,12 @@ echo "Server should be listening on 0.0.0.0:${PORT}"
 echo "Health check: curl http://localhost:${PORT}/health"
 echo ""
 
-# Verify npm can be found
-if ! command -v npm &> /dev/null; then
-  echo "✗ npm not found in PATH"
-  echo "Available PATH: $PATH"
-  exit 1
+# Local dev (compose default NODE_ENV=development) hot-reloads from the mounted
+# source. Everything else - production and CI - runs the compiled build, so CI
+# tests what actually ships.
+if [ "$NODE_ENV" = "development" ]; then
+  echo "Executing: npm run dev"
+  exec npm run dev
 fi
-
-# Verify npm run dev command exists
-if ! npm run 2>&1 | grep -q "dev"; then
-  echo "⚠ 'dev' script not found in package.json"
-fi
-
-# Start the server
-echo "Executing: npm run dev"
-exec npm run dev
+echo "Executing: node dist/index.js"
+exec node dist/index.js
