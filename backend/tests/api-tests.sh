@@ -340,6 +340,26 @@ test_extension_origin() {
   [ "$s" = "401" ] && print_success "extension origin accepted (401 for the bad key)" || print_error "expected 401, got $s"
 }
 
+test_browser_origin() {
+  print_header "Test 17: A browser's own-origin and foreign-origin requests"
+
+  # A browser POST from a page this server serves carries Origin: <this server>.
+  # curl sends none, which is how a 500 here went unnoticed (login page and the
+  # web dashboard's session refresh never worked in a real browser).
+  local s
+  print_test "POST /api/auth/login with the server's own Origin (→ 401, not 500)"
+  s=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/login"     -H "Origin: $API_URL" -H "Content-Type: application/json" -d '{"email":"nobody@example.test","password":"wrongwrong"}')
+  [ "$s" = "401" ] && print_success "own origin accepted (401 for the bad login)" || print_error "expected 401, got $s"
+
+  print_test "POST /api/auth/refresh with the server's own Origin (→ 401, not 500)"
+  s=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/refresh" -H "Origin: $API_URL")
+  [ "$s" = "401" ] && print_success "own origin accepted on refresh (401, no cookie)" || print_error "expected 401, got $s"
+
+  print_test "POST /api/auth/login from a foreign site is still rejected"
+  s=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/auth/login"     -H "Origin: https://evil.example" -H "Content-Type: application/json" -d '{"email":"nobody@example.test","password":"wrongwrong"}')
+  case "$s" in 401|200) print_error "a foreign origin reached the login check ($s)" ;; *) print_success "foreign origin rejected ($s)" ;; esac
+}
+
 test_web_dashboard() {
   print_header "Test 16: Web dashboard pages and data endpoint"
   local s ; local ct ; local token ; local body
@@ -425,6 +445,7 @@ main() {
   test_review_dedupe || true
   test_extension_origin || true
   test_web_dashboard || true
+  test_browser_origin || true
 
   print_header "Test Results Summary"
   echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"

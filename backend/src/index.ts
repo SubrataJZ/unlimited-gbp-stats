@@ -20,6 +20,7 @@ import authPagesRoutes from './routes/auth-pages.routes';
 import billingRoutes from './routes/billing.routes';
 import { appApiRouter, appPagesRouter } from './routes/app.routes';
 import { errorHandler } from './middlewares/error.middleware';
+import { isAllowedOrigin } from './utils/cors-origin';
 
 // Load environment variables
 dotenv.config();
@@ -53,32 +54,21 @@ app.use(helmet());
  * - Credentials are allowed for OAuth flows
  */
 app.use(
-  cors({
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      // In development, allow localhost
-      // In production, restrict to specific domains
-      const allowedOrigins = [
-        'http://localhost:3000', // Next.js frontend
-        'http://localhost:3001', // Same domain API
-        process.env.FRONTEND_URL || 'http://localhost:3000',
-      ];
-
-      // The extension's requests carry Origin: chrome-extension://<id> — they do
-      // NOT bypass this check, and rejecting them made every extension sign-in
-      // and upload fail with a 500. Any id is allowed so the Web Store id (which
-      // differs from the unpacked one) works too; auth is the bearer token/key,
-      // and an extension with host permission can read responses regardless.
-      const isExtension = !!origin && /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
-
-      if (!origin || isExtension || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Extension-ID'],
+  cors((req, callback) => {
+    // Behind nginx, trust proxy makes req.protocol follow X-Forwarded-Proto.
+    const selfOrigin = `${req.protocol}://${req.get('host')}`;
+    const extraOrigins = [
+      'http://localhost:3000', // Next.js frontend
+      'http://localhost:3001', // Same domain API
+      process.env.FRONTEND_URL || 'http://localhost:3000',
+    ];
+    const allowed = isAllowedOrigin(req.headers.origin, selfOrigin, extraOrigins);
+    callback(allowed ? null : new Error('Not allowed by CORS'), {
+      origin: allowed,
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Extension-ID'],
+    });
   })
 );
 
