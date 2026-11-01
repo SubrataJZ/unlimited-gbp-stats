@@ -301,6 +301,8 @@ model TrackedBusiness {
 
   @@unique([orgId, googlePlaceId])
   @@index([orgId])
+  events        BusinessEvent[]
+
   @@map("tracked_businesses")
 }
 
@@ -529,4 +531,20 @@ model AiUsage {
 
   @@index([userId])
   @@map("ai_usage")
+}
+
+model BusinessEvent {
+  id                String           @id @default(cuid())
+  trackedBusinessId String           @map("tracked_business_id")
+  trackedBusiness   TrackedBusiness  @relation(fields: [trackedBusinessId], references: [id], onDelete: Cascade)
+  eventDate         DateTime         @map("event_date") @db.Date
+  title             String           @db.VarChar(120)
+  description       String?          @db.VarChar(2000)
+  emoji             String           @db.VarChar(16)
+  createdById       String?          @map("created_by_id")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  @@index([trackedBusinessId, eventDate])
+  @@map("business_events")
 }
