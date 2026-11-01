@@ -34,6 +34,10 @@
     reviewSort: 'newest',         // 'newest' | 'oldest' | 'highest' | 'lowest'
     reviewListLimit: 50,
     conceptData: null,            // last GET /api/ai/concepts payload; cleared on business switch
+    notes: [],               // notes for the selected business and range
+    notesOn: true,
+    notesTitles: false,
+    notesDismissed: null,    // 'YYYYMM' of a spike prompt the user dismissed
     metricLoadSeq: 0,              // bumped on every loadMetricData() call; see there for why
     compareLoadSeq: 0,             // bumped on every loadComparePeriodData() call; see there for why
   };
@@ -233,6 +237,8 @@
     document.getElementById('businessSelect').addEventListener('change', (e) => {
       selectBusiness(e.target.value);
     });
+
+    wireNotesUi();
 
     // Metric tabs
     document.getElementById('metricTabs').addEventListener('click', (e) => {
@@ -2162,6 +2168,8 @@
     module.exports.buildExportSpec = buildExportSpec;
     module.exports.percentDelta = percentDelta;
     module.exports.buildReportHtml = buildReportHtml;
+    module.exports.notesToMarkers = notesToMarkers;
+    module.exports.spikeMonth = spikeMonth;
     module.exports.state = state;
     module.exports.loadComparePeriodData = loadComparePeriodData;
     module.exports.showCompareLoading = showCompareLoading;
@@ -2280,6 +2288,160 @@
     }
   }
 
+  // ── Notes: a date, a title, a description and an emoji on a business ──────
+  // Shown on the Performance chart. Agency and Pro accounts can add them; the
+  // server enforces that, so this only decides what to offer.
+
+  function loadNotePrefs() {
+    try {
+      state.notesOn = localStorage.getItem('gbpNotesOn') !== '0';
+      state.notesTitles = localStorage.getItem('gbpNotesTitles') === '1';
+    } catch (e) { /* private window: keep the defaults */ }
+  }
+  function saveNotePrefs() {
+    try {
+      localStorage.setItem('gbpNotesOn', state.notesOn ? '1' : '0');
+      localStorage.setItem('gbpNotesTitles', state.notesTitles ? '1' : '0');
+    } catch (e) { /* ignore */ }
+  }
+
+  // The plan is checked once per session (undefined = not checked yet).
+  async function loadNotesPlan() {
+    if (state.notesPlan !== undefined) return;
+    const r = await backendApiFetch('/billing/status');
+    state.notesPlan = r && r.ok ? (await r.json()).plan : null;
+  }
+  function canWriteNotes() {
+    return state.notesPlan === 'PRO' || state.notesPlan === 'AGENCY';
+  }
+
+  async function loadNotes() {
+    state.notes = [];
+    if (state.businessId && state.startYear) {
+      const from = formatDateISO(state.startYear, state.startMonth, 1);
+      const to = formatDateISO(state.endYear, state.endMonth, new Date(state.endYear, state.endMonth, 0).getDate());
+      try {
+        await loadNotesPlan();
+        const r = await backendApiFetch(`/events/businesses/${encodeURIComponent(state.businessId)}?from=${from}&to=${to}`);
+        if (r && r.ok) state.notes = (await r.json()).events || [];
+      } catch (e) { console.warn('Notes unavailable:', e); }
+    }
+    const add = document.getElementById('notesAdd');
+    if (add) add.hidden = !canWriteNotes();
+  }
+
+  function noteModal(html) {
+    closeNoteModal();
+    const wrap = document.createElement('div');
+    wrap.className = 'note-modal-backdrop';
+    wrap.id = 'noteModal';
+    wrap.innerHTML = `<div class="note-modal">${html}</div>`;
+    wrap.addEventListener('click', e => { if (e.target === wrap) closeNoteModal(); });
+    document.body.appendChild(wrap);
+    return wrap.querySelector('.note-modal');
+  }
+  function closeNoteModal() { document.getElementById('noteModal')?.remove(); }
+
+  function openNoteDetail(id) {
+    const note = state.notes.find(n => n.id === id);
+    if (!note) return;
+    const box = noteModal(`
+      <h3>${escHtml(note.emoji)} ${escHtml(note.title)}</h3>
+      <div style="color:#9aa0a6;font-size:12px">${escHtml(String(note.eventDate).slice(0, 10))}</div>
+      <div class="note-body">${note.description ? escHtml(note.description) : '<em>No description.</em>'}</div>
+      <div class="note-actions">
+        ${canWriteNotes() ? '<button type="button" data-act="delete">Delete</button><button type="button" class="primary" data-act="edit">Edit</button>' : ''}
+        <button type="button" data-act="close">Close</button>
+      </div>`);
+    box.querySelector('[data-act="close"]').onclick = closeNoteModal;
+    if (canWriteNotes()) {
+      box.querySelector('[data-act="edit"]').onclick = () => openNoteForm(note);
+      box.querySelector('[data-act="delete"]').onclick = () => deleteNote(note.id);
+    }
+  }
+
+  function openNoteForm(note = null, prefillDate = null) {
+    const date = note ? String(note.eventDate).slice(0, 10)
+      : prefillDate || formatDateISO(state.startYear, state.startMonth, 1);
+    const box = noteModal(`
+      <h3>${note ? 'Edit note' : 'New note'}</h3>
+      <label>Date</label><input type="date" id="noteDate" value="${escHtml(date)}">
+      <label>Title</label><input id="noteTitle" maxlength="120" value="${escHtml(note ? note.title : '')}">
+      <label>Emoji</label><input id="noteEmoji" maxlength="16" placeholder="🎉" value="${escHtml(note ? note.emoji : '')}">
+      <label>Description</label><textarea id="noteDesc" maxlength="2000">${escHtml(note && note.description ? note.description : '')}</textarea>
+      <div class="note-error" id="noteError"></div>
+      <div class="note-actions">
+        <button type="button" data-act="cancel">Cancel</button>
+        <button type="button" class="primary" data-act="save">Save</button>
+      </div>`);
+    box.querySelector('[data-act="cancel"]').onclick = closeNoteModal;
+    box.querySelector('[data-act="save"]').onclick = () => saveNote(note && note.id);
+  }
+
+  function setNoteError(msg) {
+    const el = document.getElementById('noteError');
+    if (el) el.textContent = msg;
+  }
+
+  async function saveNote(id) {
+    const body = JSON.stringify({
+      eventDate: document.getElementById('noteDate').value,
+      title: document.getElementById('noteTitle').value,
+      emoji: document.getElementById('noteEmoji').value,
+      description: document.getElementById('noteDesc').value,
+    });
+    const path = id ? `/events/${encodeURIComponent(id)}` : `/events/businesses/${encodeURIComponent(state.businessId)}`;
+    const r = await backendApiFetch(path, { method: id ? 'PATCH' : 'POST', body });
+    if (!r) { setNoteError('Sign in to save notes.'); return; }
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      setNoteError(j.error?.message || `Could not save the note (${r.status}).`);
+      return;
+    }
+    closeNoteModal();
+    await loadNotes(); renderChart(); renderNotesPrompt();
+  }
+
+  async function deleteNote(id) {
+    if (!confirm('Delete this note?')) return;
+    const r = await backendApiFetch(`/events/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (r && r.ok) { closeNoteModal(); await loadNotes(); renderChart(); renderNotesPrompt(); }
+  }
+
+  // Offer a note for a month that moved sharply. Never creates one by itself.
+  function renderNotesPrompt() {
+    const box = document.getElementById('notesPrompt');
+    if (!box) return;
+    box.hidden = true;
+    if (!state.notesOn || !canWriteNotes() || state.currentData.length < 2) return;
+    const cells = state.currentData.map(m => ({ year: m.year, month: m.month, day: null }));
+    const values = state.currentData.map(m => m.total || 0);
+    const spike = spikeMonth(values, cells, state.notes, 30);
+    if (!spike) return;
+    const c = cells[spike.index];
+    if (state.notesDismissed === c.year * 100 + c.month) return;
+    box.innerHTML = `<span>${MONTH_FULL[c.month - 1]} ${c.year} moved ${spike.pct > 0 ? 'up' : 'down'} ${Math.abs(spike.pct)}% on the month before. Add a note for this month?</span>`
+      + '<button type="button" data-act="add">Add note</button><button type="button" data-act="dismiss">Not now</button>';
+    box.hidden = false;
+    box.querySelector('[data-act="add"]').onclick = () => openNoteForm(null, formatDateISO(c.year, c.month, 1));
+    box.querySelector('[data-act="dismiss"]').onclick = () => {
+      state.notesDismissed = c.year * 100 + c.month;
+      box.hidden = true;
+    };
+  }
+
+  function wireNotesUi() {
+    loadNotePrefs();
+    const on = document.getElementById('notesToggle');
+    const titles = document.getElementById('notesTitles');
+    if (!on || !titles) return;
+    on.checked = state.notesOn;
+    titles.checked = state.notesTitles;
+    on.addEventListener('change', () => { state.notesOn = on.checked; saveNotePrefs(); renderChart(); renderNotesPrompt(); });
+    titles.addEventListener('change', () => { state.notesTitles = titles.checked; saveNotePrefs(); renderChart(); });
+    document.getElementById('notesAdd').addEventListener('click', () => openNoteForm(null));
+  }
+
   // ── Metric Data Loading ──
   async function loadMetricData() {
     if (!state.businessId) return;
@@ -2352,6 +2514,9 @@
       // redraw, which is exactly the bug this fixes.
       renderChart();
     }
+    await loadNotes();
+    renderChart();
+    renderNotesPrompt();
     generateInsights();
     renderDiscoverySection();
   }
@@ -3044,10 +3209,46 @@
       }
     }
 
-    drawLineChart(svg, dailyValues, dayLabels, compareValues, compareLabels, derivedFlags);
+    // Each chart point as a date, so notes can be pinned to it.
+    const single = state.currentData.length === 1 ? state.currentData[0] : null;
+    const cells = single && single.daily && single.daily.length
+      ? single.daily.map((_, i) => ({ year: single.year, month: single.month, day: i + 1 }))
+      : state.currentData.map(m => ({ year: m.year, month: m.month, day: null }));
+    const markers = state.notesOn ? notesToMarkers(state.notes, cells) : [];
+    drawLineChart(svg, dailyValues, dayLabels, compareValues, compareLabels, derivedFlags, markers);
+    svg.querySelectorAll('.note-marker').forEach(g =>
+      g.addEventListener('click', () => openNoteDetail(g.dataset.noteId)));
   }
 
-  function drawLineChart(svg, values, labels, compareValues, compareLabels, derivedFlags) {
+  /** Which chart point each note belongs to. A note matches a cell by year and month, and by day when the cell has one. */
+  function notesToMarkers(notes, cells) {
+    const out = [], perIndex = new Map();
+    for (const note of notes || []) {
+      const iso = String(note.eventDate || '').slice(0, 10);
+      const [y, m, d] = iso.split('-').map(Number);
+      const index = cells.findIndex(c => c.year === y && c.month === m && (c.day == null || c.day === d));
+      if (index < 0) continue;
+      const stack = perIndex.get(index) || 0;
+      perIndex.set(index, stack + 1);
+      out.push({ index, stack, note });
+    }
+    return out;
+  }
+
+  /** The most recent month that moved sharply against the month before and has no note yet. */
+  function spikeMonth(values, cells, notes, thresholdPct = 30) {
+    const noted = new Set(notesToMarkers(notes, cells).map(mk => mk.index));
+    for (let i = values.length - 1; i >= 1; i--) {
+      if (noted.has(i) || cells[i].day != null) continue;
+      const prev = values[i - 1], cur = values[i];
+      if (!(prev > 0) || cur == null) continue;
+      const pct = (cur - prev) / prev * 100;
+      if (Math.abs(pct) >= thresholdPct) return { index: i, pct: Math.round(pct) };
+    }
+    return null;
+  }
+
+  function drawLineChart(svg, values, labels, compareValues, compareLabels, derivedFlags, markers = []) {
     const W = 1100;
     const H = 300;
     const PAD = { top: 40, right: 20, bottom: 40, left: 50 };
@@ -3225,6 +3426,18 @@
         // Comparison month missing (or current point estimated) — can't compute a %.
         html += `<text class="growth-label" x="${cx}" y="${cy - 24}" text-anchor="middle" fill="#ffa726" font-size="11" font-weight="600">⊖ pending</text>`;
       }
+    }
+
+    // Notes: an emoji above each pinned point, its title under it when Titles is on.
+    for (const mk of markers) {
+      const x = toX(mk.index);
+      const y = PAD.top - 12 - mk.stack * 22;
+      const short = mk.note.title.length > 18 ? mk.note.title.slice(0, 17) + '…' : mk.note.title;
+      html += `<g class="note-marker" data-note-id="${escHtml(mk.note.id)}" style="cursor:pointer">`
+            + `<title>${escHtml(String(mk.note.eventDate).slice(0, 10))} · ${escHtml(mk.note.title)}</title>`
+            + `<text x="${x}" y="${y}" font-size="16" text-anchor="middle">${escHtml(mk.note.emoji)}</text>`
+            + (state.notesTitles ? `<text x="${x}" y="${PAD.top - 2}" font-size="10" fill="#9aa0a6" text-anchor="middle">${escHtml(short)}</text>` : '')
+            + '</g>';
     }
 
     svg.innerHTML = html;
