@@ -39,6 +39,8 @@
     notesTitles: false,
     notesDismissed: null,    // 'YYYYMM' of a spike prompt the user dismissed
     metricLoadSeq: 0,              // bumped on every loadMetricData() call; see there for why
+    datePicks: { current: [], earlier: [] }, // 'dates' mode: ISO days picked in each list
+    dateRows: [],                 // 'dates' mode: paired days with their values
     compareLoadSeq: 0,             // bumped on every loadComparePeriodData() call; see there for why
   };
 
@@ -295,7 +297,9 @@
       // Show/hide custom month select
       const customWrap = document.getElementById('customMonthWrap');
       customWrap.style.display = state.compareMode === 'custom' ? '' : 'none';
+      document.getElementById('customDatesWrap').style.display = state.compareMode === 'dates' ? '' : 'none';
       if (state.compareMode === 'custom') populateCompareSelect();
+      if (state.compareMode === 'dates') renderDatePicks();
       showCompareLoading();
       renderChart(); // switching YoY -> Previous Period, say, should not leave YoY's line up while the new one loads
       await loadComparePeriodData();
@@ -316,6 +320,20 @@
       renderChart();
       updateCompareCard();
     });
+
+    // Compare by chosen dates: add from the date box, remove with its ×
+    for (const group of Object.keys(DATE_GROUP_IDS)) {
+      const id = DATE_GROUP_IDS[group];
+      const input = document.getElementById(`dateInput${id}`);
+      document.getElementById(`dateAdd${id}`).addEventListener('click', () => {
+        changeDatePicks(group, input.value, true);
+        input.value = '';
+      });
+      document.getElementById(`dateChips${id}`).addEventListener('click', e => {
+        const btn = e.target.closest('button[data-date]');
+        if (btn) changeDatePicks(group, btn.dataset.date, false);
+      });
+    }
 
     // Sync button
     document.getElementById('syncBtn').addEventListener('click', onSyncClick);
@@ -2173,6 +2191,9 @@
     module.exports.state = state;
     module.exports.loadComparePeriodData = loadComparePeriodData;
     module.exports.showCompareLoading = showCompareLoading;
+    module.exports.isIsoDay = isIsoDay;
+    module.exports.pairDatePicks = pairDatePicks;
+    module.exports.dayValue = dayValue;
     // Test-only: _authUser is otherwise private to this closure, and
     // fetchPeriodComparison's API path (the one actually racing on the
     // network in production) only runs when it is set.
@@ -2533,6 +2554,7 @@
     const seq = ++state.compareLoadSeq;
     state.compareData = null;
     state.comparePeriodData = [];
+    state.dateRows = [];
     if (!state.businessId || !state.compareEnabled) return;
 
     if (state.compareMode === 'custom') {
@@ -2543,6 +2565,11 @@
       );
       if (seq !== state.compareLoadSeq) return;
       state.compareData = metric;
+      return;
+    }
+
+    if (state.compareMode === 'dates') {
+      await loadDateCompareRows(seq);
       return;
     }
 
@@ -2609,6 +2636,123 @@
       cEndY = ey;   cEndM = em;
     }
     return { cStartY, cStartM, cEndY, cEndM };
+  }
+
+  // ── Compare by chosen dates ──────────────────────────────────────────────
+  // The user picks days in two lists: the days to look at, and the earlier days
+  // to compare them with. Each list is sorted by date and the Nth day of one is
+  // paired with the Nth day of the other, so the first chosen day is compared
+  // with the first chosen earlier day, and so on.
+
+  const DATE_GROUP_IDS = { current: 'Current', earlier: 'Earlier' };
+
+  function isIsoDay(s) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    const [y, m, d] = s.split('-').map(Number);
+    return m >= 1 && m <= 12 && d >= 1 && d <= new Date(y, m, 0).getDate();
+  }
+
+  function formatDayLabel(iso) {
+    const [y, m, d] = iso.split('-').map(Number);
+    return `${d} ${MONTH_NAMES[m - 1]} ${y}`;
+  }
+
+  // Pairs two lists of ISO days in order. The shorter list is padded with nulls.
+  function pairDatePicks(current, earlier) {
+    const a = [...current].sort();
+    const b = [...earlier].sort();
+    const n = Math.max(a.length, b.length);
+    return Array.from({ length: n }, (_, i) => ({ current: a[i] || null, earlier: b[i] || null }));
+  }
+
+  // The value for one day from loaded months keyed 'YYYY-M'. Null when the month
+  // was not loaded or has no daily breakdown (estimated months have only a total).
+  function dayValue(metricsByMonth, iso) {
+    const [y, m, d] = iso.split('-').map(Number);
+    const metric = metricsByMonth[`${y}-${m}`];
+    if (!metric || !metric.daily || !metric.daily.length) return null;
+    const v = metric.daily[d - 1];
+    return typeof v === 'number' ? v : null;
+  }
+
+  async function loadDateCompareRows(seq) {
+    const picks = [...state.datePicks.current, ...state.datePicks.earlier];
+    const keys = [...new Set(picks.map(iso => { const [y, m] = iso.split('-').map(Number); return `${y}-${m}`; }))];
+    const metricsByMonth = {};
+    for (const key of keys) {
+      const [y, m] = key.split('-').map(Number);
+      metricsByMonth[key] = await GBPStorage.getMetric(state.businessId, state.metricType, y, m);
+      if (seq !== state.compareLoadSeq) return;
+    }
+    const valueOf = iso => (iso ? dayValue(metricsByMonth, iso) : null);
+    state.dateRows = pairDatePicks(state.datePicks.current, state.datePicks.earlier).map(p => ({
+      current: p.current, currentValue: valueOf(p.current),
+      earlier: p.earlier, earlierValue: valueOf(p.earlier),
+    }));
+  }
+
+  function renderDatePicks() {
+    for (const group of Object.keys(DATE_GROUP_IDS)) {
+      const el = document.getElementById(`dateChips${DATE_GROUP_IDS[group]}`);
+      el.innerHTML = state.datePicks[group].map(iso =>
+        `<span class="date-chip">${formatDayLabel(iso)}<button type="button" data-date="${iso}" aria-label="Remove">×</button></span>`
+      ).join('');
+    }
+  }
+
+  async function changeDatePicks(group, iso, add) {
+    const list = state.datePicks[group];
+    if (add) {
+      if (!isIsoDay(iso) || list.includes(iso)) return;
+      list.push(iso);
+      list.sort();
+    } else {
+      state.datePicks[group] = list.filter(d => d !== iso);
+    }
+    renderDatePicks();
+    showCompareLoading();
+    renderChart();
+    await loadComparePeriodData();
+    renderChart();
+    updateCompareCard();
+  }
+
+  function pctChange(now, before) {
+    const pct = ((now - before) / before * 100).toFixed(1);
+    return `<span class="${pct >= 0 ? 'positive' : 'negative'}">${pct >= 0 ? '+' : ''}${pct}%</span>`;
+  }
+
+  // The card and table for 'dates' mode: totals of each list, then each pair.
+  function renderDateCompare() {
+    const rows = state.dateRows;
+    const currentTotal = rows.reduce((s, r) => s + (r.currentValue || 0), 0);
+    const earlierTotal = rows.reduce((s, r) => s + (r.earlierValue || 0), 0);
+    document.getElementById('comparePeriodLabel').textContent = 'Chosen dates';
+    document.getElementById('compareLabel1').textContent = `Chosen dates (${state.datePicks.current.length})`;
+    document.getElementById('compareValue1').textContent = currentTotal.toLocaleString();
+    document.getElementById('compareLabel2').textContent = `Earlier dates (${state.datePicks.earlier.length})`;
+    document.getElementById('compareValue2').textContent = earlierTotal.toLocaleString();
+    const pctEl = document.getElementById('comparePercent');
+    if (!state.datePicks.current.length || !state.datePicks.earlier.length) {
+      pctEl.innerHTML = '<span style="color:var(--text-muted)">Pick dates in both lists</span>';
+    } else if (earlierTotal > 0) {
+      pctEl.innerHTML = pctChange(currentTotal, earlierTotal);
+    } else {
+      pctEl.innerHTML = '<span style="color:var(--text-muted)">No data</span>';
+    }
+
+    const table = document.getElementById('dateCompareTable');
+    if (!rows.length) { table.innerHTML = ''; return; }
+    const cell = (iso, v) => (iso ? `${formatDayLabel(iso)}: ${v === null ? '<em>no data</em>' : v}` : '—');
+    const body = rows.map(r => {
+      const change = r.currentValue !== null && r.earlierValue > 0 ? pctChange(r.currentValue, r.earlierValue) : '—';
+      return `<tr><td>${cell(r.current, r.currentValue)}</td><td>${cell(r.earlier, r.earlierValue)}</td><td>${change}</td></tr>`;
+    }).join('');
+    table.innerHTML = `<table class="date-compare-table">
+        <thead><tr><th>Chosen date</th><th>Earlier date</th><th>Change</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+      <div class="date-compare-note">Paired in the order chosen: first with first, second with second.</div>`;
   }
 
   // ── Sync Status ──────────────────────────────────────────────────────────
@@ -3012,6 +3156,7 @@
 
   function updateCompareCard() {
     if (!state.compareEnabled) return;
+    if (state.compareMode === 'dates') { renderDateCompare(); return; }
 
     const currentTotal = state.currentData.reduce((sum, m) => sum + (m.total || 0), 0);
     const same = state.startYear === state.endYear && state.startMonth === state.endMonth;

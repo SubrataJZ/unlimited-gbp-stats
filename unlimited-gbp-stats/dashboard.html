@@ -175,10 +175,28 @@
         <button class="cmp-mode-btn active" data-mode="yoy">vs Same Period Last Year</button>
         <button class="cmp-mode-btn" data-mode="prev">vs Previous Period</button>
         <button class="cmp-mode-btn" data-mode="custom">Custom Month</button>
+        <button class="cmp-mode-btn" data-mode="dates">Pick Dates</button>
       </div>
       <div id="customMonthWrap" style="display:none">
         <select id="compareMonth" class="compare-month-select"></select>
       </div>
+    </div>
+
+    <!-- Compare by chosen days: each list is paired in date order -->
+    <div id="customDatesWrap" class="date-compare-wrap" style="display:none">
+      <div class="date-picks-row">
+        <span class="date-picks-label">Chosen dates</span>
+        <input type="date" id="dateInputCurrent">
+        <button type="button" id="dateAddCurrent">Add</button>
+        <div class="date-chips" id="dateChipsCurrent"></div>
+      </div>
+      <div class="date-picks-row">
+        <span class="date-picks-label">Compare with</span>
+        <input type="date" id="dateInputEarlier">
+        <button type="button" id="dateAddEarlier">Add</button>
+        <div class="date-chips" id="dateChipsEarlier"></div>
+      </div>
+      <div id="dateCompareTable"></div>
     </div>
 
     <!-- Notes: events pinned to dates on the chart -->
