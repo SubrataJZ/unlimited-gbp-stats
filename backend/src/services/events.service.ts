@@ -7,15 +7,19 @@ const EVENT_SELECT = {
   description: true, emoji: true, createdAt: true, updatedAt: true,
 } as const;
 
-async function businessInOrg(orgId: string, trackedBusinessId: string) {
+// The dashboard knows a business by its Google place ID; the API also accepts the
+// server's own ID. Either way the result is limited to the caller's organisation.
+async function resolveBusinessId(orgId: string, key: string): Promise<string> {
   const business = await prisma.trackedBusiness.findFirst({
-    where: { id: trackedBusinessId, orgId }, select: { id: true },
+    where: { orgId, OR: [{ id: key }, { googlePlaceId: key }] },
+    select: { id: true },
   });
   if (!business) throw new NotFoundError('Tracked business not found for this organization.');
+  return business.id;
 }
 
-export async function listEvents(orgId: string, trackedBusinessId: string, from?: string, to?: string) {
-  await businessInOrg(orgId, trackedBusinessId);
+export async function listEvents(orgId: string, businessKey: string, from?: string, to?: string) {
+  const trackedBusinessId = await resolveBusinessId(orgId, businessKey);
   return prisma.businessEvent.findMany({
     where: {
       trackedBusinessId,
@@ -26,8 +30,8 @@ export async function listEvents(orgId: string, trackedBusinessId: string, from?
   });
 }
 
-export async function createEvent(orgId: string, trackedBusinessId: string, userId: string, input: EventInput) {
-  await businessInOrg(orgId, trackedBusinessId);
+export async function createEvent(orgId: string, businessKey: string, userId: string, input: EventInput) {
+  const trackedBusinessId = await resolveBusinessId(orgId, businessKey);
   return prisma.businessEvent.create({
     data: {
       trackedBusinessId,

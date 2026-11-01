@@ -1948,3 +1948,21 @@ tr:hover td { background: var(--bg-hover); }
 @media (max-width: 560px) {
   .rv-risk-age { margin-left: 0; width: 100%; }
 }
+
+/* Notes on the chart */
+.notes-toolbar { display: flex; gap: 16px; align-items: center; margin: 8px 0; font-size: 13px; }
+.notes-add { padding: 4px 10px; border-radius: 6px; border: 1px solid #5f8dd3; background: transparent; color: #8ab4f8; cursor: pointer; }
+.notes-prompt { display: flex; gap: 12px; align-items: center; margin: 8px 0; padding: 10px 14px; border-radius: 8px; background: #2d3748; color: #e5e7eb; font-size: 13px; }
+.notes-prompt button { padding: 4px 10px; border-radius: 6px; border: 1px solid #5f8dd3; background: transparent; color: #8ab4f8; cursor: pointer; }
+.note-marker text { pointer-events: auto; }
+.note-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 9999; }
+.note-modal { width: min(480px, 92vw); background: #1f2937; color: #e5e7eb; border-radius: 12px; padding: 20px; font-size: 14px; }
+.note-modal h3 { margin: 0 0 10px; font-size: 16px; }
+.note-modal label { display: block; margin: 10px 0 4px; font-size: 12px; color: #9aa0a6; }
+.note-modal input, .note-modal textarea { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid #374151; background: #111827; color: #e5e7eb; font: inherit; }
+.note-modal textarea { min-height: 90px; }
+.note-modal .note-body { white-space: pre-wrap; margin: 6px 0 14px; }
+.note-modal .note-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.note-modal .note-actions button { padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #111827; color: #e5e7eb; cursor: pointer; }
+.note-modal .note-actions .primary { border-color: #5f8dd3; color: #8ab4f8; }
+.note-modal .note-error { color: #f87171; font-size: 12px; min-height: 16px; margin-top: 6px; }
