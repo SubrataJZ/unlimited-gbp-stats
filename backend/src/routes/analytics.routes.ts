@@ -9,6 +9,7 @@ import {
 import { validateJWT } from '../middlewares/auth.middleware';
 import { AuthorizationError } from '../utils/errors';
 import { prisma } from '../index';
+import { resolveMembership } from '../services/intel.service';
 import logger from '../utils/logger';
 
 const analyticsRouter = Router();
@@ -25,20 +26,19 @@ const assertLocationOwnership = async (
   if (!locationId) {
     throw new AuthorizationError('Location ID is required');
   }
-
-  const location = await prisma.location.findUnique({
-    where: { googleLocationId: locationId },
-    select: { userId: true },
-  });
-
-  if (!location) {
-    throw new AuthorizationError('Location not found');
+  if (!userId) {
+    throw new AuthorizationError('You do not have access to this location');
   }
 
-  if (location.userId !== userId) {
-    logger.warn(
-      `Unauthorized access attempt: User ${userId} tried to access location ${locationId}`
-    );
+  // Business is tracked under the user's organisation, keyed by its Google place ID.
+  const { orgId } = await resolveMembership(userId);
+  const business = await prisma.trackedBusiness.findFirst({
+    where: { orgId, googlePlaceId: locationId },
+    select: { id: true },
+  });
+
+  if (!business) {
+    logger.warn(`Unauthorized access attempt: User ${userId} tried to access location ${locationId}`);
     throw new AuthorizationError('You do not have access to this location');
   }
 };

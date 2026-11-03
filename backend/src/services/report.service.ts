@@ -84,17 +84,19 @@ class ReportService {
    * Main orchestrator: Generate report based on type
    */
   async generateReport(
+    orgId: string,
     locationId: string,
     reportType: 'full' | 'mvm' | 'pvp' | '6year',
     options: GenerateReportOptions = {}
   ): Promise<any> {
     try {
       // Fetch location info
-      const location = await prisma.location.findUnique({
-        where: { googleLocationId: locationId },
+      const business = await prisma.trackedBusiness.findFirst({
+        where: { orgId, googlePlaceId: locationId },
+        select: { name: true },
       });
 
-      if (!location) {
+      if (!business) {
         throw new Error(`Location ${locationId} not found`);
       }
 
@@ -108,8 +110,9 @@ class ReportService {
       switch (reportType) {
         case 'full':
           reportData = await this.buildFullReport(
+            orgId,
             locationId,
-            location.businessName,
+            business.name,
             period1,
             period2,
             options.metricTypes,
@@ -117,22 +120,23 @@ class ReportService {
           );
           break;
         case 'mvm':
-          reportData = await this.buildMvMReport(locationId, location.businessName);
+          reportData = await this.buildMvMReport(orgId, locationId, business.name);
           break;
         case 'pvp':
           if (!period1 || !period2) {
             throw new Error('Period vs Period reports require period1 and period2');
           }
           reportData = await this.buildPvPReport(
+            orgId,
             locationId,
-            location.businessName,
+            business.name,
             period1,
             period2
           );
           break;
         case '6year':
           const metricType = options.metricTypes?.[0] || 'overview';
-          reportData = await this.build6YearReport(locationId, location.businessName, metricType);
+          reportData = await this.build6YearReport(orgId, locationId, business.name, metricType);
           break;
         default:
           throw new Error(`Unknown report type: ${reportType}`);
@@ -182,6 +186,7 @@ class ReportService {
    * An optional `comparison` range adds a period-over-period section.
    */
   private async buildFullReport(
+    orgId: string,
     locationId: string,
     businessName: string,
     range?: DateRange,
@@ -192,6 +197,7 @@ class ReportService {
     try {
       // Fetch metrics for the location, narrowed to the requested window
       const allMetrics = await metricsService.getAllMetricsForLocation(
+        orgId,
         locationId,
         metricTypes,
         range
@@ -220,7 +226,7 @@ class ReportService {
       // year earlier when none was given.
       const chartComparison = comparison || (range ? this.previousYearOf(range) : undefined);
       const comparisonMetrics = chartComparison
-        ? await metricsService.getAllMetricsForLocation(locationId, metricTypes, chartComparison)
+        ? await metricsService.getAllMetricsForLocation(orgId, locationId, metricTypes, chartComparison)
         : [];
 
       if (comparison) {
@@ -438,6 +444,7 @@ class ReportService {
    * Month vs Month Report: Current month vs previous month
    */
   private async buildMvMReport(
+    orgId: string,
     locationId: string,
     businessName: string
   ): Promise<{ html: string; meta: ReportMeta }> {
@@ -451,6 +458,7 @@ class ReportService {
       const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
 
       const metrics = await metricsService.getMetricsForPeriod(
+        orgId,
         locationId,
         lastMonth,
         currentMonthEnd,
@@ -499,6 +507,7 @@ class ReportService {
    * Period vs Period Report: Custom date range comparison
    */
   private async buildPvPReport(
+    orgId: string,
     locationId: string,
     businessName: string,
     period1: DateRange,
@@ -507,6 +516,7 @@ class ReportService {
     try {
       // Fetch metrics for both periods
       const metrics1 = await metricsService.getMetricsForPeriod(
+        orgId,
         locationId,
         period1.start,
         period1.end,
@@ -514,6 +524,7 @@ class ReportService {
       );
 
       const metrics2 = await metricsService.getMetricsForPeriod(
+        orgId,
         locationId,
         period2.start,
         period2.end,
@@ -563,13 +574,14 @@ class ReportService {
    * 6-Year Historical Growth Report: 72 months with YoY overlays
    */
   private async build6YearReport(
+    orgId: string,
     locationId: string,
     businessName: string,
     metricType: string
   ): Promise<{ html: string; meta: ReportMeta }> {
     try {
       // Get 6-year growth summary
-      const growthData = await metricsService.get6YearGrowthSummary(locationId, metricType);
+      const growthData = await metricsService.get6YearGrowthSummary(orgId, locationId, metricType);
 
       if (growthData.length === 0) {
         throw new Error('No historical data available for 6-year report');

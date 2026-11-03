@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import metricsService from '../services/metrics.service';
+import { resolveMembership } from '../services/intel.service';
 import reportService from '../services/report.service';
 import { asyncHandler } from '../middlewares/error.middleware';
 import { ValidationError, NotFoundError } from '../utils/errors';
@@ -11,6 +12,7 @@ import logger from '../utils/logger';
  */
 export const getYoYComparison = asyncHandler(async (req: Request, res: Response) => {
   const { locationId } = req.params;
+  const { orgId } = await resolveMembership(req.user!.id);
   const { year, month, metricType = 'overview' } = req.query;
 
   // Validation
@@ -27,6 +29,7 @@ export const getYoYComparison = asyncHandler(async (req: Request, res: Response)
 
   try {
     const comparison = await metricsService.getMetricsForYoYComparison(
+      orgId,
       locationId,
       yearNum,
       monthNum,
@@ -46,6 +49,7 @@ export const getYoYComparison = asyncHandler(async (req: Request, res: Response)
  */
 export const getPeriodComparison = asyncHandler(async (req: Request, res: Response) => {
   const { locationId } = req.params;
+  const { orgId } = await resolveMembership(req.user!.id);
   const { from, to, compareMode = 'yoy', metricType = 'overview', customDate } = req.query;
 
   // Validation
@@ -72,6 +76,7 @@ export const getPeriodComparison = asyncHandler(async (req: Request, res: Respon
 
   try {
     const periods = await metricsService.getMetricsForPeriod(
+      orgId,
       locationId,
       startDate,
       endDate,
@@ -106,6 +111,7 @@ export const getPeriodComparison = asyncHandler(async (req: Request, res: Respon
  */
 export const generateReport = asyncHandler(async (req: Request, res: Response) => {
   const { locationId, reportType, options } = req.body;
+  const { orgId } = await resolveMembership(req.user!.id);
 
   // Validation
   if (!locationId || !reportType) {
@@ -137,6 +143,7 @@ export const generateReport = asyncHandler(async (req: Request, res: Response) =
 
   try {
     const result = await reportService.generateReport(
+      orgId,
       locationId,
       reportType,
       options || {}
