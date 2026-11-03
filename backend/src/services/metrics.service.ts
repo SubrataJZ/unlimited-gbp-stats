@@ -1,5 +1,6 @@
 import { prisma } from '../index';
 import logger from '../utils/logger';
+import { MonthRow, flattenDaily } from '../utils/daily-points';
 
 // ── Type Definitions ───────────────────────────────────────────────────────
 
@@ -34,6 +35,26 @@ export interface MetricData {
   metricType: string;
   value: number;
   createdAt: Date;
+}
+
+
+/** Daily points for a business in the organisation, for the given metric types. */
+async function dailyPoints(
+  orgId: string,
+  placeId: string,
+  metricTypes: string[] | undefined,
+  from: Date,
+  to: Date
+): Promise<MetricData[]> {
+  const rows = await prisma.metricMonth.findMany({
+    where: {
+      trackedBusiness: { orgId, googlePlaceId: placeId },
+      ...(metricTypes && metricTypes.length > 0 ? { metricType: { in: metricTypes } } : {}),
+      year: { gte: from.getFullYear(), lte: to.getFullYear() },
+    },
+    select: { id: true, metricType: true, year: true, month: true, total: true, daily: true, collectedAt: true, createdAt: true },
+  });
+  return flattenDaily(rows, placeId, from, to);
 }
 
 // ── MetricsService ───────────────────────────────────────────────────────
@@ -72,36 +93,32 @@ class MetricsService {
    * Fetch metrics for a specific month
    */
   async getMetricsForMonth(
+    orgId: string,
     locationId: string,
     year: number,
     month: number,
     metricType: string
   ): Promise<MetricData | null> {
     try {
-      const startDate = new Date(year, month - 1, 1);
-      const endDate = new Date(year, month, 0);
-
-      const metric = await prisma.metric.findFirst({
+      const row = await prisma.metricMonth.findFirst({
         where: {
-          locationId,
           metricType,
-          date: {
-            gte: startDate,
-            lte: endDate,
-          },
+          year,
+          month,
+          trackedBusiness: { orgId, googlePlaceId: locationId },
         },
-        orderBy: { date: 'desc' },
+        select: { id: true, total: true, collectedAt: true, createdAt: true },
       });
 
-      if (!metric) return null;
+      if (!row) return null;
 
       return {
-        id: metric.id,
-        locationId: metric.locationId,
-        date: metric.date,
-        metricType: metric.metricType,
-        value: metric.value,
-        createdAt: metric.createdAt,
+        id: row.id,
+        locationId,
+        date: new Date(year, month - 1, 1),
+        metricType,
+        value: row.total,
+        createdAt: row.collectedAt ?? row.createdAt,
       };
     } catch (error) {
       logger.error(`Error fetching metrics for month ${year}-${month}:`, error);
@@ -113,6 +130,7 @@ class MetricsService {
    * Fetch YoY comparison: current month vs same month last year
    */
   async getMetricsForYoYComparison(
+    orgId: string,
     locationId: string,
     currentYear: number,
     currentMonth: number,
@@ -121,6 +139,7 @@ class MetricsService {
     try {
       // Fetch current month metric
       const currentMetric = await this.getMetricsForMonth(
+        orgId,
         locationId,
         currentYear,
         currentMonth,
@@ -129,6 +148,7 @@ class MetricsService {
 
       // Fetch prior year same month metric
       const priorYearMetric = await this.getMetricsForMonth(
+        orgId,
         locationId,
         currentYear - 1,
         currentMonth,
@@ -174,6 +194,7 @@ class MetricsService {
    * Fetch metrics for a date range with optional comparison mode
    */
   async getMetricsForPeriod(
+    orgId: string,
     locationId: string,
     startDate: Date,
     endDate: Date,
@@ -183,17 +204,7 @@ class MetricsService {
   ): Promise<PeriodData[]> {
     try {
       // Fetch current period metrics
-      const currentMetrics = await prisma.metric.findMany({
-        where: {
-          locationId,
-          metricType,
-          date: {
-            gte: startDate,
-            lte: endDate,
-          },
-        },
-        orderBy: { date: 'asc' },
-      });
+      const currentMetrics = await dailyPoints(orgId, locationId, [metricType], startDate, endDate);
 
       if (currentMetrics.length === 0) {
         return [];
@@ -209,16 +220,7 @@ class MetricsService {
         const comparisonStart = new Date(startYear - 1, startDate.getMonth(), startDate.getDate());
         const comparisonEnd = new Date(endYear - 1, endDate.getMonth(), endDate.getDate());
 
-        comparisonMetrics = await prisma.metric.findMany({
-          where: {
-            locationId,
-            metricType,
-            date: {
-              gte: comparisonStart,
-              lte: comparisonEnd,
-            },
-          },
-        });
+        comparisonMetrics = await dailyPoints(orgId, locationId, [metricType], comparisonStart, comparisonEnd);
       } else if (compareMode === 'prev') {
         // Previous period: same length before start date
         const periodLength = Math.floor((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
@@ -227,16 +229,7 @@ class MetricsService {
         const comparisonEnd = new Date(startDate);
         comparisonEnd.setDate(comparisonEnd.getDate() - 1);
 
-        comparisonMetrics = await prisma.metric.findMany({
-          where: {
-            locationId,
-            metricType,
-            date: {
-              gte: comparisonStart,
-              lte: comparisonEnd,
-            },
-          },
-        });
+        comparisonMetrics = await dailyPoints(orgId, locationId, [metricType], comparisonStart, comparisonEnd);
       } else if (compareMode === 'custom' && customDate) {
         // Custom: specific single date comparison
         const customStart = new Date(customDate);
@@ -244,16 +237,7 @@ class MetricsService {
         const customEnd = new Date(customDate);
         customEnd.setDate(customEnd.getDate() + 1);
 
-        comparisonMetrics = await prisma.metric.findMany({
-          where: {
-            locationId,
-            metricType,
-            date: {
-              gte: customStart,
-              lte: customEnd,
-            },
-          },
-        });
+        comparisonMetrics = await dailyPoints(orgId, locationId, [metricType], customStart, customEnd);
       }
 
       // Build result array
@@ -306,32 +290,20 @@ class MetricsService {
    * Optionally narrowed to a metric-type set and/or a date range.
    */
   async getAllMetricsForLocation(
+    orgId: string,
     locationId: string,
     metricTypes?: string[],
     dateRange?: { start: Date; end: Date }
   ): Promise<MetricData[]> {
     try {
-      const metrics = await prisma.metric.findMany({
-        where: {
-          locationId,
-          ...(metricTypes && metricTypes.length > 0
-            ? { metricType: { in: metricTypes } }
-            : {}),
-          ...(dateRange
-            ? { date: { gte: dateRange.start, lte: dateRange.end } }
-            : {}),
-        },
-        orderBy: [{ date: 'desc' }],
-      });
-
-      return metrics.map((m) => ({
-        id: m.id,
-        locationId: m.locationId,
-        date: m.date,
-        metricType: m.metricType,
-        value: m.value,
-        createdAt: m.createdAt,
-      }));
+      const points = await dailyPoints(
+        orgId,
+        locationId,
+        metricTypes,
+        dateRange?.start ?? new Date(1900, 0, 1),
+        dateRange?.end ?? new Date()
+      );
+      return points.reverse();
     } catch (error) {
       logger.error('Error fetching all metrics for location:', error);
       return [];
@@ -342,6 +314,7 @@ class MetricsService {
    * Get 6-year growth summary (72 months)
    */
   async get6YearGrowthSummary(
+    orgId: string,
     locationId: string,
     metricType: string
   ): Promise<GrowthData[]> {
@@ -350,17 +323,7 @@ class MetricsService {
       const startDate = new Date();
       startDate.setFullYear(startDate.getFullYear() - 6);
 
-      const metrics = await prisma.metric.findMany({
-        where: {
-          locationId,
-          metricType,
-          date: {
-            gte: startDate,
-            lte: endDate,
-          },
-        },
-        orderBy: { date: 'asc' },
-      });
+      const metrics = await dailyPoints(orgId, locationId, [metricType], startDate, endDate);
 
       if (metrics.length === 0) {
         return [];
