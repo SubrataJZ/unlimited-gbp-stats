@@ -1966,3 +1966,14 @@ tr:hover td { background: var(--bg-hover); }
 .note-modal .note-actions button { padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #111827; color: #e5e7eb; cursor: pointer; }
 .note-modal .note-actions .primary { border-color: #5f8dd3; color: #8ab4f8; }
 .note-modal .note-error { color: #f87171; font-size: 12px; min-height: 16px; margin-top: 6px; }
+
+/* Compare by chosen dates */
+.date-compare-wrap { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 12px; }
+.date-picks-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.date-picks-label { min-width: 110px; color: var(--text-muted); font-size: 12px; }
+.date-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.date-chip { background: var(--bg-hover); border-radius: 12px; padding: 2px 8px; font-size: 12px; }
+.date-chip button { background: none; border: 0; color: inherit; cursor: pointer; margin-left: 4px; }
+.date-compare-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.date-compare-table th, .date-compare-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border-light); }
+.date-compare-note { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
