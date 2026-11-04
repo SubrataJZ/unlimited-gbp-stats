@@ -63,6 +63,8 @@ global.fetch = (url) => {
 };
 
 const { state, loadComparePeriodData, showCompareLoading, __setAuthUserForTests } = require('./dashboard.js');
+// The server compare path is off in the app; these cases exercise it directly.
+require('./dashboard.js').setCompareApiForTests(true);
 __setAuthUserForTests({ email: 'a@b.com', accessToken: 'tok' }); // routes through fetch, not the local fallback
 
 let n = 0;
