@@ -9,6 +9,9 @@
   const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const MONTH_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
+  // shortcut: notes UI hidden until the Owner check and live test pass; set true to bring back
+  const NOTES_ENABLED = false;
+
   // ── State ──
   let state = {
     businessId: null,
@@ -2317,6 +2320,7 @@
 
   async function loadNotes() {
     state.notes = [];
+    if (!NOTES_ENABLED) return;
     if (state.businessId && state.startYear) {
       const from = formatDateISO(state.startYear, state.startMonth, 1);
       const to = formatDateISO(state.endYear, state.endMonth, new Date(state.endYear, state.endMonth, 0).getDate());
@@ -2413,7 +2417,7 @@
     const box = document.getElementById('notesPrompt');
     if (!box) return;
     box.hidden = true;
-    if (!state.notesOn || !canWriteNotes() || state.currentData.length < 2) return;
+    if (!NOTES_ENABLED || !state.notesOn || !canWriteNotes() || state.currentData.length < 2) return;
     const cells = state.currentData.map(m => ({ year: m.year, month: m.month, day: null }));
     const values = state.currentData.map(m => m.total || 0);
     const spike = spikeMonth(values, cells, state.notes, 30);
