@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.32.3] - 2026-11-05
+- **Fixed: Update Latest Data fetches the months after the server's latest month.** It used to look at this browser's saved months, so one month saved on its own (for example November) could hide the missing months before it (for example October). It now asks the server for its newest month and fetches only the months after it. If the server cannot be reached, it stops with an error instead of guessing.
+
 ## [1.32.2] - 2026-11-05
 - **Fixed: the Compare graph used the wrong numbers.** Compare reads the data stored on this device again, which is what worked before. The server's compare response is per day, and the chart needs monthly periods.
 

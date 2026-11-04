@@ -756,14 +756,14 @@
     const businessId = extractBusinessId();
     if (!businessId) { report.errors.push('Could not detect business ID'); return report; }
 
-    // Ask background for the latest stored month for this business. Pass the
-    // local-id alias so records saved under it are folded into the canonical
-    // id BEFORE the query — otherwise "latest" looks empty and we re-fetch all.
-    const latest = await new Promise(resolve =>
+    // Ask the server for the newest month it holds; only later months are fetched.
+    const reply = await new Promise(resolve =>
       chrome.runtime.sendMessage(
-        { action: 'getLatestMonth', businessId, aliasId: extractAliasLocalId() },
-        r => resolve(r?.latest || null))
+        { action: 'getLatestMonth', businessId },
+        r => resolve(r || {}))
     );
+    if (reply.error) { report.errors.push(reply.error); return report; }
+    const latest = reply.latest || null;
 
     // Get all available months from the date picker
     const allMonthBtns = await openDatePickerAndGetMonths();

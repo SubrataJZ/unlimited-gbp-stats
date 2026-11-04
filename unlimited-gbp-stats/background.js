@@ -150,6 +150,17 @@ let backendKeyRepair = null;
 let backendKeyRepairedAt = 0;
 const BACKEND_REPAIR_COOLDOWN_MS = 5 * 60 * 1000;
 
+/** Newest month the server holds for this business. Throws if it cannot be asked. */
+async function getServerLatestMonth(placeId) {
+  const key = await getBackendKey();
+  if (!key) throw new Error('not connected. Sign in first.');
+  const resp = await fetch(`${BACKEND_URL}/api/ingest/latest-month?placeId=${encodeURIComponent(placeId)}`, {
+    headers: { 'Authorization': `Bearer ${key}` },
+  });
+  if (!resp.ok) throw new Error(`server returned ${resp.status}`);
+  return (await resp.json()).latest || null;
+}
+
 /**
  * The zx_ ingest key, repairing itself if it has gone missing.
  *
@@ -2025,14 +2036,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   // ── Get latest collected month for a specific business ─────────────────────
+  // The server is the source of truth: the newest month it holds, not what this
+  // browser happens to have saved. A failed lookup is an error, never a guess.
   if (msg.action === 'getLatestMonth') {
-    GBPStorage.open()
-      // Migrate BEFORE querying, or months stored under the local id look
-      // missing and the scraper re-fetches everything from scratch.
-      .then(() => GBPStorage.migrateBusinessData(msg.aliasId, msg.businessId))
-      .then(() => GBPStorage.getOldestAndNewest(msg.businessId))
-      .then(range => sendResponse({ latest: range?.newest || null }))
-      .catch(() => sendResponse({ latest: null }));
+    getServerLatestMonth(msg.businessId)
+      .then(latest => sendResponse({ latest }))
+      .catch(e => sendResponse({ error: `Could not reach the server for the latest month: ${e.message}` }));
     return true;
   }
 
