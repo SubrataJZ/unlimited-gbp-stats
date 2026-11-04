@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.32.1] - 2026-11-05
+- **Changed: the notes section is hidden for now.** The notes toolbar, the Add note prompt and note loading are switched off while the Owner check and a live test are completed.
+
 ## [1.32.0] - 2026-11-01
 - **New: business notes on the Performance chart.** Agency and Pro accounts can add a note to a date: an emoji, a title and a description. Notes appear on the chart at their date. Hover shows the title and date; click opens the description. Show notes and Titles can be turned on and off, and the choice is remembered on this device.
 - **New: a prompt when a month moves sharply.** If a month is 30% or more above or below the month before and has no note, the dashboard asks whether to add one. It never adds a note by itself.
