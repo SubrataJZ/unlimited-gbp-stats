@@ -3,7 +3,7 @@ import { asyncHandler } from '../middlewares/error.middleware';
 import { auditEvents } from '../middlewares/audit.middleware';
 import { ValidationError, AuthenticationError } from '../utils/errors';
 import logger from '../utils/logger';
-import { resolveOrgId, resolveMembership, ingestIntel as runIngestIntel, getIntelForOrg, getSyncBundleForOrg, IncomingBusiness, IncomingSnapshot, IncomingReview } from '../services/intel.service';
+import { resolveOrgId, resolveMembership, ingestIntel as runIngestIntel, getIntelForOrg, getSyncBundleForOrg, getLatestScrapedMonth, IncomingBusiness, IncomingSnapshot, IncomingReview } from '../services/intel.service';
 import { getAuditForBusiness } from '../services/audit.service';
 import { renderAuditReportHtml } from '../services/audit.report';
 import { prisma } from '../index';
@@ -454,4 +454,22 @@ export const getAuditReport = asyncHandler(async (req: Request, res: Response) =
   const html = renderAuditReportHtml(businessName, audit);
 
   res.status(200).set('Content-Type', 'text/html; charset=utf-8').send(html);
+});
+
+/**
+ * GET /api/ingest/latest-month?placeId=...
+ * The newest month the server holds for one business, so the extension can
+ * fetch only the months after it.
+ */
+export const getLatestMonth = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AuthenticationError('Latest-month read requires a per-user API key (zx_...)');
+  }
+  const placeId = String(req.query.placeId || '');
+  if (!placeId) throw new ValidationError('placeId is required');
+
+  const { orgId } = await resolveMembership(req.user.id);
+  const latest = await getLatestScrapedMonth(orgId, placeId);
+
+  res.status(200).json({ ok: true, latest });
 });

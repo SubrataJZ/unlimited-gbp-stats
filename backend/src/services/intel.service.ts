@@ -604,3 +604,16 @@ export async function ingestIntel(
 
   return summary;
 }
+
+/**
+ * Newest month the scraper has posted for one business. Derived estimates are
+ * left out: they are back-computed, not something the scraper saw.
+ */
+export async function getLatestScrapedMonth(orgId: string, placeId: string) {
+  const row = await prisma.metricMonth.findFirst({
+    where: { isDerived: false, trackedBusiness: { orgId, googlePlaceId: placeId } },
+    orderBy: [{ year: 'desc' }, { month: 'desc' }],
+    select: { year: true, month: true },
+  });
+  return row ? { year: row.year, month: row.month } : null;
+}
