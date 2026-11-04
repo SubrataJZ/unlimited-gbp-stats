@@ -29,6 +29,17 @@ router.get(
 );
 
 /**
+ * GET /api/ingest/latest-month?placeId=...
+ * Purpose: The newest month the server holds for one business.
+ * Auth: Per-user extension API key (zx_...)
+ */
+router.get(
+  '/latest-month',
+  asyncHandler(validateExtensionKey),
+  asyncHandler(intelController.getLatestMonth)
+);
+
+/**
  * GET /api/ingest/sync
  * Purpose: Combined read — tracked businesses with FULL metrics history plus
  *          review snapshots/reviews in one response (avoids performance vs.
