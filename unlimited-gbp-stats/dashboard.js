@@ -11,6 +11,8 @@
 
   // shortcut: notes UI hidden until the Owner check and live test pass; set true to bring back
   const NOTES_ENABLED = false;
+  // shortcut: compare reads the local data; the API returns one point per day, but the chart needs monthly comparison periods. Set true once the server returns those.
+  let COMPARE_API_ENABLED = false;
 
   // ── State ──
   let state = {
@@ -2163,6 +2165,7 @@
   // No browser behaviour change: module.exports only exists under Node.
   if (typeof module !== 'undefined' && module.exports) {
     module.exports.computeNextTierMetric = computeNextTierMetric;
+    module.exports.setCompareApiForTests = v => { COMPARE_API_ENABLED = v; };
     module.exports.describeConcept = describeConcept;
     module.exports.conceptHeadline = conceptHeadline;
     module.exports.renderConceptPanel = renderConceptPanel;
@@ -2554,13 +2557,9 @@
     const fromDate = formatDateISO(state.startYear, state.startMonth, 1);
     const toDate = formatDateISO(state.endYear, state.endMonth, 28); // Use 28 to avoid month-end issues
 
-    const apiData = await fetchPeriodComparison(
-      state.businessId,
-      fromDate,
-      toDate,
-      state.compareMode,
-      state.metricType
-    );
+    const apiData = COMPARE_API_ENABLED
+      ? await fetchPeriodComparison(state.businessId, fromDate, toDate, state.compareMode, state.metricType)
+      : null;
     if (seq !== state.compareLoadSeq) return;
 
     if (apiData && apiData.periods) {

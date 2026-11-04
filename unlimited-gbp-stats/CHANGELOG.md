@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.32.2] - 2026-11-05
+- **Fixed: the Compare graph used the wrong numbers.** Compare reads the data stored on this device again, which is what worked before. The server's compare response is per day, and the chart needs monthly periods.
+
 ## [1.32.1] - 2026-11-05
 - **Changed: the notes section is hidden for now.** The notes toolbar, the Add note prompt and note loading are switched off while the Owner check and a live test are completed.
 
